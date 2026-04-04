@@ -6,47 +6,73 @@
 <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css" />
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1a2e; }
-  #t { width: 100%; height: 100%; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #1a1a2e;
+  }
+  #terminal {
+    width: 100%; height: 100%;
+  }
 </style>
 </head>
 <body>
-<div id="t"></div>
+<div id="terminal"></div>
 <script>
 const { ipcRenderer } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 
-let pid = null;
+let ptyId = null;
+
 const term = new Terminal({
-  fontSize: 13, fontFamily: "'SF Mono','Fira Code','Menlo',monospace",
-  theme: { background: '#1a1a2e', foreground: '#e0e0e0', cursor: '#80b0ff', selectionBackground: 'rgba(100,140,255,0.3)' },
-  cursorBlink: true, scrollback: 5000,
-  fastScrollModifier: 'alt',
-  smoothScrollDuration: 0,
+  fontSize: 13,
+  fontFamily: "'SF Mono', 'Fira Code', 'Menlo', monospace",
+  theme: {
+    background: '#1a1a2e',
+    foreground: '#e0e0e0',
+    cursor: '#80b0ff',
+    selectionBackground: 'rgba(100,140,255,0.3)',
+  },
+  cursorBlink: true,
+  scrollback: 5000,
 });
-const fa = new FitAddon();
-term.loadAddon(fa);
-term.open(document.getElementById('t'));
-term.onData(d => { if (pid !== null) ipcRenderer.send('gi', { id: pid, d }); });
 
-ipcRenderer.on('init', (_, { id }) => {
-  pid = id;
-  requestAnimationFrame(() => { fa.fit(); ipcRenderer.send('gr', { id: pid, c: term.cols, r: term.rows }); term.focus(); });
+const fitAddon = new FitAddon();
+term.loadAddon(fitAddon);
+term.open(document.getElementById('terminal'));
+
+term.onData(data => {
+  if (ptyId !== null) ipcRenderer.send('grid-terminal-input', { id: ptyId, data });
 });
-ipcRenderer.on('td', (_, { id, d }) => { if (id === pid) term.write(d); });
-ipcRenderer.on('te', (_, { id }) => { if (id === pid) term.write('\r\n[Process exited]\r\n'); });
 
-// Debounced resize
-let resizeTimer;
+ipcRenderer.on('init-terminal', (_e, { id }) => {
+  ptyId = id;
+  requestAnimationFrame(() => {
+    fitAddon.fit();
+    ipcRenderer.send('grid-terminal-resize', { id: ptyId, cols: term.cols, rows: term.rows });
+    term.focus();
+  });
+});
+
+ipcRenderer.on('terminal-data', (_e, { id, data }) => {
+  if (id === ptyId) term.write(data);
+});
+
+ipcRenderer.on('terminal-exit', (_e, { id }) => {
+  if (id === ptyId) {
+    term.write('\r\n[Process exited]\r\n');
+  }
+});
+
+// Auto-fit on resize
 const ro = new ResizeObserver(() => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => {
-    fa.fit();
-    if (pid !== null) ipcRenderer.send('gr', { id: pid, c: term.cols, r: term.rows });
-  }, 50);
+  fitAddon.fit();
+  if (ptyId !== null) {
+    ipcRenderer.send('grid-terminal-resize', { id: ptyId, cols: term.cols, rows: term.rows });
+  }
 });
-ro.observe(document.getElementById('t'));
+ro.observe(document.getElementById('terminal'));
 </script>
 </body>
 </html>

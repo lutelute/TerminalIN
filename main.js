@@ -17,8 +17,11 @@ let daemonReady = false;
 const pendingRequests = new Map();
 let nextReqId = 1;
 
+process.on('uncaughtException', (err) => { if (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED') return; });
+
 function startDaemon() {
   daemon = spawn(DAEMON_BIN, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+  daemon.stdin.on('error', () => {});
   let buffer = '';
   daemon.stdout.on('data', (chunk) => {
     buffer += chunk.toString();
@@ -52,7 +55,19 @@ function daemonRequest(cmd, extra = {}) {
 }
 
 function listWindows() { return daemonRequest('list'); }
-function batchMove(cmds) { if (!cmds.length) return Promise.resolve(); return daemonRequest('move', { windows: cmds }); }
+async function batchMove(cmds) {
+  if (!cmds.length) return;
+  const result = await daemonRequest('move', { windows: cmds });
+  if (result.moved && result.moved >= cmds.length) return;
+  // Fallback for packaged app (daemon AX permission may be denied)
+  const { execSync } = require('child_process');
+  for (const cmd of cmds) {
+    if (!cmd.windowNumber || cmd.x == null || !cmd.app) continue;
+    try {
+      execSync(`osascript -e 'tell application "${cmd.app}" to set bounds of window id ${cmd.windowNumber} to {${cmd.x}, ${cmd.y}, ${cmd.x + cmd.width}, ${cmd.y + cmd.height}}'`, { timeout: 3000 });
+    } catch {}
+  }
+}
 function raiseSpecificWindows(cmds) { if (!cmds.length) return Promise.resolve(); return daemonRequest('raise', { windows: cmds }); }
 
 // ── Helpers ──
@@ -422,6 +437,18 @@ function createWorkspace(name) {
   ws.pollTimer = setInterval(async () => {
     if (!ws.win || ws.win.isDestroyed()) return;
     const windows = await listWindows();
+    // Title fallback for packaged app
+    if (windows.length > 0 && windows.every(w => !w.title)) {
+      const { execSync } = require('child_process');
+      for (const appName of [...new Set(windows.map(w => w.app))]) {
+        try {
+          const ids = execSync(`osascript -e 'tell application "${appName}" to get id of every window'`, { timeout: 2000, encoding: 'utf8' }).trim().split(', ').map(Number);
+          const names = execSync(`osascript -e 'tell application "${appName}" to get name of every window'`, { timeout: 2000, encoding: 'utf8' }).trim().split(', ');
+          const m = new Map(); for (let i = 0; i < ids.length; i++) if (ids[i]) m.set(ids[i], names[i] || '');
+          for (const w of windows) if (w.app === appName && m.has(w.windowNumber)) w.title = m.get(w.windowNumber);
+        } catch {}
+      }
+    }
     const liveMap = new Map(windows.map(w => [w.windowNumber, w]));
     for (const [k, info] of ws.snappedExternals) {
       const live = liveMap.get(k);
