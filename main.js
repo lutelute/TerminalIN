@@ -184,6 +184,7 @@ ipcMain.handle('snap-external', async (ev, { windowNumber, pid, app: a, title, x
   const ex = isSnapped(windowNumber); if (ex && ex.id !== ws.id) return { ok: false, reason: 'snapped-elsewhere' };
   const s = nextSlot(ws); if (s < 0) return { ok: false, reason: 'no-slot' };
   ws.ext.set(windowNumber, { app: a, pid, title, wn: windowNumber, slot: s, ox: x, oy: y, ow: width, oh: height });
+  ws._lastPollHash = ''; // force UI refresh
   const b = slotBounds(ws, s);
   if (b) await batchMove([{ windowNumber, pid, ...b }]);
   return { ok: true, slot: s };
@@ -192,6 +193,7 @@ ipcMain.handle('unsnap-external', async (ev, { windowNumber }) => {
   const ws = findWs(ev.sender); if (!ws) return { ok: false };
   const info = ws.ext.get(windowNumber); if (!info) return { ok: false };
   ws.ext.delete(windowNumber);
+  ws._lastPollHash = ''; // force UI refresh
   compactSlots(ws);
   await batchMove([{ windowNumber: info.wn, pid: info.pid, x: info.ox, y: info.oy, width: info.ow, height: info.oh }]);
   await retile(ws);
@@ -237,7 +239,10 @@ function createWorkspace(name) {
   workspaces.set(wsId, ws);
 
   win.loadFile('workspace.html');
-  win.webContents.on('did-finish-load', () => win.webContents.send('workspace-info', { id: wsId, name: wsName }));
+  win.webContents.on('did-finish-load', () => {
+    ws._lastPollHash = ''; // force re-send on page load
+    win.webContents.send('workspace-info', { id: wsId, name: wsName });
+  });
   if (isDev) win.webContents.openDevTools({ mode: 'detach' });
 
   // Retile on move/resize — 16ms throttle
