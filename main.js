@@ -62,12 +62,23 @@ async function batchMove(cmds) {
   // Try daemon first
   const result = await daemonRequest('move', { windows: cmds });
   if (result.moved && result.moved >= cmds.length) return;
-  // osascript: works without AX permission (uses app's own scripting)
+  // osascript via System Events (Quartz coords, same as Electron/CGWindowList)
+  const { execSync } = require('child_process');
   for (const cmd of cmds) {
     if (!cmd.windowNumber || cmd.x == null || !cmd.app) continue;
     try {
-      const { execSync } = require('child_process');
-      execSync(`osascript -e 'tell application "${cmd.app}" to set bounds of window id ${cmd.windowNumber} to {${cmd.x}, ${cmd.y}, ${cmd.x + cmd.width}, ${cmd.y + cmd.height}}'`, { timeout: 3000 });
+      const title = (cmd.title || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      execSync(`osascript -e 'tell application "System Events" to tell process "${cmd.app}"
+repeat with w in every window
+  try
+    if name of w contains "${title.substring(0, 20)}" then
+      set position of w to {${cmd.x}, ${cmd.y}}
+      set size of w to {${cmd.width}, ${cmd.height}}
+      exit repeat
+    end if
+  end try
+end repeat
+end tell'`, { timeout: 3000 });
     } catch {}
   }
 }
