@@ -1,466 +1,288 @@
 const { app, BrowserWindow, ipcMain, screen, Menu } = require('electron');
 const path = require('path');
 const pty = require('node-pty');
-const { spawn, exec } = require('child_process');
+const { spawn } = require('child_process');
 
-// ── Workspace registry ──
 const workspaces = new Map();
 let nextWsId = 1;
 let nextPtyId = 1;
+const isDev = process.argv.includes('--dev');
 
-// ── Swift daemon (list + move only) ──
-const DAEMON_BIN = app.isPackaged
-  ? path.join(process.resourcesPath, 'daemon')
-  : path.join(__dirname, 'daemon');
+// ── Daemon ──
+const DAEMON_BIN = app.isPackaged ? path.join(process.resourcesPath, 'daemon') : path.join(__dirname, 'daemon');
 let daemon = null;
 let daemonReady = false;
-const pendingRequests = new Map();
+const pendingReqs = new Map();
 let nextReqId = 1;
 
 function startDaemon() {
   daemon = spawn(DAEMON_BIN, [], { stdio: ['pipe', 'pipe', 'pipe'] });
-  let buffer = '';
+  let buf = '';
   daemon.stdout.on('data', (chunk) => {
-    buffer += chunk.toString();
-    let idx;
-    while ((idx = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, idx).trim();
-      buffer = buffer.slice(idx + 1);
+    buf += chunk.toString();
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
       if (!line) continue;
       try {
         const msg = JSON.parse(line);
         if (msg.ready) { daemonReady = true; continue; }
-        const pending = pendingRequests.get(msg.id);
-        if (pending) { clearTimeout(pending.timer); pendingRequests.delete(msg.id); pending.resolve(msg.result); }
+        const p = pendingReqs.get(msg.id);
+        if (p) { clearTimeout(p.t); pendingReqs.delete(msg.id); p.r(msg.result); }
       } catch {}
     }
   });
-  daemon.stderr.on('data', (d) => process.stderr.write('[daemon] ' + d));
+  if (isDev) daemon.stderr.on('data', (d) => process.stderr.write('[d] ' + d));
   daemon.on('close', () => { daemonReady = false; if (!app.isQuitting) setTimeout(startDaemon, 500); });
   daemon.on('error', () => {});
 }
 
-function daemonRequest(cmd, extra = {}) {
-  return new Promise((resolve) => {
-    if (!daemon || !daemonReady) return resolve(cmd === 'list' ? [] : {});
+function daemonReq(cmd, extra) {
+  return new Promise((r) => {
+    if (!daemon || !daemonReady) return r(cmd === 'list' ? [] : {});
     const id = String(nextReqId++);
-    const timer = setTimeout(() => { pendingRequests.delete(id); resolve(cmd === 'list' ? [] : {}); }, 3000);
-    pendingRequests.set(id, { resolve, timer });
+    const t = setTimeout(() => { pendingReqs.delete(id); r(cmd === 'list' ? [] : {}); }, 2000);
+    pendingReqs.set(id, { r, t });
     try { daemon.stdin.write(JSON.stringify({ id, cmd, ...extra }) + '\n'); }
-    catch { pendingRequests.delete(id); clearTimeout(timer); resolve(cmd === 'list' ? [] : {}); }
+    catch { pendingReqs.delete(id); clearTimeout(t); r(cmd === 'list' ? [] : {}); }
   });
 }
 
-function listWindows() { return daemonRequest('list'); }
-function batchMove(cmds) { if (!cmds.length) return Promise.resolve(); return daemonRequest('move', { windows: cmds }); }
-function raiseSpecificWindows(cmds) { if (!cmds.length) return Promise.resolve(); return daemonRequest('raise', { windows: cmds }); }
+const listWindows = () => daemonReq('list');
+const batchMove = (w) => w.length ? daemonReq('move', { windows: w }) : Promise.resolve();
+const raiseWindows = (w) => w.length ? daemonReq('raise', { windows: w }) : Promise.resolve();
 
 // ── Helpers ──
-function findWorkspace(webContents) {
+function findWs(wc) { for (const [, ws] of workspaces) if (ws.win?.webContents === wc) return ws; return null; }
+function findWsByWin(win) {
   for (const [, ws] of workspaces) {
-    if (ws.win && !ws.win.isDestroyed() && ws.win.webContents === webContents) return ws;
+    if (ws.win === win) return ws;
+    for (const [, gw] of ws.gridWins) if (gw.win === win) return ws;
   }
   return null;
 }
-
-function isExternalSnapped(windowNumber) {
-  for (const [, ws] of workspaces) {
-    if (ws.snappedExternals.has(windowNumber)) return ws;
-  }
-  return null;
-}
+function isSnapped(wn) { for (const [, ws] of workspaces) if (ws.ext.has(wn)) return ws; return null; }
 
 // ── Grid geometry ──
-function getGridArea(ws) {
+function gridArea(ws) {
   if (!ws.win || ws.win.isDestroyed()) return null;
   const b = ws.win.getBounds();
-  return { x: b.x + b.width + 4, y: b.y, width: 900, height: b.height };
+  return { x: b.x + b.width + 4, y: b.y, w: 900, h: b.height };
 }
 
-function getSlotBounds(ws, slot) {
-  const area = getGridArea(ws);
-  if (!area) return null;
-  const cols = ws.gridCols, rows = ws.gridRows;
+function slotBounds(ws, slot) {
+  const a = gridArea(ws);
+  if (!a) return null;
+  const { cols, rows } = ws.grid;
   const gap = 4;
-  const cw = Math.floor((area.width - gap * (cols - 1)) / cols);
-  const ch = Math.floor((area.height - gap * (rows - 1)) / rows);
-  const col = slot % cols, row = Math.floor(slot / cols);
-  return {
-    x: area.x + col * (cw + gap),
-    y: area.y + row * (ch + gap),
-    width: cw, height: ch,
-  };
+  const cw = Math.floor((a.w - gap * (cols - 1)) / cols);
+  const ch = Math.floor((a.h - gap * (rows - 1)) / rows);
+  return { x: a.x + (slot % cols) * (cw + gap), y: a.y + Math.floor(slot / cols) * (ch + gap), width: cw, height: ch };
 }
 
-// ── Raise snapped externals via osascript ──
-let lastRaiseTime = 0;
-
-function raiseSnappedExternals(ws) {
-  if (!ws || ws.snappedExternals.size === 0) return;
+// ── Raise ──
+let lastRaise = 0;
+function raiseExternals(ws) {
+  if (!ws || ws.ext.size === 0) return;
   const now = Date.now();
-  if (now - lastRaiseTime < 1000) return;
-  lastRaiseTime = now;
-
-  // Group snapped windows by app
-  const byApp = new Map();
-  for (const [, info] of ws.snappedExternals) {
-    if (!byApp.has(info.app)) byApp.set(info.app, []);
-    byApp.get(info.app).push(info);
-  }
-
-  // Build a single AppleScript that:
-  // 1. Activates each terminal app
-  // 2. Uses "set index" to put ONLY snapped windows at front (index 1, 2, ...)
-  const scriptParts = [];
-  for (const [appName, windows] of byApp) {
-    // Escape titles for AppleScript
-    const setIndexLines = windows.map((w, i) => {
-      const escaped = w.title.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      return `      try\n        set index of window "${escaped}" to ${i + 1}\n      end try`;
-    }).join('\n');
-
-    scriptParts.push(
-      `tell application "${appName}"\n` +
-      `  activate\n` +
-      `  delay 0.15\n` +
-      setIndexLines + '\n' +
-      `end tell`
-    );
-  }
-
-  const script = scriptParts.join('\n');
-  exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`);
+  if (now - lastRaise < 500) return;
+  lastRaise = now;
+  raiseWindows([...ws.ext.values()].map(i => ({ windowNumber: i.wn, pid: i.pid })));
 }
 
-// ── Retile: reposition all grid items (embedded + external) ──
-async function retileAll(ws) {
-  const moveCmds = [];
-
-  // Reposition embedded grid windows
-  for (const [slot, gw] of ws.gridWindows) {
-    if (gw.win && !gw.win.isDestroyed()) {
-      const b = getSlotBounds(ws, slot);
-      if (b) gw.win.setBounds(b);
-    }
+// ── Retile with RAF-style throttle ──
+async function retile(ws) {
+  for (const [slot, gw] of ws.gridWins) {
+    if (gw.win && !gw.win.isDestroyed()) { const b = slotBounds(ws, slot); if (b) gw.win.setBounds(b); }
   }
-
-  // Reposition snapped external windows
-  for (const [, info] of ws.snappedExternals) {
-    const b = getSlotBounds(ws, info.slot);
-    if (b) moveCmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
-  }
-
-  if (moveCmds.length) await batchMove(moveCmds);
+  const mv = [];
+  for (const [, info] of ws.ext) { const b = slotBounds(ws, info.slot); if (b) mv.push({ windowNumber: info.wn, pid: info.pid, ...b }); }
+  if (mv.length) await batchMove(mv);
 }
 
-function nextFreeSlot(ws) {
+function nextSlot(ws) {
   const used = new Set();
-  for (const [slot] of ws.gridWindows) used.add(slot);
-  for (const [, info] of ws.snappedExternals) used.add(info.slot);
-  const total = ws.gridCols * ws.gridRows;
+  for (const [s] of ws.gridWins) used.add(s);
+  for (const [, i] of ws.ext) used.add(i.slot);
+  const total = ws.grid.cols * ws.grid.rows;
   for (let i = 0; i < total; i++) if (!used.has(i)) return i;
   return -1;
 }
 
 function compactSlots(ws) {
   const all = [];
-  for (const [slot, gw] of ws.gridWindows) all.push({ type: 'grid', slot, ref: gw });
-  for (const [wn, info] of ws.snappedExternals) all.push({ type: 'ext', slot: info.slot, ref: info, wn });
-  all.sort((a, b) => a.slot - b.slot);
-  // Re-assign slots 0, 1, 2, ...
+  for (const [s, gw] of ws.gridWins) all.push({ t: 'g', s, r: gw });
+  for (const [, info] of ws.ext) all.push({ t: 'e', s: info.slot, r: info });
+  all.sort((a, b) => a.s - b.s);
   for (let i = 0; i < all.length; i++) {
-    const item = all[i];
-    if (item.type === 'grid') {
-      ws.gridWindows.delete(item.slot);
-      item.ref.slot = i;
-      ws.gridWindows.set(i, item.ref);
-    } else {
-      item.ref.slot = i;
-    }
+    if (all[i].t === 'g') { ws.gridWins.delete(all[i].s); all[i].r.slot = i; ws.gridWins.set(i, all[i].r); }
+    else all[i].r.slot = i;
   }
 }
 
-// ── Create an embedded grid terminal (BrowserWindow + xterm.js) ──
-function createGridTerminal(ws, slot) {
-  const b = getSlotBounds(ws, slot);
+// ── Grid terminal BrowserWindow ──
+function createGridTerm(ws, slot) {
+  const b = slotBounds(ws, slot);
   if (!b) return null;
-
-  const gridWin = new BrowserWindow({
-    ...b,
-    frame: false,
-    acceptFirstMouse: true,
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-      sandbox: false,
-    },
+  const gw = new BrowserWindow({
+    ...b, frame: false, acceptFirstMouse: true,
+    webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
   });
-
-  const ptyId = nextPtyId++;
+  const pid = nextPtyId++;
   const p = pty.spawn(process.env.SHELL || '/bin/zsh', [], {
-    name: 'xterm-256color',
-    cols: 80, rows: 24,
-    cwd: process.env.HOME || '/',
+    name: 'xterm-256color', cols: 80, rows: 24, cwd: process.env.HOME || '/',
     env: { ...process.env, TERM: 'xterm-256color' },
   });
-
-  p.onData(data => {
-    if (!gridWin.isDestroyed()) gridWin.webContents.send('terminal-data', { id: ptyId, data });
-  });
-  p.onExit(() => {
-    if (!gridWin.isDestroyed()) gridWin.webContents.send('terminal-exit', { id: ptyId });
-  });
-
-  const gw = { win: gridWin, pty: p, ptyId, slot };
-  ws.gridWindows.set(slot, gw);
-
-  gridWin.loadFile('grid-terminal.html');
-  gridWin.webContents.on('did-finish-load', () => {
-    gridWin.webContents.send('init-terminal', { id: ptyId });
-  });
-
-  gridWin.on('closed', () => {
-    try { p.kill(); } catch {}
-    ws.gridWindows.delete(slot);
-  });
-
-  return gw;
+  p.onData(d => { if (!gw.isDestroyed()) gw.webContents.send('td', { id: pid, d }); });
+  p.onExit(() => { if (!gw.isDestroyed()) gw.webContents.send('te', { id: pid }); });
+  const obj = { win: gw, pty: p, pid, slot };
+  ws.gridWins.set(slot, obj);
+  gw.loadFile('grid-terminal.html');
+  gw.webContents.on('did-finish-load', () => gw.webContents.send('init', { id: pid }));
+  gw.on('closed', () => { try { p.kill(); } catch {} ws.gridWins.delete(slot); });
+  return obj;
 }
 
-// ── IPC for grid terminal windows ──
-ipcMain.on('grid-terminal-input', (event, { id, data }) => {
-  for (const [, ws] of workspaces) {
-    for (const [, gw] of ws.gridWindows) {
-      if (gw.ptyId === id) { gw.pty.write(data); return; }
-    }
-  }
-});
+// ── IPC: grid terminal I/O ──
+ipcMain.on('gi', (_, { id, d }) => { for (const [, ws] of workspaces) for (const [, gw] of ws.gridWins) if (gw.pid === id) { gw.pty.write(d); return; } });
+ipcMain.on('gr', (_, { id, c, r }) => { for (const [, ws] of workspaces) for (const [, gw] of ws.gridWins) if (gw.pid === id) { try { gw.pty.resize(c, r); } catch {} return; } });
 
-ipcMain.on('grid-terminal-resize', (event, { id, cols, rows }) => {
-  for (const [, ws] of workspaces) {
-    for (const [, gw] of ws.gridWindows) {
-      if (gw.ptyId === id) { try { gw.pty.resize(cols, rows); } catch {} return; }
-    }
-  }
-});
-
-// ── IPC for sidebar embedded terminals ──
-ipcMain.handle('create-terminal', (event, opts = {}) => {
-  const ws = findWorkspace(event.sender);
-  if (!ws) return { id: -1 };
+// ── IPC: sidebar terminal I/O ──
+ipcMain.handle('create-terminal', (ev, opts = {}) => {
+  const ws = findWs(ev.sender); if (!ws) return { id: -1 };
   const id = nextPtyId++;
   const p = pty.spawn(process.env.SHELL || '/bin/zsh', [], {
-    name: 'xterm-256color',
-    cols: opts.cols || 80, rows: opts.rows || 24,
-    cwd: opts.cwd || process.env.HOME || '/',
-    env: { ...process.env, TERM: 'xterm-256color' },
+    name: 'xterm-256color', cols: opts.cols || 80, rows: opts.rows || 24,
+    cwd: opts.cwd || process.env.HOME || '/', env: { ...process.env, TERM: 'xterm-256color' },
   });
-  ws.sidebarPtys.set(id, p);
-  p.onData(data => { if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('terminal-data', { id, data }); });
-  p.onExit(() => { ws.sidebarPtys.delete(id); if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('terminal-exit', { id }); });
+  ws.sPtys.set(id, p);
+  p.onData(d => { if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('terminal-data', { id, data: d }); });
+  p.onExit(() => { ws.sPtys.delete(id); if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('terminal-exit', { id }); });
   return { id };
 });
+ipcMain.on('terminal-input', (ev, { id, data }) => { const ws = findWs(ev.sender); if (ws) { const p = ws.sPtys.get(id); if (p) p.write(data); } });
+ipcMain.on('terminal-resize', (ev, { id, cols, rows }) => { const ws = findWs(ev.sender); if (ws) { const p = ws.sPtys.get(id); if (p) try { p.resize(cols, rows); } catch {} } });
+ipcMain.handle('kill-terminal', (ev, { id }) => { const ws = findWs(ev.sender); if (ws) { const p = ws.sPtys.get(id); if (p) { try { p.kill(); } catch {} ws.sPtys.delete(id); } } });
 
-ipcMain.on('terminal-input', (event, { id, data }) => {
-  const ws = findWorkspace(event.sender);
-  if (!ws) return;
-  const p = ws.sidebarPtys.get(id);
-  if (p) p.write(data);
+// ── IPC: grid management ──
+ipcMain.handle('add-grid-terminal', (ev) => {
+  const ws = findWs(ev.sender); if (!ws) return { ok: false };
+  const s = nextSlot(ws); if (s < 0) return { ok: false, reason: 'grid-full' };
+  createGridTerm(ws, s); return { ok: true, slot: s };
+});
+ipcMain.handle('remove-grid-terminal', (ev, { slot }) => {
+  const ws = findWs(ev.sender); if (!ws) return { ok: false };
+  const gw = ws.gridWins.get(slot);
+  if (gw?.win && !gw.win.isDestroyed()) gw.win.close();
+  compactSlots(ws); retile(ws); return { ok: true };
 });
 
-ipcMain.on('terminal-resize', (event, { id, cols, rows }) => {
-  const ws = findWorkspace(event.sender);
-  if (!ws) return;
-  const p = ws.sidebarPtys.get(id);
-  if (p) try { p.resize(cols, rows); } catch {}
+// ── IPC: snap/unsnap ──
+ipcMain.handle('snap-external', async (ev, { windowNumber, pid, app: a, title, x, y, width, height }) => {
+  const ws = findWs(ev.sender); if (!ws) return { ok: false };
+  const ex = isSnapped(windowNumber); if (ex && ex.id !== ws.id) return { ok: false, reason: 'snapped-elsewhere' };
+  const s = nextSlot(ws); if (s < 0) return { ok: false, reason: 'no-slot' };
+  ws.ext.set(windowNumber, { app: a, pid, title, wn: windowNumber, slot: s, ox: x, oy: y, ow: width, oh: height });
+  const b = slotBounds(ws, s);
+  if (b) await batchMove([{ windowNumber, pid, ...b }]);
+  return { ok: true, slot: s };
 });
-
-ipcMain.handle('kill-terminal', (event, { id }) => {
-  const ws = findWorkspace(event.sender);
-  if (!ws) return;
-  const p = ws.sidebarPtys.get(id);
-  if (p) { try { p.kill(); } catch {} ws.sidebarPtys.delete(id); }
-});
-
-// ── IPC: add grid terminal from sidebar ──
-ipcMain.handle('add-grid-terminal', (event) => {
-  const ws = findWorkspace(event.sender);
-  if (!ws) return { ok: false };
-  const slot = nextFreeSlot(ws);
-  if (slot < 0) return { ok: false, reason: 'grid-full' };
-  createGridTerminal(ws, slot);
-  return { ok: true, slot };
-});
-
-ipcMain.handle('remove-grid-terminal', (event, { slot }) => {
-  const ws = findWorkspace(event.sender);
-  if (!ws) return { ok: false };
-  const gw = ws.gridWindows.get(slot);
-  if (gw) {
-    if (gw.win && !gw.win.isDestroyed()) gw.win.close();
-  }
+ipcMain.handle('unsnap-external', async (ev, { windowNumber }) => {
+  const ws = findWs(ev.sender); if (!ws) return { ok: false };
+  const info = ws.ext.get(windowNumber); if (!info) return { ok: false };
+  ws.ext.delete(windowNumber);
   compactSlots(ws);
-  retileAll(ws);
+  await batchMove([{ windowNumber: info.wn, pid: info.pid, x: info.ox, y: info.oy, width: info.ow, height: info.oh }]);
+  await retile(ws);
   return { ok: true };
 });
 
-// ── IPC: snap/unsnap external ──
-ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName, title, x, y, width, height }) => {
-  const ws = findWorkspace(event.sender);
-  if (!ws) return { ok: false };
-  const existing = isExternalSnapped(windowNumber);
-  if (existing && existing.id !== ws.id) return { ok: false, reason: 'snapped-elsewhere' };
-  const slot = nextFreeSlot(ws);
-  if (slot < 0) return { ok: false, reason: 'no-slot' };
-  ws.snappedExternals.set(windowNumber, { app: appName, pid, title, windowNumber, slot, origX: x, origY: y, origW: width, origH: height });
-  const pos = getSlotBounds(ws, slot);
-  if (pos) await batchMove([{ windowNumber, pid, app: appName, title, ...pos }]);
-  return { ok: true, slot };
-});
-
-ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
-  const ws = findWorkspace(event.sender);
-  if (!ws) return { ok: false };
-  const info = ws.snappedExternals.get(windowNumber);
-  if (!info) return { ok: false };
-  ws.snappedExternals.delete(windowNumber);
-  compactSlots(ws);
-  await batchMove([{ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
-    x: info.origX, y: info.origY, width: info.origW, height: info.origH }]);
-  await retileAll(ws);
-  return { ok: true };
-});
-
-ipcMain.handle('get-snapped-externals', (event) => {
-  const ws = findWorkspace(event.sender);
-  if (!ws) return {};
-  return Object.fromEntries([...ws.snappedExternals.entries()].map(([k, v]) => [k, v.slot]));
-});
-
-// ── IPC: grid config ──
-ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
-  const ws = findWorkspace(event.sender);
-  if (!ws) return;
-  ws.gridCols = cols;
-  ws.gridRows = rows;
-  retileAll(ws);
-});
-
-ipcMain.on('rename-workspace', (event, { name }) => {
-  const ws = findWorkspace(event.sender);
-  if (ws) ws.name = name;
-});
-
-ipcMain.on('toggle-collapse', (event, { collapsed }) => {
-  const ws = findWorkspace(event.sender);
-  if (!ws || !ws.win || ws.win.isDestroyed()) return;
+// ── IPC: config ──
+ipcMain.handle('set-grid-size', (ev, { cols, rows }) => { const ws = findWs(ev.sender); if (ws) { ws.grid = { cols, rows }; retile(ws); } });
+ipcMain.on('rename-workspace', (ev, { name }) => { const ws = findWs(ev.sender); if (ws) ws.name = name; });
+ipcMain.on('toggle-collapse', (ev, { collapsed }) => {
+  const ws = findWs(ev.sender); if (!ws?.win || ws.win.isDestroyed()) return;
   const b = ws.win.getBounds();
-  if (collapsed) {
-    ws._expandedWidth = b.width;
-    ws.win.setMinimumSize(48, 300);
-    ws.win.setBounds({ x: b.x, y: b.y, width: 48, height: b.height });
-  } else {
-    const w = ws._expandedWidth || 320;
-    ws.win.setMinimumSize(200, 300);
-    ws.win.setBounds({ x: b.x, y: b.y, width: w, height: b.height });
-  }
-  setTimeout(() => retileAll(ws), 50);
+  if (collapsed) { ws._ew = b.width; ws.win.setMinimumSize(48, 300); ws.win.setBounds({ ...b, width: 48 }); }
+  else { ws.win.setMinimumSize(200, 300); ws.win.setBounds({ ...b, width: ws._ew || 320 }); }
+  setTimeout(() => retile(ws), 50);
 });
+ipcMain.on('raise-all', (ev) => { const ws = findWs(ev.sender); if (ws) raiseExternals(ws); });
 
-// ── Create workspace ──
+// ── Workspace ──
 function createWorkspace(name) {
   const wsId = nextWsId++;
-  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
-  const ww = 300, wh = 650;
-  const offset = (wsId - 1) * 30;
+  const { height: sh } = screen.getPrimaryDisplay().workAreaSize;
+  const off = (wsId - 1) * 30;
 
   const win = new BrowserWindow({
-    width: ww, height: wh,
-    minWidth: 200, maxWidth: 500, minHeight: 300,
-    x: 50 + offset,
-    y: Math.round((sh - wh) / 2) + offset,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 12, y: 10 },
-    vibrancy: 'sidebar',
-    visualEffectState: 'active',
-    alwaysOnTop: true,
-    acceptFirstMouse: true,
+    width: 300, height: 650, minWidth: 200, maxWidth: 500, minHeight: 300,
+    x: 50 + off, y: Math.round((sh - 650) / 2) + off,
+    titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 12, y: 10 },
+    vibrancy: 'sidebar', visualEffectState: 'active',
+    alwaysOnTop: true, acceptFirstMouse: true,
     webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
   });
 
   const wsName = name || `Workspace ${wsId}`;
   const ws = {
     id: wsId, win, name: wsName,
-    snappedExternals: new Map(),
-    gridWindows: new Map(),    // slot -> { win, pty, ptyId }
-    sidebarPtys: new Map(),    // ptyId -> pty (for sidebar embedded terms)
-    pollTimer: null,
-    moveThrottle: null,
-    gridCols: 2, gridRows: 2, // default 2x2
+    ext: new Map(),        // windowNumber -> { app, pid, title, wn, slot, ox, oy, ow, oh }
+    gridWins: new Map(),   // slot -> { win, pty, pid, slot }
+    sPtys: new Map(),      // ptyId -> pty
+    pollTimer: null, _mt: null, _lastPollHash: '',
+    grid: { cols: 2, rows: 2 },
   };
   workspaces.set(wsId, ws);
 
   win.loadFile('workspace.html');
-  win.webContents.on('did-finish-load', () => {
-    win.webContents.send('workspace-info', { id: wsId, name: wsName });
-  });
+  win.webContents.on('did-finish-load', () => win.webContents.send('workspace-info', { id: wsId, name: wsName }));
+  if (isDev) win.webContents.openDevTools({ mode: 'detach' });
 
-  if (process.argv.includes('--dev')) win.webContents.openDevTools({ mode: 'detach' });
+  // Retile on move/resize — 16ms throttle
+  const schedRetile = () => { if (ws._mt) return; ws._mt = setTimeout(async () => { ws._mt = null; await retile(ws); }, 16); };
+  win.on('move', schedRetile);
+  win.on('resize', schedRetile);
 
-  // Move grid items when sidebar moves/resizes
-  const scheduleRetile = () => {
-    if (ws.moveThrottle) return;
-    ws.moveThrottle = setTimeout(async () => {
-      ws.moveThrottle = null;
-      await retileAll(ws);
-    }, 16);
-  };
-  win.on('move', scheduleRetile);
-  win.on('resize', scheduleRetile);
-
-  // Poll external windows
-  ws.pollTimer = setInterval(async () => {
+  // Adaptive polling with hash-based skip
+  const poll = async () => {
     if (!ws.win || ws.win.isDestroyed()) return;
     const windows = await listWindows();
+    // Update ext info
     const liveMap = new Map(windows.map(w => [w.windowNumber, w]));
-    for (const [k, info] of ws.snappedExternals) {
+    for (const [k, info] of ws.ext) {
       const live = liveMap.get(k);
-      if (!live) { ws.snappedExternals.delete(k); continue; }
-      // Keep title fresh for AppleScript set index
+      if (!live) { ws.ext.delete(k); continue; }
       info.title = live.title;
       info.pid = live.pid;
     }
-    const snappedByOther = {};
-    for (const [, otherWs] of workspaces) {
-      if (otherWs.id === ws.id) continue;
-      for (const [wn] of otherWs.snappedExternals) snappedByOther[wn] = otherWs.name;
-    }
-    // Include grid window info
+    // Build payload hash — skip send if unchanged
+    const snappedOther = {};
+    for (const [, ows] of workspaces) { if (ows.id === ws.id) continue; for (const [wn] of ows.ext) snappedOther[wn] = ows.name; }
     const gridSlots = {};
-    for (const [slot, gw] of ws.gridWindows) gridSlots[slot] = { ptyId: gw.ptyId };
-    ws.win.webContents.send('external-windows', windows, snappedByOther, gridSlots);
-  }, 800);
+    for (const [s, gw] of ws.gridWins) gridSlots[s] = { ptyId: gw.pid };
+    const hash = JSON.stringify([windows.map(w => w.windowNumber + ':' + w.title), snappedOther, gridSlots]);
+    if (hash === ws._lastPollHash) return;
+    ws._lastPollHash = hash;
+    ws.win.webContents.send('external-windows', windows, snappedOther, gridSlots);
+  };
+
+  const setPoll = (ms) => { if (ws.pollTimer) clearInterval(ws.pollTimer); ws.pollTimer = setInterval(poll, ms); };
+  setPoll(1000);
+  win.on('focus', () => setPoll(1000));
+  win.on('blur', () => setPoll(3000));
 
   win.on('closed', async () => {
     if (ws.pollTimer) clearInterval(ws.pollTimer);
-    if (ws.moveThrottle) clearTimeout(ws.moveThrottle);
-    // Close grid windows
-    for (const [, gw] of ws.gridWindows) {
-      try { gw.pty.kill(); } catch {}
-      if (gw.win && !gw.win.isDestroyed()) gw.win.close();
-    }
-    ws.gridWindows.clear();
-    // Release externals
-    const cmds = [];
-    for (const [, info] of ws.snappedExternals) {
-      cmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
-        x: info.origX, y: info.origY, width: info.origW, height: info.origH });
-    }
-    if (cmds.length) await batchMove(cmds);
-    ws.snappedExternals.clear();
-    // Kill sidebar PTYs
-    for (const [, p] of ws.sidebarPtys) { try { p.kill(); } catch {} }
-    ws.sidebarPtys.clear();
+    if (ws._mt) clearTimeout(ws._mt);
+    for (const [, gw] of ws.gridWins) { try { gw.pty.kill(); } catch {} if (gw.win && !gw.win.isDestroyed()) gw.win.close(); }
+    ws.gridWins.clear();
+    const mv = [...ws.ext.values()].map(i => ({ windowNumber: i.wn, pid: i.pid, x: i.ox, y: i.oy, width: i.ow, height: i.oh }));
+    if (mv.length) await batchMove(mv);
+    ws.ext.clear();
+    for (const [, p] of ws.sPtys) { try { p.kill(); } catch {} }
+    ws.sPtys.clear();
     ws.win = null;
     workspaces.delete(wsId);
   });
@@ -468,68 +290,31 @@ function createWorkspace(name) {
   return ws;
 }
 
-// ── RAISE: on workspace focus + explicit button ──
-app.on('browser-window-focus', (_event, focusedWin) => {
-  let ws = null;
-  for (const [, w] of workspaces) {
-    if (w.win === focusedWin) { ws = w; break; }
-    for (const [, gw] of w.gridWindows) {
-      if (gw.win === focusedWin) { ws = w; break; }
-    }
-    if (ws) break;
-  }
-  if (ws) raiseSnappedExternals(ws);
-});
-
-ipcMain.on('raise-all', (event) => {
-  const ws = findWorkspace(event.sender);
-  if (ws) raiseSnappedExternals(ws);
-});
+// ── Raise on focus (no loop: no re-activate) ──
+app.on('browser-window-focus', (_, win) => { const ws = findWsByWin(win); if (ws) raiseExternals(ws); });
 
 // ── App ──
 app.isQuitting = false;
-
 app.whenReady().then(() => {
   startDaemon();
-
-  const template = [
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: app.name, submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] },
     { label: 'File', submenu: [
       { label: 'New Workspace', accelerator: 'CmdOrCtrl+N', click: () => createWorkspace() },
       { type: 'separator' },
-      { label: 'Close Workspace', accelerator: 'CmdOrCtrl+Shift+W', click: () => {
-        const win = BrowserWindow.getFocusedWindow();
-        if (win) win.close();
-      }},
+      { label: 'Close Workspace', accelerator: 'CmdOrCtrl+Shift+W', click: () => BrowserWindow.getFocusedWindow()?.close() },
     ]},
     { label: 'Shell', submenu: [
-      { label: 'New Grid Terminal', accelerator: 'CmdOrCtrl+T', click: () => {
-        const win = BrowserWindow.getFocusedWindow();
-        if (win) win.webContents.send('new-terminal');
-      }},
-      { label: 'Close Terminal', accelerator: 'CmdOrCtrl+W', click: () => {
-        const win = BrowserWindow.getFocusedWindow();
-        if (win) win.webContents.send('close-current');
-      }},
+      { label: 'New Grid Terminal', accelerator: 'CmdOrCtrl+T', click: () => BrowserWindow.getFocusedWindow()?.webContents.send('new-terminal') },
+      { label: 'Close Terminal', accelerator: 'CmdOrCtrl+W', click: () => BrowserWindow.getFocusedWindow()?.webContents.send('close-current') },
     ]},
     { label: 'Edit', submenu: [{ role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     { label: 'View', submenu: [
-      { label: 'Toggle Sidebar Compact', accelerator: 'CmdOrCtrl+B', click: () => {
-        const win = BrowserWindow.getFocusedWindow();
-        if (win) win.webContents.send('toggle-compact');
-      }},
-      { type: 'separator' },
-      { role: 'toggleDevTools' },
-      { role: 'togglefullscreen' },
+      { label: 'Toggle Compact', accelerator: 'CmdOrCtrl+B', click: () => BrowserWindow.getFocusedWindow()?.webContents.send('toggle-compact') },
+      { type: 'separator' }, { role: 'toggleDevTools' }, { role: 'togglefullscreen' },
     ]},
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  ]));
   createWorkspace();
 });
-
-app.on('before-quit', () => {
-  app.isQuitting = true;
-  if (daemon) { try { daemon.kill(); } catch {} daemon = null; }
-});
-
+app.on('before-quit', () => { app.isQuitting = true; if (daemon) { try { daemon.kill(); } catch {} daemon = null; } });
 app.on('window-all-closed', () => app.quit());

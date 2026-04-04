@@ -7,180 +7,120 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
-    width: 100%; height: 100%;
-    overflow: hidden;
+    width: 100%; height: 100%; overflow: hidden;
     font-family: -apple-system, 'SF Pro Text', sans-serif;
-    color: #333;
-    display: flex; flex-direction: column;
-    background: transparent;
+    color: #333; display: flex; flex-direction: column; background: transparent;
   }
 
   #titlebar {
-    height: 38px;
-    -webkit-app-region: drag;
-    display: flex; align-items: center;
-    padding: 0 10px 0 72px;
-    flex-shrink: 0;
-    border-bottom: 1px solid rgba(0,0,0,0.06);
+    height: 38px; -webkit-app-region: drag;
+    display: flex; align-items: center; padding: 0 10px 0 72px;
+    flex-shrink: 0; border-bottom: 1px solid rgba(0,0,0,0.06);
   }
-  #title {
-    font-size: 13px; font-weight: 600; color: rgba(60,60,90,0.5);
-    cursor: default; user-select: none;
-    -webkit-app-region: no-drag;
-  }
+  #title { font-size: 13px; font-weight: 600; color: rgba(60,60,90,0.5); cursor: default; user-select: none; -webkit-app-region: no-drag; }
   #title-input {
     font-size: 13px; font-weight: 600; color: rgba(60,60,90,0.7);
     background: rgba(0,0,0,0.04); border: 1px solid rgba(0,0,0,0.1);
-    border-radius: 4px; padding: 1px 6px; outline: none;
-    font-family: inherit;
-    -webkit-app-region: no-drag;
-    display: none;
+    border-radius: 4px; padding: 1px 6px; outline: none; font-family: inherit;
+    -webkit-app-region: no-drag; display: none;
   }
-
-  #collapse-btn {
+  .tb-btn {
     width: 22px; height: 22px; border-radius: 5px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 14px; font-weight: 600;
-    color: rgba(60,60,90,0.3); cursor: pointer;
-    -webkit-app-region: no-drag;
-    transition: background 0.15s, color 0.15s;
-    flex-shrink: 0;
+    cursor: pointer; -webkit-app-region: no-drag;
+    transition: background 0.12s, color 0.12s; flex-shrink: 0;
   }
+  #raise-btn { font-size: 13px; color: rgba(50,130,220,0.4); margin-right: 4px; }
+  #raise-btn:hover { background: rgba(50,130,220,0.1); color: rgba(50,130,220,0.7); }
+  #collapse-btn { font-size: 14px; font-weight: 600; color: rgba(60,60,90,0.3); }
   #collapse-btn:hover { background: rgba(0,0,0,0.06); color: rgba(60,60,90,0.5); }
 
   body.collapsed #content, body.collapsed #status { display: none; }
-  body.collapsed #titlebar {
-    flex-direction: column; height: 100%; padding: 42px 0 8px; align-items: center; gap: 6px;
-  }
+  body.collapsed #titlebar { flex-direction: column; height: 100%; padding: 42px 0 8px; align-items: center; gap: 6px; }
   body.collapsed #title { writing-mode: vertical-rl; font-size: 10px; letter-spacing: 1px; flex: 1; }
   body.collapsed #title-input { display: none !important; }
   body.collapsed #collapse-btn { transform: rotate(180deg); }
 
-  #content { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+  #content { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 3px; }
   #content::-webkit-scrollbar { width: 4px; }
   #content::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 2px; }
 
-  .section-title {
-    font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px;
-    color: rgba(60,60,90,0.35); padding: 6px 0 2px;
-    display: flex; align-items: center; gap: 6px;
-  }
-
-  /* Grid size selector */
-  .grid-selector { display: flex; gap: 2px; margin-left: auto; }
+  .sec { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: rgba(60,60,90,0.35); padding: 6px 0 2px; display: flex; align-items: center; gap: 6px; }
+  .grid-sel { display: flex; gap: 2px; margin-left: auto; }
   .grid-opt {
     font-size: 8px; padding: 1px 5px; border-radius: 3px; cursor: pointer;
     border: 1px solid rgba(0,0,0,0.08); color: rgba(60,60,90,0.4); background: transparent;
+    transition: all 0.12s;
   }
   .grid-opt:hover { background: rgba(0,0,0,0.04); }
   .grid-opt.active { background: rgba(50,130,220,0.1); color: rgba(50,130,220,0.7); border-color: rgba(50,130,220,0.2); }
 
-  /* Embedded terminal card */
-  .term-card {
-    background: rgba(0,0,0,0.03); border: 1px solid rgba(0,0,0,0.06);
-    border-radius: 8px; overflow: hidden;
+  .item {
+    display: flex; align-items: center; gap: 4px; padding: 4px 6px;
+    background: rgba(0,0,0,0.02); border: 1px solid rgba(0,0,0,0.05);
+    border-radius: 6px; transition: background 0.12s, border-color 0.12s;
   }
-  .term-card .card-header {
-    display: flex; align-items: center; gap: 4px; padding: 4px 6px; cursor: pointer;
+  .item:hover { background: rgba(0,0,0,0.04); }
+  .item-title { flex: 1; font-size: 10px; color: rgba(40,40,60,0.6); font-family: 'SF Mono', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .badge { font-size: 8px; padding: 1px 5px; border-radius: 3px; }
+  .b-grid { background: rgba(130,80,220,0.1); color: rgba(130,80,220,0.7); }
+  .b-ext { background: rgba(50,130,220,0.1); color: rgba(50,130,220,0.7); }
+  .b-pty { background: rgba(60,180,120,0.1); color: rgba(60,160,120,0.7); }
+  .b-ws { background: rgba(180,120,50,0.12); color: rgba(180,120,50,0.7); white-space: nowrap; }
+  .btn {
+    padding: 2px 8px; border-radius: 4px; font-size: 9px; cursor: pointer; border: 1px solid;
+    transition: background 0.12s;
   }
-  .term-card .card-header:hover { background: rgba(0,0,0,0.03); }
-  .term-card.expanded .term-embed { display: block; }
-  .term-card .term-embed { display: none; height: 200px; }
-  .card-title { flex: 1; font-size: 11px; color: rgba(40,40,60,0.7); font-family: 'SF Mono', monospace; }
-  .card-badge { font-size: 8px; padding: 1px 5px; border-radius: 3px; }
-  .badge-pty { background: rgba(60,180,120,0.1); color: rgba(60,160,120,0.7); }
-  .badge-grid { background: rgba(130,80,220,0.1); color: rgba(130,80,220,0.7); }
-  .badge-ext { background: rgba(50,130,220,0.1); color: rgba(50,130,220,0.7); }
-  .card-close {
+  .btn-snap { color: rgba(50,130,220,0.7); border-color: rgba(50,130,220,0.2); background: transparent; }
+  .btn-snap:hover { background: rgba(50,130,220,0.08); }
+  .btn-rel { color: rgba(220,80,50,0.7); border-color: rgba(220,80,50,0.2); background: transparent; }
+  .btn-rel:hover { background: rgba(220,80,50,0.08); }
+  .x-btn {
     width: 18px; height: 18px; border-radius: 4px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 12px; color: rgba(0,0,0,0.2); cursor: pointer;
+    font-size: 12px; color: rgba(0,0,0,0.2); cursor: pointer; transition: all 0.12s;
   }
-  .card-close:hover { background: rgba(255,60,60,0.1); color: rgba(255,60,60,0.7); }
+  .x-btn:hover { background: rgba(255,60,60,0.1); color: rgba(255,60,60,0.7); }
 
-  /* External terminal item */
-  .ext-item {
-    display: flex; align-items: center; gap: 4px;
-    padding: 4px 6px;
-    background: rgba(0,0,0,0.02); border: 1px solid rgba(0,0,0,0.05);
-    border-radius: 6px;
-  }
-  .ext-item .ext-title {
-    flex: 1; font-size: 10px; color: rgba(40,40,60,0.6);
-    font-family: 'SF Mono', monospace;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .ext-btn {
-    padding: 2px 8px; border-radius: 4px; font-size: 9px;
-    cursor: pointer; border: 1px solid;
-  }
-  .ext-btn.snap { color: rgba(50,130,220,0.7); border-color: rgba(50,130,220,0.2); background: transparent; }
-  .ext-btn.snap:hover { background: rgba(50,130,220,0.08); }
-  .ext-btn.release { color: rgba(220,80,50,0.7); border-color: rgba(220,80,50,0.2); background: transparent; }
-  .ext-btn.release:hover { background: rgba(220,80,50,0.08); }
-
-  .snapped-badge { font-size: 8px; padding: 1px 5px; border-radius: 3px; background: rgba(50,130,220,0.1); color: rgba(50,130,220,0.7); }
-  .ws-badge { font-size: 8px; padding: 1px 5px; border-radius: 3px; background: rgba(180,120,50,0.12); color: rgba(180,120,50,0.7); white-space: nowrap; }
-
-  .release-all-btn {
-    display: flex; align-items: center; justify-content: center;
-    padding: 4px; border-radius: 5px; margin-top: 2px;
-    border: 1px solid rgba(220,80,50,0.15); cursor: pointer;
-    font-size: 9px; color: rgba(220,80,50,0.5); background: transparent;
-  }
-  .release-all-btn:hover { background: rgba(220,80,50,0.06); }
+  .term-card { background: rgba(0,0,0,0.03); border: 1px solid rgba(0,0,0,0.06); border-radius: 8px; overflow: hidden; }
+  .term-hdr { display: flex; align-items: center; gap: 4px; padding: 4px 6px; cursor: pointer; transition: background 0.12s; }
+  .term-hdr:hover { background: rgba(0,0,0,0.03); }
+  .term-card.open .term-body { display: block; }
+  .term-body { display: none; height: 200px; }
+  .term-title { flex: 1; font-size: 11px; color: rgba(40,40,60,0.7); font-family: 'SF Mono', monospace; }
 
   .add-btn {
     display: flex; align-items: center; justify-content: center; gap: 4px;
-    padding: 6px; border-radius: 6px;
-    border: 1px dashed rgba(0,0,0,0.08); cursor: pointer;
-    font-size: 10px; color: rgba(60,180,120,0.5);
+    padding: 6px; border-radius: 6px; border: 1px dashed rgba(0,0,0,0.08);
+    cursor: pointer; font-size: 10px; transition: all 0.12s;
   }
-  .add-btn:hover { border-color: rgba(60,180,120,0.3); background: rgba(60,180,120,0.04); }
-  .add-btn.grid-add { color: rgba(130,80,220,0.5); }
-  .add-btn.grid-add:hover { border-color: rgba(130,80,220,0.3); background: rgba(130,80,220,0.04); }
+  .add-grid { color: rgba(130,80,220,0.5); }
+  .add-grid:hover { border-color: rgba(130,80,220,0.3); background: rgba(130,80,220,0.04); }
+  .add-pty { color: rgba(60,180,120,0.5); }
+  .add-pty:hover { border-color: rgba(60,180,120,0.3); background: rgba(60,180,120,0.04); }
+
+  .rel-all {
+    display: flex; align-items: center; justify-content: center;
+    padding: 4px; border-radius: 5px; margin-top: 2px;
+    border: 1px solid rgba(220,80,50,0.15); cursor: pointer;
+    font-size: 9px; color: rgba(220,80,50,0.5); background: transparent; transition: background 0.12s;
+  }
+  .rel-all:hover { background: rgba(220,80,50,0.06); }
 
   #status {
     padding: 6px 10px; font-size: 9px; color: rgba(0,0,0,0.25);
     border-top: 1px solid rgba(0,0,0,0.05); flex-shrink: 0;
     font-family: 'SF Mono', monospace;
   }
-
-  body.compact #titlebar { height: 32px; padding-left: 64px; }
-  body.compact #title { font-size: 11px; }
-  body.compact #content { padding: 4px; gap: 2px; }
-  body.compact .section-title { display: none; }
-  body.compact .term-card .card-header { padding: 3px 5px; }
-  body.compact .card-title { font-size: 10px; }
-  body.compact .card-badge, body.compact .snapped-badge, body.compact .ws-badge { font-size: 7px; padding: 0 4px; }
-  body.compact .ext-item { padding: 3px 5px; }
-  body.compact .ext-title { font-size: 9px; }
-  body.compact .ext-btn { font-size: 8px; padding: 1px 6px; }
-  body.compact .add-btn { padding: 4px; font-size: 9px; }
-  body.compact #status { padding: 3px 6px; font-size: 8px; }
-  body.compact .term-embed { height: 150px; }
-
-  /* Raise button */
-  #raise-btn {
-    width: 22px; height: 22px; border-radius: 5px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 13px;
-    color: rgba(50,130,220,0.4); cursor: pointer;
-    -webkit-app-region: no-drag;
-    transition: background 0.15s, color 0.15s;
-    flex-shrink: 0; margin-right: 4px;
-  }
-  #raise-btn:hover { background: rgba(50,130,220,0.1); color: rgba(50,130,220,0.7); }
 </style>
 </head>
 <body>
-
 <div id="titlebar">
   <span id="title">TerminalIN</span>
   <input id="title-input" type="text" />
   <div style="flex:1"></div>
-  <div id="raise-btn" title="Bring all terminals to front">&#x25A3;</div>
-  <div id="collapse-btn" title="Collapse sidebar (Cmd+B)">‹</div>
+  <div id="raise-btn" class="tb-btn" title="Bring all terminals to front">&#x25A3;</div>
+  <div id="collapse-btn" class="tb-btn" title="Collapse (Cmd+B)">&#x2039;</div>
 </div>
 <div id="content"></div>
 <div id="status">Starting...</div>
@@ -190,303 +130,146 @@ const { ipcRenderer } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 
-const content = document.getElementById('content');
-const statusEl = document.getElementById('status');
-const titleEl = document.getElementById('title');
-const titleInput = document.getElementById('title-input');
+const $ = document.getElementById.bind(document);
+const content = $('content'), statusEl = $('status'), titleEl = $('title'), titleInput = $('title-input');
 
-let wsId = null;
-let wsName = 'TerminalIN';
-
-// State
-const embeddedTerms = [];
-const snappedExternals = new Map();
-let externalWindows = [];
-let snappedByOther = {};
-let gridSlots = {};
-let lastExtIdentity = '';
+let wsId = null, wsName = 'TerminalIN';
+const terms = []; // sidebar embedded terminals
+const snapped = new Map();
+let extWins = [], otherSnapped = {}, gridSlots = {}, lastHash = '';
 let gridCols = 2, gridRows = 2;
 
-// ── Title renaming ──
-titleEl.addEventListener('dblclick', () => {
-  titleEl.style.display = 'none';
-  titleInput.style.display = 'inline-block';
-  titleInput.value = wsName;
-  titleInput.focus();
-  titleInput.select();
-});
+// ── Title rename ──
+titleEl.addEventListener('dblclick', () => { titleEl.style.display = 'none'; titleInput.style.display = 'inline-block'; titleInput.value = wsName; titleInput.focus(); titleInput.select(); });
+function commitName() { wsName = titleInput.value.trim() || wsName; titleEl.textContent = wsName; titleEl.style.display = ''; titleInput.style.display = 'none'; ipcRenderer.send('rename-workspace', { name: wsName }); }
+titleInput.addEventListener('blur', commitName);
+titleInput.addEventListener('keydown', e => { if (e.key === 'Enter') commitName(); if (e.key === 'Escape') { titleInput.value = wsName; commitName(); } });
+ipcRenderer.on('workspace-info', (_, i) => { wsId = i.id; wsName = i.name; titleEl.textContent = wsName; });
 
-function commitRename() {
-  const newName = titleInput.value.trim() || wsName;
-  wsName = newName;
-  titleEl.textContent = wsName;
-  titleEl.style.display = '';
-  titleInput.style.display = 'none';
-  ipcRenderer.send('rename-workspace', { name: wsName });
-}
-titleInput.addEventListener('blur', commitRename);
-titleInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') commitRename();
-  if (e.key === 'Escape') { titleInput.value = wsName; commitRename(); }
-});
-
-ipcRenderer.on('workspace-info', (_e, info) => {
-  wsId = info.id;
-  wsName = info.name;
-  titleEl.textContent = wsName;
-});
-
-// ── Sidebar embedded terminals ──
-async function addEmbedded(title) {
-  const name = title || `Shell ${embeddedTerms.length + 1}`;
+// ── Sidebar terminals ──
+async function addTerm(title) {
+  const name = title || `Shell ${terms.length + 1}`;
   const { id } = await ipcRenderer.invoke('create-terminal', {});
-  const term = new Terminal({
-    fontSize: 12, fontFamily: "'SF Mono', 'Fira Code', monospace",
-    theme: { background: '#1a1a2e', foreground: '#e0e0e0', cursor: '#80b0ff', selectionBackground: 'rgba(100,140,255,0.3)' },
-    cursorBlink: true, scrollback: 3000,
-  });
-  const fitAddon = new FitAddon();
-  term.loadAddon(fitAddon);
-  term.onData(data => ipcRenderer.send('terminal-input', { id, data }));
-  const session = { id, term, fitAddon, title: name, expanded: false };
-  embeddedTerms.push(session);
+  const t = new Terminal({ fontSize: 12, fontFamily: "'SF Mono','Fira Code',monospace", theme: { background: '#1a1a2e', foreground: '#e0e0e0', cursor: '#80b0ff', selectionBackground: 'rgba(100,140,255,0.3)' }, cursorBlink: true, scrollback: 3000 });
+  const fa = new FitAddon(); t.loadAddon(fa);
+  t.onData(d => ipcRenderer.send('terminal-input', { id, data: d }));
+  terms.push({ id, t, fa, title: name, open: false });
   render();
-  toggleExpand(embeddedTerms.length - 1);
+  toggleTerm(terms.length - 1);
 }
 
-function toggleExpand(idx) {
-  const s = embeddedTerms[idx];
-  s.expanded = !s.expanded;
+function toggleTerm(i) {
+  terms[i].open = !terms[i].open;
   render();
-  if (s.expanded) {
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      try { s.fitAddon.fit(); ipcRenderer.send('terminal-resize', { id: s.id, cols: s.term.cols, rows: s.term.rows }); } catch {}
-      s.term.focus();
-    }));
-  }
+  if (terms[i].open) requestAnimationFrame(() => requestAnimationFrame(() => { try { terms[i].fa.fit(); ipcRenderer.send('terminal-resize', { id: terms[i].id, cols: terms[i].t.cols, rows: terms[i].t.rows }); } catch {} terms[i].t.focus(); }));
 }
 
-function removeEmbedded(idx) {
-  const s = embeddedTerms[idx];
-  s.term.dispose();
-  ipcRenderer.invoke('kill-terminal', { id: s.id });
-  embeddedTerms.splice(idx, 1);
-  render();
-}
+function rmTerm(i) { terms[i].t.dispose(); ipcRenderer.invoke('kill-terminal', { id: terms[i].id }); terms.splice(i, 1); render(); }
 
-// ── Grid terminals ──
-async function addGridTerminal() {
-  const result = await ipcRenderer.invoke('add-grid-terminal');
-  if (!result.ok) { statusEl.textContent = result.reason === 'grid-full' ? 'Grid is full' : 'Error'; }
-}
+// ── Grid / Snap ──
+async function addGrid() { const r = await ipcRenderer.invoke('add-grid-terminal'); if (!r.ok) statusEl.textContent = r.reason === 'grid-full' ? 'Grid full' : 'Error'; }
+async function rmGrid(s) { await ipcRenderer.invoke('remove-grid-terminal', { slot: Number(s) }); }
+async function snap(w) { const r = await ipcRenderer.invoke('snap-external', { windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title, x: w.x, y: w.y, width: w.width, height: w.height }); if (r.ok) { snapped.set(w.windowNumber, { title: w.title }); render(); } }
+async function unsnap(wn) { await ipcRenderer.invoke('unsnap-external', { windowNumber: wn }); snapped.delete(wn); render(); }
+function setGrid(c, r) { gridCols = c; gridRows = r; ipcRenderer.invoke('set-grid-size', { cols: c, rows: r }); render(); }
 
-async function removeGridTerminal(slot) {
-  await ipcRenderer.invoke('remove-grid-terminal', { slot: Number(slot) });
-}
-
-// ── External terminals ──
-async function snapExternal(w) {
-  const result = await ipcRenderer.invoke('snap-external', {
-    windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title,
-    x: w.x, y: w.y, width: w.width, height: w.height,
-  });
-  if (result.ok) { snappedExternals.set(w.windowNumber, { title: w.title }); render(); }
-}
-
-async function unsnapExternal(windowNumber) {
-  await ipcRenderer.invoke('unsnap-external', { windowNumber });
-  snappedExternals.delete(windowNumber);
-  render();
-}
-
-// ── Grid size ──
-function setGridSize(cols, rows) {
-  gridCols = cols; gridRows = rows;
-  ipcRenderer.invoke('set-grid-size', { cols, rows });
-  render();
-}
-
-// ── Render ──
+// ── Render (differential) ──
+let renderedHTML = '';
 function render() {
-  content.innerHTML = '';
+  const h = [];
+  const gc = Object.keys(gridSlots).length + snapped.size;
+  const total = gridCols * gridRows;
 
   // Grid section
-  const gridTitle = document.createElement('div');
-  gridTitle.className = 'section-title';
-  const gridCount = Object.keys(gridSlots).length + snappedExternals.size;
-  gridTitle.innerHTML = `GRID (${gridCount}/${gridCols * gridRows})`;
+  h.push(`<div class="sec">GRID (${gc}/${total})<div class="grid-sel">`);
+  for (const [l,c,r] of [['2×2',2,2],['3×3',3,3],['2×3',2,3]]) h.push(`<button class="grid-opt${c===gridCols&&r===gridRows?' active':''}" data-gc="${c}" data-gr="${r}">${l}</button>`);
+  h.push('</div></div>');
 
-  const selector = document.createElement('div');
-  selector.className = 'grid-selector';
-  [['2×2', 2, 2], ['3×3', 3, 3], ['2×3', 2, 3]].forEach(([label, c, r]) => {
-    const btn = document.createElement('button');
-    btn.className = 'grid-opt' + (c === gridCols && r === gridRows ? ' active' : '');
-    btn.textContent = label;
-    btn.addEventListener('click', () => setGridSize(c, r));
-    selector.appendChild(btn);
+  for (const s in gridSlots) h.push(`<div class="item"><span class="badge b-grid">GRID</span><span class="item-title">Terminal #${+s+1}</span><span class="x-btn" data-rmg="${s}">\u00d7</span></div>`);
+  for (const [wn, info] of snapped) {
+    const t = (info.title||'').length > 35 ? info.title.substring(0, 32) + '...' : info.title||'';
+    h.push(`<div class="item"><span class="badge b-ext">EXT</span><span class="item-title">${t}</span><button class="btn btn-rel" data-unsnap="${wn}">Release</button></div>`);
+  }
+  if (gc < total) h.push('<div class="add-btn add-grid" data-addgrid>+ Grid terminal</div>');
+  if (snapped.size > 1) h.push('<div class="rel-all" data-relall>Release All</div>');
+
+  // Sidebar terminals
+  h.push(`<div class="sec">SIDEBAR (${terms.length})</div>`);
+  terms.forEach((s, i) => {
+    h.push(`<div class="term-card${s.open?' open':''}" data-ti="${i}"><div class="term-hdr"><span class="badge b-pty">PTY</span><span class="term-title">${s.title}</span><span class="x-btn" data-rmt="${i}">\u00d7</span></div><div class="term-body" data-tb="${i}"></div></div>`);
   });
-  gridTitle.appendChild(selector);
-  content.appendChild(gridTitle);
+  h.push('<div class="add-btn add-pty" data-addpty>+ Sidebar terminal</div>');
 
-  // Grid terminal entries
-  for (const [slot, info] of Object.entries(gridSlots)) {
-    const card = document.createElement('div');
-    card.className = 'ext-item';
-    card.innerHTML = `
-      <span class="card-badge badge-grid">GRID</span>
-      <span class="ext-title">Terminal #${Number(slot) + 1}</span>
-    `;
-    const closeBtn = document.createElement('span');
-    closeBtn.className = 'card-close';
-    closeBtn.textContent = '\u00d7';
-    closeBtn.addEventListener('click', () => removeGridTerminal(slot));
-    card.appendChild(closeBtn);
-    content.appendChild(card);
-  }
-
-  // Snapped externals
-  for (const [wn, info] of snappedExternals) {
-    const item = document.createElement('div');
-    item.className = 'ext-item';
-    let t = info.title || '';
-    if (t.length > 35) t = t.substring(0, 32) + '...';
-    item.innerHTML = `<span class="card-badge badge-ext">EXT</span><span class="ext-title">${t}</span>`;
-    const btn = document.createElement('button');
-    btn.className = 'ext-btn release';
-    btn.textContent = 'Release';
-    btn.addEventListener('click', () => unsnapExternal(wn));
-    item.appendChild(btn);
-    content.appendChild(item);
-  }
-
-  // Add grid terminal button
-  if (gridCount < gridCols * gridRows) {
-    const addGrid = document.createElement('div');
-    addGrid.className = 'add-btn grid-add';
-    addGrid.textContent = '+ Grid terminal';
-    addGrid.addEventListener('click', addGridTerminal);
-    content.appendChild(addGrid);
-  }
-
-  // Release all
-  if (snappedExternals.size > 1) {
-    const releaseAll = document.createElement('div');
-    releaseAll.className = 'release-all-btn';
-    releaseAll.textContent = 'Release All';
-    releaseAll.addEventListener('click', async () => {
-      for (const wn of [...snappedExternals.keys()]) await unsnapExternal(wn);
+  // Available externals
+  const avail = extWins.filter(w => !snapped.has(w.windowNumber));
+  if (avail.length) {
+    h.push(`<div class="sec">AVAILABLE (${avail.length})</div>`);
+    avail.forEach(w => {
+      const t = (w.title||'untitled').length > 30 ? w.title.substring(0,27)+'...' : w.title||'untitled';
+      const o = otherSnapped[w.windowNumber];
+      if (o) h.push(`<div class="item"><span class="item-title">${t}</span><span class="badge b-ws">\u2192 ${o}</span></div>`);
+      else h.push(`<div class="item"><span class="item-title">${t}</span><button class="btn btn-snap" data-snap="${w.windowNumber}">Snap</button></div>`);
     });
-    content.appendChild(releaseAll);
   }
 
-  // Sidebar embedded terminals
-  const embTitle = document.createElement('div');
-  embTitle.className = 'section-title';
-  embTitle.textContent = `SIDEBAR TERMINALS (${embeddedTerms.length})`;
-  content.appendChild(embTitle);
+  const html = h.join('');
+  if (html === renderedHTML) return; // skip if unchanged
+  renderedHTML = html;
 
-  embeddedTerms.forEach((s, i) => {
-    const card = document.createElement('div');
-    card.className = `term-card${s.expanded ? ' expanded' : ''}`;
-    const header = document.createElement('div');
-    header.className = 'card-header';
-    header.innerHTML = `<span class="card-badge badge-pty">PTY</span><span class="card-title">${s.title}</span><span class="card-close">\u00d7</span>`;
-    header.querySelector('.card-title').addEventListener('click', () => toggleExpand(i));
-    header.querySelector('.card-close').addEventListener('click', (e) => { e.stopPropagation(); removeEmbedded(i); });
-    card.appendChild(header);
-    const embed = document.createElement('div');
-    embed.className = 'term-embed';
-    card.appendChild(embed);
-    content.appendChild(card);
-    if (s.expanded) {
-      s.term.open(embed);
-      requestAnimationFrame(() => {
-        try { s.fitAddon.fit(); ipcRenderer.send('terminal-resize', { id: s.id, cols: s.term.cols, rows: s.term.rows }); } catch {}
-      });
+  const scrollTop = content.scrollTop;
+  content.innerHTML = html;
+  content.scrollTop = scrollTop;
+
+  // Re-attach xterm to open terminals
+  terms.forEach((s, i) => {
+    if (s.open) {
+      const el = content.querySelector(`[data-tb="${i}"]`);
+      if (el) { s.t.open(el); requestAnimationFrame(() => { try { s.fa.fit(); ipcRenderer.send('terminal-resize', { id: s.id, cols: s.t.cols, rows: s.t.rows }); } catch {} }); }
     }
   });
 
-  const addBtn = document.createElement('div');
-  addBtn.className = 'add-btn';
-  addBtn.textContent = '+ Sidebar terminal';
-  addBtn.addEventListener('click', () => addEmbedded());
-  content.appendChild(addBtn);
-
-  // Available externals
-  const available = externalWindows.filter(w => !snappedExternals.has(w.windowNumber));
-  if (available.length > 0) {
-    const extTitle = document.createElement('div');
-    extTitle.className = 'section-title';
-    extTitle.textContent = `AVAILABLE TERMINALS (${available.length})`;
-    content.appendChild(extTitle);
-
-    available.forEach(w => {
-      const item = document.createElement('div');
-      item.className = 'ext-item';
-      let t = w.title || 'untitled';
-      if (t.length > 30) t = t.substring(0, 27) + '...';
-      const otherWs = snappedByOther[w.windowNumber];
-      if (otherWs) {
-        item.innerHTML = `<span class="ext-title">${t}</span><span class="ws-badge">\u2192 ${otherWs}</span>`;
-      } else {
-        item.innerHTML = `<span class="ext-title">${t}</span>`;
-        const btn = document.createElement('button');
-        btn.className = 'ext-btn snap';
-        btn.textContent = 'Snap';
-        btn.addEventListener('click', () => snapExternal(w));
-        item.appendChild(btn);
-      }
-      content.appendChild(item);
-    });
-  }
-
-  statusEl.textContent = `${Object.keys(gridSlots).length} grid \u00b7 ${snappedExternals.size} ext \u00b7 ${embeddedTerms.length} sidebar`;
+  statusEl.textContent = `${Object.keys(gridSlots).length} grid \u00b7 ${snapped.size} ext \u00b7 ${terms.length} sidebar`;
 }
 
+// ── Event delegation (single listener) ──
+content.addEventListener('click', (e) => {
+  const t = e.target;
+  const d = (attr) => t.closest(`[${attr}]`)?.getAttribute(attr) ?? t.getAttribute(attr);
+  if (d('data-gc')) { setGrid(+d('data-gc'), +d('data-gr')); return; }
+  if (d('data-rmg') !== null && d('data-rmg') !== undefined) { const v = d('data-rmg'); if (v !== null) rmGrid(v); return; }
+  if (d('data-unsnap')) { unsnap(+d('data-unsnap')); return; }
+  if (d('data-addgrid') !== null) { addGrid(); return; }
+  if (d('data-relall') !== null) { [...snapped.keys()].forEach(wn => unsnap(wn)); return; }
+  if (d('data-rmt') !== null && d('data-rmt') !== undefined) { const v = d('data-rmt'); if (v !== null) { e.stopPropagation(); rmTerm(+v); return; } }
+  const ti = t.closest('[data-ti]')?.getAttribute('data-ti');
+  if (ti !== null && ti !== undefined && !t.closest('.x-btn')) { toggleTerm(+ti); return; }
+  if (d('data-addpty') !== null) { addTerm(); return; }
+  const snapBtn = t.closest('[data-snap]');
+  if (snapBtn) { const wn = +snapBtn.getAttribute('data-snap'); const w = extWins.find(w => w.windowNumber === wn); if (w) snap(w); return; }
+});
+
 // ── IPC ──
-ipcRenderer.on('terminal-data', (_e, { id, data }) => {
-  const s = embeddedTerms.find(s => s.id === id);
-  if (s) s.term.write(data);
-});
-ipcRenderer.on('terminal-exit', (_e, { id }) => {
-  const idx = embeddedTerms.findIndex(s => s.id === id);
-  if (idx >= 0) { embeddedTerms[idx].term.dispose(); embeddedTerms.splice(idx, 1); render(); }
-});
-ipcRenderer.on('new-terminal', () => addGridTerminal());
-ipcRenderer.on('close-current', () => {
-  if (embeddedTerms.length > 0) removeEmbedded(embeddedTerms.length - 1);
-});
-ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo) => {
-  snappedByOther = otherSnapped || {};
-  gridSlots = gridInfo || {};
-  const id = JSON.stringify(windows.map(w => `${w.windowNumber}:${w.title}`)) + JSON.stringify(snappedByOther) + JSON.stringify(gridSlots);
-  if (id === lastExtIdentity) return;
-  lastExtIdentity = id;
-  externalWindows = windows;
-  for (const k of snappedExternals.keys()) {
-    if (!windows.find(w => w.windowNumber === k)) snappedExternals.delete(k);
-  }
+ipcRenderer.on('terminal-data', (_, { id, data }) => { const s = terms.find(s => s.id === id); if (s) s.t.write(data); });
+ipcRenderer.on('terminal-exit', (_, { id }) => { const i = terms.findIndex(s => s.id === id); if (i >= 0) { terms[i].t.dispose(); terms.splice(i, 1); render(); } });
+ipcRenderer.on('new-terminal', () => addGrid());
+ipcRenderer.on('close-current', () => { if (terms.length) rmTerm(terms.length - 1); });
+ipcRenderer.on('external-windows', (_, wins, other, grid) => {
+  otherSnapped = other || {};
+  gridSlots = grid || {};
+  extWins = wins;
+  for (const k of snapped.keys()) if (!wins.find(w => w.windowNumber === k)) snapped.delete(k);
   render();
 });
 
-// ── Raise button ──
-document.getElementById('raise-btn').addEventListener('click', () => {
-  ipcRenderer.send('raise-all');
-});
-
 // ── Collapse ──
-let isCollapsed = false;
-const collapseBtn = document.getElementById('collapse-btn');
-function toggleCollapse() {
-  isCollapsed = !isCollapsed;
-  document.body.classList.toggle('collapsed', isCollapsed);
-  ipcRenderer.send('toggle-collapse', { collapsed: isCollapsed });
-}
-collapseBtn.addEventListener('click', toggleCollapse);
-ipcRenderer.on('toggle-compact', toggleCollapse);
+let collapsed = false;
+$('collapse-btn').addEventListener('click', () => { collapsed = !collapsed; document.body.classList.toggle('collapsed', collapsed); ipcRenderer.send('toggle-collapse', { collapsed }); });
+ipcRenderer.on('toggle-compact', () => { collapsed = !collapsed; document.body.classList.toggle('collapsed', collapsed); ipcRenderer.send('toggle-collapse', { collapsed }); });
 
-// Start with one sidebar terminal
-addEmbedded('main');
+// ── Raise ──
+$('raise-btn').addEventListener('click', () => ipcRenderer.send('raise-all'));
+
+addTerm('main');
 </script>
 </body>
 </html>
