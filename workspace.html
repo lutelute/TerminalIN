@@ -98,6 +98,8 @@
   .add-grid:hover { border-color: rgba(130,80,220,0.3); background: rgba(130,80,220,0.04); }
   .add-pty { color: rgba(60,180,120,0.5); }
   .add-pty:hover { border-color: rgba(60,180,120,0.3); background: rgba(60,180,120,0.04); }
+  .add-launch { color: rgba(50,130,220,0.5); }
+  .add-launch:hover { border-color: rgba(50,130,220,0.3); background: rgba(50,130,220,0.04); }
 
   .rel-all {
     display: flex; align-items: center; justify-content: center;
@@ -171,6 +173,7 @@ async function addGrid() { const r = await ipcRenderer.invoke('add-grid-terminal
 async function rmGrid(s) { await ipcRenderer.invoke('remove-grid-terminal', { slot: Number(s) }); }
 async function snap(w) { const r = await ipcRenderer.invoke('snap-external', { windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title, x: w.x, y: w.y, width: w.width, height: w.height }); if (r.ok) { snapped.set(w.windowNumber, { title: w.title }); render(); } }
 async function unsnap(wn) { await ipcRenderer.invoke('unsnap-external', { windowNumber: wn }); snapped.delete(wn); render(); }
+async function launchTerm() { statusEl.textContent = 'Launching...'; const r = await ipcRenderer.invoke('launch-terminal', { app: 'Terminal' }); if (r.ok) { statusEl.textContent = 'Launched'; render(); } else { statusEl.textContent = r.error || r.reason || 'Error'; } }
 function setGrid(c, r) { gridCols = c; gridRows = r; ipcRenderer.invoke('set-grid-size', { cols: c, rows: r }); render(); }
 
 // ── Render (differential) ──
@@ -190,7 +193,10 @@ function render() {
     const t = (info.title||'').length > 35 ? info.title.substring(0, 32) + '...' : info.title||'';
     h.push(`<div class="item"><span class="badge b-ext">EXT</span><span class="item-title">${t}</span><button class="btn btn-rel" data-unsnap="${wn}">Release</button></div>`);
   }
-  if (gc < total) h.push('<div class="add-btn add-grid" data-addgrid>+ Grid terminal</div>');
+  if (gc < total) {
+    h.push('<div class="add-btn add-grid" data-addgrid>+ Grid terminal</div>');
+    h.push('<div class="add-btn add-launch" data-launch>+ New Terminal.app window</div>');
+  }
   if (snapped.size > 1) h.push('<div class="rel-all" data-relall>Release All</div>');
 
   // Sidebar terminals
@@ -239,6 +245,7 @@ content.addEventListener('click', (e) => {
   if (d('data-rmg') !== null && d('data-rmg') !== undefined) { const v = d('data-rmg'); if (v !== null) rmGrid(v); return; }
   if (d('data-unsnap')) { unsnap(+d('data-unsnap')); return; }
   if (d('data-addgrid') !== null) { addGrid(); return; }
+  if (t.closest('[data-launch]')) { launchTerm(); return; }
   if (d('data-relall') !== null) { [...snapped.keys()].forEach(wn => unsnap(wn)); return; }
   if (d('data-rmt') !== null && d('data-rmt') !== undefined) { const v = d('data-rmt'); if (v !== null) { e.stopPropagation(); rmTerm(+v); return; } }
   const ti = t.closest('[data-ti]')?.getAttribute('data-ti');

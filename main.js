@@ -178,6 +178,36 @@ ipcMain.handle('remove-grid-terminal', (ev, { slot }) => {
   compactSlots(ws); retile(ws); return { ok: true };
 });
 
+// ── IPC: launch new external terminal window ──
+ipcMain.handle('launch-terminal', async (ev, { app: appName }) => {
+  const ws = findWs(ev.sender); if (!ws) return { ok: false };
+  const { exec } = require('child_process');
+  // Open a new terminal window via osascript
+  const script = appName === 'iTerm2'
+    ? `tell application "iTerm2" to create window with default profile`
+    : `tell application "${appName}" to do script ""`;
+  return new Promise((resolve) => {
+    exec(`osascript -e '${script}'`, async (err) => {
+      if (err) return resolve({ ok: false, error: err.message });
+      // Wait for window to appear, then snap it
+      await new Promise(r => setTimeout(r, 500));
+      const windows = await listWindows();
+      // Find the newest window from that app (highest windowNumber)
+      const appWins = windows.filter(w => w.app === appName || (appName === 'Terminal' && w.app === 'ターミナル'));
+      const snappedWns = new Set(ws.ext.keys());
+      const newWin = appWins.filter(w => !snappedWns.has(w.windowNumber)).sort((a, b) => b.windowNumber - a.windowNumber)[0];
+      if (!newWin) return resolve({ ok: false, error: 'window-not-found' });
+      // Auto-snap
+      const s = nextSlot(ws); if (s < 0) return resolve({ ok: false, reason: 'no-slot' });
+      ws.ext.set(newWin.windowNumber, { app: newWin.app, pid: newWin.pid, title: newWin.title, wn: newWin.windowNumber, slot: s, ox: newWin.x, oy: newWin.y, ow: newWin.width, oh: newWin.height });
+      ws._lastPollHash = '';
+      const b = slotBounds(ws, s);
+      if (b) await batchMove([{ windowNumber: newWin.windowNumber, pid: newWin.pid, ...b }]);
+      resolve({ ok: true, slot: s });
+    });
+  });
+});
+
 // ── IPC: snap/unsnap ──
 ipcMain.handle('snap-external', async (ev, { windowNumber, pid, app: a, title, x, y, width, height }) => {
   const ws = findWs(ev.sender); if (!ws) return { ok: false };
