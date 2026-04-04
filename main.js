@@ -298,13 +298,9 @@ function createWorkspace(name) {
 
   // Adaptive polling with hash-based skip
   const poll = async () => {
-    dbg('[poll] start, win:', !!ws.win, 'destroyed:', ws.win?.isDestroyed());
     if (!ws.win || ws.win.isDestroyed()) return;
     const windows = await listWindows();
-    dbg('[poll] got', windows.length, 'windows, titles:', JSON.stringify(windows.slice(0,3).map(w=>({t:w.title, type: typeof w.title}))));
 
-    // Fallback: if titles are empty (no Screen Recording / AX permission),
-    // fetch via AppleScript using window id for exact matching
     // Fallback: fetch titles via osascript when daemon can't (no Screen Recording perm)
     if (windows.length > 0 && windows.every(w => !w.title)) {
       const { execSync } = require('child_process');
@@ -313,16 +309,14 @@ function createWorkspace(name) {
         try {
           const idRaw = execSync(`osascript -e 'tell application "${appName}" to get id of every window'`, { timeout: 2000, encoding: 'utf8' }).trim();
           const nameRaw = execSync(`osascript -e 'tell application "${appName}" to get name of every window'`, { timeout: 2000, encoding: 'utf8' }).trim();
-          dbg('[poll] fallback for', appName, 'ids:', idRaw.substring(0, 40), 'names:', nameRaw.substring(0, 40));
           const ids = idRaw.split(', ').map(Number);
           const names = nameRaw.split(', ');
           const map = new Map();
           for (let i = 0; i < ids.length; i++) if (ids[i]) map.set(ids[i], names[i] || '');
           for (const w of windows) if (w.app === appName && map.has(w.windowNumber)) w.title = map.get(w.windowNumber);
-        } catch (e) { dbg('[poll] fallback error:', appName, e.message?.substring(0, 80)); }
+        } catch {}
       }
     }
-    dbg('[poll] after fallback, titles:', windows.slice(0,2).map(w=>w.title?.substring(0,25)||'STILL_EMPTY').join('|'));
     // Update ext info
     const liveMap = new Map(windows.map(w => [w.windowNumber, w]));
     for (const [k, info] of ws.ext) {
