@@ -47,14 +47,27 @@ func handleList() -> [[String: Any]] {
               let b = w[kCGWindowBounds as String] as? [String: CGFloat],
               let x = b["X"], let y = b["Y"], let bw = b["Width"], let bh = b["Height"],
               bw > 50, bh > 50 else { continue }
+        let wn = w[kCGWindowNumber as String] as? Int ?? 0
+        let pid = w[kCGWindowOwnerPID as String] as? Int ?? 0
+        // CGWindowList may return nil title without Screen Recording permission
+        // Fall back to AX API for title
+        var title = w[kCGWindowName as String] as? String ?? ""
+        if title.isEmpty, pid > 0 {
+            if let axWin = findAXWindow(pid: pid_t(pid), wn: wn) {
+                var titleRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute as CFString, &titleRef) == .success {
+                    title = titleRef as? String ?? ""
+                }
+            }
+        }
         results.append([
-            "app": app,
-            "title": w[kCGWindowName as String] as? String ?? "",
-            "windowNumber": w[kCGWindowNumber as String] as? Int ?? 0,
-            "pid": w[kCGWindowOwnerPID as String] as? Int ?? 0,
+            "app": app, "title": title,
+            "windowNumber": wn, "pid": pid,
             "x": Int(x), "y": Int(y), "width": Int(bw), "height": Int(bh),
         ])
     }
+    // Clear cache used for title fallback
+    clearCache()
     return results
 }
 

@@ -34,8 +34,14 @@ function startDaemon() {
     }
   });
   if (isDev) daemon.stderr.on('data', (d) => process.stderr.write('[d] ' + d));
-  daemon.on('close', () => { daemonReady = false; if (!app.isQuitting) setTimeout(startDaemon, 500); });
-  daemon.on('error', () => {});
+  daemon.on('close', (code) => {
+    daemonReady = false;
+    // Resolve all pending requests so they don't hang
+    for (const [id, p] of pendingReqs) { clearTimeout(p.t); p.r({}); }
+    pendingReqs.clear();
+    if (!app.isQuitting) setTimeout(startDaemon, 500);
+  });
+  daemon.on('error', () => { daemonReady = false; });
 }
 
 function daemonReq(cmd, extra) {
