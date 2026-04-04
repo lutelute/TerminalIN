@@ -113,11 +113,7 @@ function isExternalSnapped(windowNumber) {
 function getGridArea(ws) {
   if (!ws.win || ws.win.isDestroyed()) return null;
   const b = ws.win.getBounds();
-  // Use the display that contains the workspace window to calculate grid width
-  const display = screen.getDisplayMatching(b);
-  const workArea = display.workArea;
-  const gridWidth = Math.min(workArea.x + workArea.width - (b.x + b.width + 4), workArea.width * 0.7);
-  return { x: b.x + b.width + 4, y: b.y, width: Math.max(400, gridWidth), height: b.height };
+  return { x: b.x + b.width + 4, y: b.y, width: 800, height: b.height };
 }
 
 function getSlotBounds(ws, slot) {
