@@ -55,20 +55,44 @@ function daemonRequest(cmd, extra = {}) {
 }
 
 function listWindows() { return daemonRequest('list'); }
+
+// Move windows: daemon (fast, needs AX permission) with osascript fallback
 async function batchMove(cmds) {
   if (!cmds.length) return;
+  // Try daemon first
   const result = await daemonRequest('move', { windows: cmds });
   if (result.moved && result.moved >= cmds.length) return;
-  // Fallback for packaged app (daemon AX permission may be denied)
-  const { execSync } = require('child_process');
+  // osascript: works without AX permission (uses app's own scripting)
   for (const cmd of cmds) {
     if (!cmd.windowNumber || cmd.x == null || !cmd.app) continue;
     try {
+      const { execSync } = require('child_process');
       execSync(`osascript -e 'tell application "${cmd.app}" to set bounds of window id ${cmd.windowNumber} to {${cmd.x}, ${cmd.y}, ${cmd.x + cmd.width}, ${cmd.y + cmd.height}}'`, { timeout: 3000 });
     } catch {}
   }
 }
-function raiseSpecificWindows(cmds) { if (!cmds.length) return Promise.resolve(); return daemonRequest('raise', { windows: cmds }); }
+
+// Raise: daemon (fast) with osascript fallback
+async function raiseSpecificWindows(cmds) {
+  if (!cmds.length) return;
+  const result = await daemonRequest('raise', { windows: cmds });
+  if (result.raised && result.raised >= cmds.length) return;
+  // osascript fallback: activate app + set index by window id
+  const byApp = new Map();
+  for (const cmd of cmds) {
+    const app = cmd.app;
+    if (!app) continue;
+    if (!byApp.has(app)) byApp.set(app, []);
+    byApp.get(app).push(cmd);
+  }
+  for (const [appName, wins] of byApp) {
+    const lines = wins.map((w, i) =>
+      `  try\n    set index of window id ${w.windowNumber} to ${i + 1}\n  end try`
+    ).join('\n');
+    const script = `tell application "${appName}"\n  activate\n  delay 0.15\n${lines}\nend tell`;
+    exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`);
+  }
+}
 
 // ── Helpers ──
 function findWorkspace(webContents) {
@@ -111,7 +135,7 @@ function getSlotBounds(ws, slot) {
   };
 }
 
-// ── Raise snapped externals via osascript ──
+// ── Raise snapped externals ──
 let lastRaiseTime = 0;
 
 function raiseSnappedExternals(ws) {
@@ -120,31 +144,10 @@ function raiseSnappedExternals(ws) {
   if (now - lastRaiseTime < 1000) return;
   lastRaiseTime = now;
 
-  // Group snapped windows by app
-  const byApp = new Map();
-  for (const [, info] of ws.snappedExternals) {
-    if (!byApp.has(info.app)) byApp.set(info.app, []);
-    byApp.get(info.app).push(info);
-  }
-
-  // Activate each app, then set index by window id (not title, which changes)
-  const scriptParts = [];
-  for (const [appName, windows] of byApp) {
-    const setIndexLines = windows.map((w, i) =>
-      `      try\n        set index of window id ${w.windowNumber} to ${i + 1}\n      end try`
-    ).join('\n');
-
-    scriptParts.push(
-      `tell application "${appName}"\n` +
-      `  activate\n` +
-      `  delay 0.15\n` +
-      setIndexLines + '\n' +
-      `end tell`
-    );
-  }
-
-  const script = scriptParts.join('\n');
-  exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`);
+  const cmds = [...ws.snappedExternals.values()].map(info => ({
+    windowNumber: info.windowNumber, pid: info.pid, app: info.app,
+  }));
+  raiseSpecificWindows(cmds);
 }
 
 // ── Retile: reposition all grid items (embedded + external) ──
