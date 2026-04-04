@@ -2,146 +2,125 @@ import Cocoa
 import Foundation
 import CoreGraphics
 
-// TerminalIN Daemon — high-performance window management
-// Commands: list, move, raise
-// Protocol: JSON lines on stdin/stdout
+// TerminalIN Daemon — long-running process that handles:
+// - list: enumerate terminal windows via CGWindowList
+// - move: reposition windows via AXUIElement
+//
+// Protocol: JSON lines on stdin → JSON lines on stdout
 
 @_silgen_name("_AXUIElementGetWindow")
 func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>) -> AXError
 
-let terminalApps: Set<String> = ["Terminal", "ターミナル", "iTerm2", "Alacritty", "Warp", "kitty", "Hyper", "WezTerm"]
+let terminalApps = Set(["Terminal", "ターミナル", "iTerm2", "Alacritty", "Warp", "kitty", "Hyper", "WezTerm"])
 
-// ── AX cache: per-batch, avoids redundant AX queries ──
-var appCache: [pid_t: [AXUIElement]] = [:]
+var appCache: [pid_t: (ref: AXUIElement, windows: [AXUIElement])] = [:]
+func clearCache() { appCache.removeAll() }
 
-func clearCache() { appCache.removeAll(keepingCapacity: true) }
-
-func getWindows(pid: pid_t) -> [AXUIElement]? {
-    if let cached = appCache[pid] { return cached }
-    let ref = AXUIElementCreateApplication(pid)
-    var val: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(ref, kAXWindowsAttribute as CFString, &val) == .success,
-          let wins = val as? [AXUIElement] else { return nil }
-    appCache[pid] = wins
-    return wins
-}
-
-func findAXWindow(pid: pid_t, wn: Int) -> AXUIElement? {
-    guard let wins = getWindows(pid: pid) else { return nil }
-    let target = CGWindowID(wn)
-    for w in wins {
-        var wid: CGWindowID = 0
-        if _AXUIElementGetWindow(w, &wid) == .success, wid == target { return w }
+func getApp(pid: pid_t?, name: String?) -> (ref: AXUIElement, windows: [AXUIElement])? {
+    if let pid = pid {
+        if let cached = appCache[pid] { return cached }
+        let ref = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(ref, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let wins = windowsRef as? [AXUIElement] else { return nil }
+        let result = (ref: ref, windows: wins)
+        appCache[pid] = result
+        return result
+    }
+    if let name = name {
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == name }) else { return nil }
+        return getApp(pid: app.processIdentifier, name: nil)
     }
     return nil
 }
 
-// ── list: CGWindowList (fast, no AX) ──
-func handleList() -> [[String: Any]] {
-    guard let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return [] }
+func getWindowTitle(_ win: AXUIElement) -> String? {
+    var titleRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &titleRef) == .success else { return nil }
+    return titleRef as? String
+}
+
+func getCGWindowID(_ win: AXUIElement) -> CGWindowID? {
+    var windowID: CGWindowID = 0
+    return _AXUIElementGetWindow(win, &windowID) == .success ? windowID : nil
+}
+
+func findWindow(in windows: [AXUIElement], windowNumber: Int?, title: String?, windowIndex: Int?) -> AXUIElement? {
+    if let wn = windowNumber {
+        for win in windows { if let wid = getCGWindowID(win), wid == CGWindowID(wn) { return win } }
+    }
+    if let title = title, !title.isEmpty {
+        for win in windows { if getWindowTitle(win) == title { return win } }
+        let prefix = String(title.prefix(min(40, title.count)))
+        for win in windows { if let t = getWindowTitle(win), t.hasPrefix(prefix) { return win } }
+    }
+    if let idx = windowIndex, idx < windows.count { return windows[idx] }
+    return nil
+}
+
+func handleList() -> Any {
+    guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+        return [] as [[String: Any]]
+    }
     var results: [[String: Any]] = []
-    results.reserveCapacity(20)
-    for w in infos {
-        guard let app = w[kCGWindowOwnerName as String] as? String,
-              terminalApps.contains(app),
-              let b = w[kCGWindowBounds as String] as? [String: CGFloat],
-              let x = b["X"], let y = b["Y"], let bw = b["Width"], let bh = b["Height"],
-              bw > 50, bh > 50 else { continue }
-        let wn = w[kCGWindowNumber as String] as? Int ?? 0
-        let pid = w[kCGWindowOwnerPID as String] as? Int ?? 0
-        // CGWindowList may return nil title without Screen Recording permission
-        // Fall back to AX API for title
-        var title = w[kCGWindowName as String] as? String ?? ""
-        if title.isEmpty, pid > 0 {
-            if let axWin = findAXWindow(pid: pid_t(pid), wn: wn) {
-                var titleRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute as CFString, &titleRef) == .success {
-                    title = titleRef as? String ?? ""
-                }
-            }
-        }
+    var appWindowCount: [String: Int] = [:]
+    for win in windowList {
+        guard let ownerName = win[kCGWindowOwnerName as String] as? String,
+              terminalApps.contains(ownerName),
+              let bounds = win[kCGWindowBounds as String] as? [String: CGFloat],
+              let x = bounds["X"], let y = bounds["Y"],
+              let w = bounds["Width"], let h = bounds["Height"],
+              w > 50, h > 50 else { continue }
+        let title = win[kCGWindowName as String] as? String ?? ""
+        let windowIndex = appWindowCount[ownerName] ?? 0
+        appWindowCount[ownerName] = windowIndex + 1
         results.append([
-            "app": app, "title": title,
-            "windowNumber": wn, "pid": pid,
-            "x": Int(x), "y": Int(y), "width": Int(bw), "height": Int(bh),
+            "app": ownerName, "title": title, "windowIndex": windowIndex,
+            "windowNumber": win[kCGWindowNumber as String] as? Int ?? 0,
+            "pid": win[kCGWindowOwnerPID as String] as? Int ?? 0,
+            "x": Int(x), "y": Int(y), "width": Int(w), "height": Int(h),
         ])
     }
-    // Clear cache used for title fallback
-    clearCache()
     return results
 }
 
-// ── move: batch AX position+size ──
-func handleMove(_ windows: [[String: Any]]) -> [String: Int] {
+func handleMove(_ windows: [[String: Any]]) -> Any {
     clearCache()
     var moved = 0
     for cmd in windows {
-        guard let pid = (cmd["pid"] as? Int).map({ pid_t($0) }),
-              let wn = cmd["windowNumber"] as? Int,
-              let x = cmd["x"] as? Double, let y = cmd["y"] as? Double,
-              let w = cmd["width"] as? Double, let h = cmd["height"] as? Double,
-              let ax = findAXWindow(pid: pid, wn: wn) else { continue }
-        var pt = CGPoint(x: x, y: y)
-        var sz = CGSize(width: w, height: h)
-        if let v = AXValueCreate(.cgPoint, &pt) { AXUIElementSetAttributeValue(ax, kAXPositionAttribute as CFString, v) }
-        if let v = AXValueCreate(.cgSize, &sz) { AXUIElementSetAttributeValue(ax, kAXSizeAttribute as CFString, v) }
+        guard let x = cmd["x"] as? Double, let y = cmd["y"] as? Double,
+              let w = cmd["width"] as? Double, let h = cmd["height"] as? Double else { continue }
+        let appName = cmd["app"] as? String
+        let pid = (cmd["pid"] as? Int).map { pid_t($0) }
+        guard let appInfo = getApp(pid: pid, name: appName) else { continue }
+        guard let win = findWindow(in: appInfo.windows, windowNumber: cmd["windowNumber"] as? Int, title: cmd["title"] as? String, windowIndex: cmd["windowIndex"] as? Int) else { continue }
+        var point = CGPoint(x: x, y: y)
+        if let val = AXValueCreate(.cgPoint, &point) { AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val) }
+        var size = CGSize(width: w, height: h)
+        if let val = AXValueCreate(.cgSize, &size) { AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, val) }
         moved += 1
     }
     return ["moved": moved]
 }
 
-// ── raise: activate app + AXRaise specific windows by CGWindowID ──
-func handleRaise(_ windows: [[String: Any]]) -> [String: Int] {
+func handleRaise(_ windows: [[String: Any]]) -> Any {
     clearCache()
-    // Group by PID for single activate per app
-    var byPid: [pid_t: [Int]] = [:]
-    for cmd in windows {
-        guard let pid = (cmd["pid"] as? Int).map({ pid_t($0) }),
-              let wn = cmd["windowNumber"] as? Int else { continue }
-        byPid[pid, default: []].append(wn)
-    }
     var raised = 0
-    for (pid, wns) in byPid {
-        // Activate app — brings its window layer forward
-        NSRunningApplication(processIdentifier: pid)?.activate()
-
-        // Wait for activation to take effect
-        usleep(80_000) // 80ms
-
-        // Refresh AX cache after activation (window refs may change)
-        appCache.removeValue(forKey: pid)
-        guard let axWins = getWindows(pid: pid) else { continue }
-
-        // Build CGWindowID → AXUIElement lookup
-        var idMap: [CGWindowID: AXUIElement] = [:]
-        idMap.reserveCapacity(axWins.count)
-        for ax in axWins {
-            var wid: CGWindowID = 0
-            if _AXUIElementGetWindow(ax, &wid) == .success { idMap[wid] = ax }
-        }
-
-        // AXRaise in reverse so first in list = topmost
-        // Also set kAXMain to ensure the window is treated as the front window
-        for wn in wns.reversed() {
-            if let ax = idMap[CGWindowID(wn)] {
-                AXUIElementPerformAction(ax, kAXRaiseAction as CFString)
-                AXUIElementSetAttributeValue(ax, kAXMainAttribute as CFString, kCFBooleanTrue)
-                raised += 1
-            }
-        }
+    for cmd in windows {
+        let appName = cmd["app"] as? String
+        let pid = (cmd["pid"] as? Int).map { pid_t($0) }
+        guard let appInfo = getApp(pid: pid, name: appName) else { continue }
+        guard let win = findWindow(in: appInfo.windows, windowNumber: cmd["windowNumber"] as? Int, title: cmd["title"] as? String, windowIndex: cmd["windowIndex"] as? Int) else { continue }
+        AXUIElementPerformAction(win, kAXRaiseAction as CFString)
+        raised += 1
     }
     return ["raised": raised]
 }
 
 // ── Main loop ──
 setbuf(stdout, nil)
-
-func writeJSON(_ obj: Any) {
-    if let d = try? JSONSerialization.data(withJSONObject: obj),
-       let s = String(data: d, encoding: .utf8) { print(s) }
-}
-
-writeJSON(["ready": true])
+let readyData = try! JSONSerialization.data(withJSONObject: ["ready": true], options: [])
+print(String(data: readyData, encoding: .utf8)!)
 
 while let line = readLine() {
     guard !line.isEmpty,
@@ -149,12 +128,14 @@ while let line = readLine() {
           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let cmd = json["cmd"] as? String else { continue }
     let reqId = json["id"] as? String ?? ""
-    let result: Any
+    var result: Any
     switch cmd {
-    case "list":  result = handleList()
-    case "move":  result = handleMove(json["windows"] as? [[String: Any]] ?? [])
+    case "list": result = handleList()
+    case "move": result = handleMove(json["windows"] as? [[String: Any]] ?? [])
     case "raise": result = handleRaise(json["windows"] as? [[String: Any]] ?? [])
-    default:      result = ["error": "unknown"]
+    default: result = ["error": "unknown command"]
     }
-    writeJSON(["id": reqId, "result": result])
+    let response: [String: Any] = ["id": reqId, "result": result]
+    if let d = try? JSONSerialization.data(withJSONObject: response, options: []),
+       let s = String(data: d, encoding: .utf8) { print(s) }
 }
