@@ -91,7 +91,14 @@ func handleRaise(_ windows: [[String: Any]]) -> [String: Int] {
     for (pid, wns) in byPid {
         // Activate app — brings its window layer forward
         NSRunningApplication(processIdentifier: pid)?.activate()
+
+        // Wait for activation to take effect
+        usleep(80_000) // 80ms
+
+        // Refresh AX cache after activation (window refs may change)
+        appCache.removeValue(forKey: pid)
         guard let axWins = getWindows(pid: pid) else { continue }
+
         // Build CGWindowID → AXUIElement lookup
         var idMap: [CGWindowID: AXUIElement] = [:]
         idMap.reserveCapacity(axWins.count)
@@ -99,10 +106,13 @@ func handleRaise(_ windows: [[String: Any]]) -> [String: Int] {
             var wid: CGWindowID = 0
             if _AXUIElementGetWindow(ax, &wid) == .success { idMap[wid] = ax }
         }
+
         // AXRaise in reverse so first in list = topmost
+        // Also set kAXMain to ensure the window is treated as the front window
         for wn in wns.reversed() {
             if let ax = idMap[CGWindowID(wn)] {
                 AXUIElementPerformAction(ax, kAXRaiseAction as CFString)
+                AXUIElementSetAttributeValue(ax, kAXMainAttribute as CFString, kCFBooleanTrue)
                 raised += 1
             }
         }
