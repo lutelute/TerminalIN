@@ -1,0 +1,51 @@
+{
+  "name": "terminalin",
+  "version": "1.0.0",
+  "description": "Terminal workspace manager for macOS",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder --mac",
+    "dist": "electron-builder --mac --publish never"
+  },
+  "keywords": [],
+  "author": "shigenoburyuto",
+  "license": "ISC",
+  "type": "commonjs",
+  "build": {
+    "appId": "com.shigenoburyuto.terminalin",
+    "productName": "TerminalIN",
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": "dmg",
+      "icon": "icon.icns",
+      "extraResources": [
+        {
+          "from": "daemon",
+          "to": "daemon"
+        }
+      ]
+    },
+    "files": [
+      "main.js",
+      "workspace.html",
+      "grid-terminal.html",
+      "preload.js",
+      "node_modules/@xterm/**",
+      "node_modules/node-pty/**"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^41.1.1",
+    "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "node-pty": "^1.1.0"
+  }
+}
