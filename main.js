@@ -89,7 +89,11 @@ function isExternalSnapped(windowNumber) {
 function getGridArea(ws) {
   if (!ws.win || ws.win.isDestroyed()) return null;
   const b = ws.win.getBounds();
-  return { x: b.x + b.width + 4, y: b.y, width: 900, height: b.height };
+  // Use the display that contains the workspace window to calculate grid width
+  const display = screen.getDisplayMatching(b);
+  const workArea = display.workArea;
+  const gridWidth = Math.min(workArea.x + workArea.width - (b.x + b.width + 4), workArea.width * 0.7);
+  return { x: b.x + b.width + 4, y: b.y, width: Math.max(400, gridWidth), height: b.height };
 }
 
 function getSlotBounds(ws, slot) {
@@ -123,16 +127,12 @@ function raiseSnappedExternals(ws) {
     byApp.get(info.app).push(info);
   }
 
-  // Build a single AppleScript that:
-  // 1. Activates each terminal app
-  // 2. Uses "set index" to put ONLY snapped windows at front (index 1, 2, ...)
+  // Activate each app, then set index by window id (not title, which changes)
   const scriptParts = [];
   for (const [appName, windows] of byApp) {
-    // Escape titles for AppleScript
-    const setIndexLines = windows.map((w, i) => {
-      const escaped = w.title.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      return `      try\n        set index of window "${escaped}" to ${i + 1}\n      end try`;
-    }).join('\n');
+    const setIndexLines = windows.map((w, i) =>
+      `      try\n        set index of window id ${w.windowNumber} to ${i + 1}\n      end try`
+    ).join('\n');
 
     scriptParts.push(
       `tell application "${appName}"\n` +
