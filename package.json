@@ -1,5 +1,5 @@
 {
-  "name": "terminalin",
+  "name": "tin",
   "version": "1.0.0",
   "description": "Terminal workspace manager for macOS",
   "main": "main.js",
@@ -14,8 +14,8 @@
   "license": "ISC",
   "type": "commonjs",
   "build": {
-    "appId": "com.shigenoburyuto.terminalin",
-    "productName": "TerminalIN",
+    "appId": "com.shigenoburyuto.tin",
+    "productName": "TiN",
     "afterPack": "scripts/clean-xattr.js",
     "mac": {
       "category": "public.app-category.developer-tools",
@@ -33,6 +33,7 @@
       "main.js",
       "workspace.html",
       "grid-terminal.html",
+      "grid-overlay.html",
       "node_modules/@xterm/**",
       "node_modules/node-pty/**"
     ],

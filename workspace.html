@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>TerminalIN</title>
+<title>TiN</title>
 <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css" />
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -176,7 +176,7 @@
 <body>
 
 <div id="titlebar">
-  <span id="title">TerminalIN</span>
+  <span id="title">TiN</span>
   <input id="title-input" type="text" />
   <div style="flex:1"></div>
   <div id="raise-btn" title="Bring all terminals to front">&#x25A3;</div>
@@ -196,7 +196,7 @@ const titleEl = document.getElementById('title');
 const titleInput = document.getElementById('title-input');
 
 let wsId = null;
-let wsName = 'TerminalIN';
+let wsName = 'TiN';
 
 // State
 const embeddedTerms = [];
@@ -471,6 +471,11 @@ ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo) => {
 
 // ── Raise button ──
 document.getElementById('raise-btn').addEventListener('click', () => {
+  ipcRenderer.send('raise-all');
+});
+
+// ── Raise on any click on workspace (alwaysOnTop means focus event won't re-fire) ──
+document.addEventListener('mousedown', () => {
   ipcRenderer.send('raise-all');
 });
 

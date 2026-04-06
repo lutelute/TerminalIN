@@ -3,6 +3,9 @@ const path = require('path');
 const pty = require('node-pty');
 const { spawn, exec } = require('child_process');
 
+// Always enable remote debugging for MCP integration
+app.commandLine.appendSwitch('remote-debugging-port', '9222');
+
 // ── Workspace registry ──
 const workspaces = new Map();
 let nextWsId = 1;
@@ -62,22 +65,16 @@ async function batchMove(cmds) {
   // Try daemon first
   const result = await daemonRequest('move', { windows: cmds });
   if (result.moved && result.moved >= cmds.length) return;
-  // osascript via System Events (Quartz coords, same as Electron/CGWindowList)
+  // osascript fallback: use window id (unique) instead of title (can match wrong window)
   const { execSync } = require('child_process');
   for (const cmd of cmds) {
     if (!cmd.windowNumber || cmd.x == null || !cmd.app) continue;
     try {
-      const title = (cmd.title || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      execSync(`osascript -e 'tell application "System Events" to tell process "${cmd.app}"
-repeat with w in every window
+      execSync(`osascript -e 'tell application "${cmd.app}"
   try
-    if name of w contains "${title.substring(0, 20)}" then
-      set position of w to {${cmd.x}, ${cmd.y}}
-      set size of w to {${cmd.width}, ${cmd.height}}
-      exit repeat
-    end if
+    set w to window id ${cmd.windowNumber}
+    set bounds of w to {${cmd.x}, ${cmd.y}, ${cmd.x + cmd.width}, ${cmd.y + cmd.height}}
   end try
-end repeat
 end tell'`, { timeout: 3000 });
     } catch {}
   }
@@ -88,19 +85,19 @@ async function raiseSpecificWindows(cmds) {
   if (!cmds.length) return;
   const result = await daemonRequest('raise', { windows: cmds });
   if (result.raised && result.raised >= cmds.length) return;
-  // osascript fallback: activate app + set index by window id
+  // osascript fallback: raise only the specific windows, not the whole app
   const byApp = new Map();
   for (const cmd of cmds) {
-    const app = cmd.app;
-    if (!app) continue;
-    if (!byApp.has(app)) byApp.set(app, []);
-    byApp.get(app).push(cmd);
+    if (!cmd.app) continue;
+    if (!byApp.has(cmd.app)) byApp.set(cmd.app, []);
+    byApp.get(cmd.app).push(cmd);
   }
   for (const [appName, wins] of byApp) {
-    const lines = wins.map((w, i) =>
-      `  try\n    set index of window id ${w.windowNumber} to ${i + 1}\n  end try`
-    ).join('\n');
-    const script = `tell application "${appName}"\n  activate\n  delay 0.15\n${lines}\nend tell`;
+    const raiseLines = wins.map(w => {
+      const t = (w.title || '').substring(0, 20).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      return `    try\n      perform action "AXRaise" of (first window whose name contains "${t}")\n    end try`;
+    }).join('\n');
+    const script = `tell application "System Events" to tell process "${appName}"\n  set frontmost to true\n${raiseLines}\nend tell`;
     exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`);
   }
 }
@@ -122,6 +119,9 @@ function isExternalSnapped(windowNumber) {
 
 // ── Grid geometry ──
 function getGridArea(ws) {
+  if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) {
+    return ws.gridOverlay.getBounds();
+  }
   if (!ws.win || ws.win.isDestroyed()) return null;
   const b = ws.win.getBounds();
   return { x: b.x + b.width + 4, y: b.y, width: 800, height: b.height };
@@ -142,19 +142,38 @@ function getSlotBounds(ws, slot) {
   };
 }
 
-// ── Raise snapped externals ──
+// ── Raise all workspace windows (grid + snapped externals) ──
 let lastRaiseTime = 0;
 
-function raiseSnappedExternals(ws) {
-  if (!ws || ws.snappedExternals.size === 0) return;
+function raiseAllWorkspaceWindows(ws, force = false) {
+  if (!ws) return;
   const now = Date.now();
-  if (now - lastRaiseTime < 1000) return;
+  if (!force && now - lastRaiseTime < 300) return;
   lastRaiseTime = now;
 
-  const cmds = [...ws.snappedExternals.values()].map(info => ({
-    windowNumber: info.windowNumber, pid: info.pid, app: info.app,
-  }));
-  raiseSpecificWindows(cmds);
+  // 1. Raise snapped external terminal windows first
+  if (ws.snappedExternals.size > 0) {
+    const cmds = [...ws.snappedExternals.values()].map(info => ({
+      windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
+    }));
+    raiseSpecificWindows(cmds);
+  }
+
+  // 2. Raise grid BrowserWindows above the externals
+  for (const [, gw] of ws.gridWindows) {
+    if (gw.win && !gw.win.isDestroyed()) {
+      gw.win.show();
+    }
+  }
+
+  // 3. Bring overlay + workspace sidebar to the top
+  if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) {
+    ws.gridOverlay.show();
+  }
+  if (ws.win && !ws.win.isDestroyed()) {
+    ws.win.show();
+    ws.win.focus();
+  }
 }
 
 // ── Retile: reposition all grid items (embedded + external) ──
@@ -368,6 +387,9 @@ ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
   if (!ws) return;
   ws.gridCols = cols;
   ws.gridRows = rows;
+  if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) {
+    ws.gridOverlay.webContents.send('update-grid', { cols, rows });
+  }
   retileAll(ws);
 });
 
@@ -408,7 +430,7 @@ function createWorkspace(name) {
     trafficLightPosition: { x: 12, y: 10 },
     vibrancy: 'sidebar',
     visualEffectState: 'active',
-    alwaysOnTop: true,
+    alwaysOnTop: false,
     acceptFirstMouse: true,
     webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
   });
@@ -419,11 +441,56 @@ function createWorkspace(name) {
     snappedExternals: new Map(),
     gridWindows: new Map(),    // slot -> { win, pty, ptyId }
     sidebarPtys: new Map(),    // ptyId -> pty (for sidebar embedded terms)
+    gridOverlay: null,
     pollTimer: null,
     moveThrottle: null,
+    overlayThrottle: null,
     gridCols: 2, gridRows: 2, // default 2x2
   };
   workspaces.set(wsId, ws);
+
+  // Keep workspace above normal windows but allow other apps to cover it
+  win.setAlwaysOnTop(true, 'floating');
+
+  // ── Grid overlay (semi-transparent resizable area) ──
+  function createGridOverlay() {
+    const wb = win.getBounds();
+    const overlayX = wb.x + wb.width + 4;
+    const overlayY = wb.y;
+    const overlay = new BrowserWindow({
+      x: overlayX,
+      y: overlayY,
+      width: 800,
+      height: wb.height,
+      minWidth: 300, minHeight: 200,
+      frame: false,
+      transparent: true,
+      hasShadow: false,
+      resizable: true,
+      acceptFirstMouse: true,
+      webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
+    });
+    overlay.loadFile('grid-overlay.html');
+    // Force position after creation (transparent windows can drift)
+    overlay.setBounds({ x: overlayX, y: overlayY, width: 800, height: wb.height });
+    // Click-through by default — only handles are interactive
+    overlay.setIgnoreMouseEvents(true, { forward: true });
+    ws.gridOverlay = overlay;
+
+    const scheduleOverlayRetile = () => {
+      if (ws.overlayThrottle) return;
+      ws.overlayThrottle = setTimeout(async () => {
+        ws.overlayThrottle = null;
+        await retileAll(ws);
+      }, 16);
+    };
+    overlay.on('resize', scheduleOverlayRetile);
+    overlay.on('move', scheduleOverlayRetile);
+    overlay.on('closed', () => { ws.gridOverlay = null; });
+  }
+
+  // Create overlay after workspace is shown
+  win.once('show', () => setTimeout(createGridOverlay, 100));
 
   win.loadFile('workspace.html');
   win.webContents.on('did-finish-load', () => {
@@ -432,13 +499,24 @@ function createWorkspace(name) {
 
   if (process.argv.includes('--dev')) win.webContents.openDevTools({ mode: 'detach' });
 
-  // Move grid items when sidebar moves/resizes
+  // Move grid items + overlay when sidebar moves/resizes
+  // Sync overlay immediately (visual), but debounce retile (expensive)
+  const syncOverlay = () => {
+    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.win && !ws.win.isDestroyed()) {
+      const sb = ws.win.getBounds();
+      const ob = ws.gridOverlay.getBounds();
+      ws.gridOverlay.setBounds({ x: sb.x + sb.width + 4, y: sb.y, width: ob.width, height: sb.height });
+    }
+  };
   const scheduleRetile = () => {
-    if (ws.moveThrottle) return;
+    syncOverlay();
+    // Debounce retile — only fire after drag stops (300ms)
+    if (ws.moveThrottle) clearTimeout(ws.moveThrottle);
     ws.moveThrottle = setTimeout(async () => {
       ws.moveThrottle = null;
+      syncOverlay();
       await retileAll(ws);
-    }, 16);
+    }, 300);
   };
   win.on('move', scheduleRetile);
   win.on('resize', scheduleRetile);
@@ -481,6 +559,10 @@ function createWorkspace(name) {
   win.on('closed', async () => {
     if (ws.pollTimer) clearInterval(ws.pollTimer);
     if (ws.moveThrottle) clearTimeout(ws.moveThrottle);
+    if (ws.overlayThrottle) clearTimeout(ws.overlayThrottle);
+    // Close grid overlay
+    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) ws.gridOverlay.close();
+    ws.gridOverlay = null;
     // Close grid windows
     for (const [, gw] of ws.gridWindows) {
       try { gw.pty.kill(); } catch {}
@@ -509,18 +591,59 @@ function createWorkspace(name) {
 app.on('browser-window-focus', (_event, focusedWin) => {
   let ws = null;
   for (const [, w] of workspaces) {
-    if (w.win === focusedWin) { ws = w; break; }
+    if (w.win === focusedWin || w.gridOverlay === focusedWin) { ws = w; break; }
     for (const [, gw] of w.gridWindows) {
       if (gw.win === focusedWin) { ws = w; break; }
     }
     if (ws) break;
   }
-  if (ws) raiseSnappedExternals(ws);
+  if (ws) raiseAllWorkspaceWindows(ws);
 });
 
 ipcMain.on('raise-all', (event) => {
   const ws = findWorkspace(event.sender);
-  if (ws) raiseSnappedExternals(ws);
+  if (ws) raiseAllWorkspaceWindows(ws, true);
+});
+
+ipcMain.on('raise-all-from-overlay', (event) => {
+  for (const [, ws] of workspaces) {
+    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
+      raiseAllWorkspaceWindows(ws, true);
+      return;
+    }
+  }
+});
+
+ipcMain.on('set-overlay-clickthrough', (event, clickthrough) => {
+  for (const [, ws] of workspaces) {
+    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
+      if (clickthrough) {
+        ws.gridOverlay.setIgnoreMouseEvents(true, { forward: true });
+      } else {
+        ws.gridOverlay.setIgnoreMouseEvents(false);
+      }
+      return;
+    }
+  }
+});
+
+ipcMain.handle('get-overlay-bounds', (event) => {
+  for (const [, ws] of workspaces) {
+    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
+      return ws.gridOverlay.getBounds();
+    }
+  }
+  return null;
+});
+
+ipcMain.on('resize-overlay', (event, { width, height }) => {
+  for (const [, ws] of workspaces) {
+    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
+      const b = ws.gridOverlay.getBounds();
+      ws.gridOverlay.setBounds({ x: b.x, y: b.y, width, height });
+      return;
+    }
+  }
 });
 
 // ── App ──
