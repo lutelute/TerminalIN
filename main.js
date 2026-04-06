@@ -124,7 +124,7 @@ function getGridArea(ws) {
   }
   if (!ws.win || ws.win.isDestroyed()) return null;
   const b = ws.win.getBounds();
-  return { x: b.x + b.width + 4, y: b.y, width: 800, height: b.height };
+  return { x: b.x + b.width + 12, y: b.y, width: 800, height: b.height };
 }
 
 function getSlotBounds(ws, slot) {
@@ -449,13 +449,11 @@ function createWorkspace(name) {
   };
   workspaces.set(wsId, ws);
 
-  // Keep workspace above normal windows but allow other apps to cover it
-  win.setAlwaysOnTop(true, 'floating');
 
   // ── Grid overlay (semi-transparent resizable area) ──
   function createGridOverlay() {
     const wb = win.getBounds();
-    const overlayX = wb.x + wb.width + 4;
+    const overlayX = wb.x + wb.width + 12;
     const overlayY = wb.y;
     const overlay = new BrowserWindow({
       x: overlayX,
@@ -505,7 +503,7 @@ function createWorkspace(name) {
     if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.win && !ws.win.isDestroyed()) {
       const sb = ws.win.getBounds();
       const ob = ws.gridOverlay.getBounds();
-      ws.gridOverlay.setBounds({ x: sb.x + sb.width + 4, y: sb.y, width: ob.width, height: sb.height });
+      ws.gridOverlay.setBounds({ x: sb.x + sb.width + 12, y: sb.y, width: ob.width, height: sb.height });
     }
   };
   const scheduleRetile = () => {

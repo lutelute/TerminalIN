@@ -9,168 +9,227 @@
   html, body {
     width: 100%; height: 100%;
     overflow: hidden;
-    font-family: -apple-system, 'SF Pro Text', sans-serif;
-    color: #333;
+    font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+    color: #2c2c3a;
     display: flex; flex-direction: column;
     background: transparent;
   }
 
+  /* ── Titlebar ── */
   #titlebar {
-    height: 38px;
+    height: 52px;
     -webkit-app-region: drag;
     display: flex; align-items: center;
     padding: 0 10px 0 72px;
     flex-shrink: 0;
-    border-bottom: 1px solid rgba(0,0,0,0.06);
+    border-bottom: 1px solid rgba(0,0,0,0.08);
   }
   #title {
-    font-size: 13px; font-weight: 600; color: rgba(60,60,90,0.5);
-    cursor: default; user-select: none;
+    font-size: 14px; font-weight: 700; color: rgba(40,40,70,0.75);
+    cursor: text; user-select: none;
     -webkit-app-region: no-drag;
+    letter-spacing: -0.2px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: background 0.1s;
   }
+  #title:hover { background: rgba(0,0,0,0.04); }
   #title-input {
-    font-size: 13px; font-weight: 600; color: rgba(60,60,90,0.7);
-    background: rgba(0,0,0,0.04); border: 1px solid rgba(0,0,0,0.1);
-    border-radius: 4px; padding: 1px 6px; outline: none;
-    font-family: inherit;
+    font-size: 14px; font-weight: 700; color: rgba(40,40,70,0.85);
+    background: rgba(0,0,0,0.04); border: 1px solid rgba(0,0,0,0.15);
+    border-radius: 4px; padding: 2px 6px; outline: none;
+    font-family: inherit; width: 100%;
     -webkit-app-region: no-drag;
     display: none;
   }
 
   #collapse-btn {
-    width: 22px; height: 22px; border-radius: 5px;
+    width: 24px; height: 24px; border-radius: 6px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 14px; font-weight: 600;
-    color: rgba(60,60,90,0.3); cursor: pointer;
+    font-size: 15px; font-weight: 600;
+    color: rgba(40,40,70,0.35); cursor: pointer;
     -webkit-app-region: no-drag;
     transition: background 0.15s, color 0.15s;
     flex-shrink: 0;
   }
-  #collapse-btn:hover { background: rgba(0,0,0,0.06); color: rgba(60,60,90,0.5); }
+  #collapse-btn:hover { background: rgba(0,0,0,0.06); color: rgba(40,40,70,0.6); }
 
   body.collapsed #content, body.collapsed #status { display: none; }
   body.collapsed #titlebar {
     flex-direction: column; height: 100%; padding: 42px 0 8px; align-items: center; gap: 6px;
+    -webkit-app-region: drag;
   }
-  body.collapsed #title { writing-mode: vertical-rl; font-size: 10px; letter-spacing: 1px; flex: 1; }
+  body.collapsed #title { writing-mode: vertical-rl; font-size: 11px; letter-spacing: 1px; flex: 1; cursor: default; }
+  body.collapsed #title:hover { background: transparent; }
   body.collapsed #title-input { display: none !important; }
   body.collapsed #collapse-btn { transform: rotate(180deg); }
 
-  #content { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
-  #content::-webkit-scrollbar { width: 4px; }
-  #content::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 2px; }
+  /* ── Content ── */
+  #content { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 5px; }
+  #content::-webkit-scrollbar { width: 5px; }
+  #content::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 3px; }
+
+  /* ── Sections ── */
+  .section {
+    padding: 6px;
+    display: flex; flex-direction: column; gap: 3px;
+    border-radius: 6px;
+  }
+  .section-grid { background: rgba(130,80,220,0.04); }
+  .section-available { background: rgba(40,120,210,0.04); }
 
   .section-title {
-    font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px;
-    color: rgba(60,60,90,0.35); padding: 6px 0 2px;
+    font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px;
+    color: rgba(0,0,0,0.35); padding: 2px 0 3px;
     display: flex; align-items: center; gap: 6px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .section-title .section-accent { font-weight: 700; }
+  .section-grid .section-accent { color: rgba(120,70,200,0.5); }
+  .section-available .section-accent { color: rgba(40,110,200,0.5); }
+
+  .section-title-clickable { cursor: pointer; user-select: none; }
+  .section-title-clickable:hover { color: rgba(0,0,0,0.5); }
+  .section-toggle { font-size: 9px; }
+
+  /* ── Console fixed to bottom ── */
+  .section-console {
+    border-top: 1px solid rgba(0,0,0,0.06);
+    padding: 6px;
+    margin-top: auto;
+    flex-shrink: 0;
   }
 
-  /* Grid size selector */
+  /* ── Grid size selector ── */
   .grid-selector { display: flex; gap: 2px; margin-left: auto; }
   .grid-opt {
-    font-size: 8px; padding: 1px 5px; border-radius: 3px; cursor: pointer;
-    border: 1px solid rgba(0,0,0,0.08); color: rgba(60,60,90,0.4); background: transparent;
+    font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 3px; cursor: pointer;
+    border: none; color: rgba(0,0,0,0.3); background: transparent;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    transition: all 0.1s;
   }
-  .grid-opt:hover { background: rgba(0,0,0,0.04); }
-  .grid-opt.active { background: rgba(50,130,220,0.1); color: rgba(50,130,220,0.7); border-color: rgba(50,130,220,0.2); }
+  .grid-opt:hover { background: rgba(0,0,0,0.06); color: rgba(0,0,0,0.5); }
+  .grid-opt.active { background: rgba(0,0,0,0.08); color: rgba(0,0,0,0.6); }
 
-  /* Embedded terminal card */
+  /* ── Terminal card (sidebar embedded) ── */
   .term-card {
-    background: rgba(0,0,0,0.03); border: 1px solid rgba(0,0,0,0.06);
+    background: rgba(0,0,0,0.025); border: 1px solid rgba(0,0,0,0.07);
     border-radius: 8px; overflow: hidden;
   }
   .term-card .card-header {
-    display: flex; align-items: center; gap: 4px; padding: 4px 6px; cursor: pointer;
+    display: flex; align-items: center; gap: 6px; padding: 6px 8px; cursor: pointer;
+    transition: background 0.1s;
   }
-  .term-card .card-header:hover { background: rgba(0,0,0,0.03); }
+  .term-card .card-header:hover { background: rgba(0,0,0,0.04); }
   .term-card.expanded .term-embed { display: block; }
   .term-card .term-embed { display: none; height: 200px; }
-  .card-title { flex: 1; font-size: 11px; color: rgba(40,40,60,0.7); font-family: 'SF Mono', monospace; }
-  .card-badge { font-size: 8px; padding: 1px 5px; border-radius: 3px; }
-  .badge-pty { background: rgba(60,180,120,0.1); color: rgba(60,160,120,0.7); }
-  .badge-grid { background: rgba(130,80,220,0.1); color: rgba(130,80,220,0.7); }
-  .badge-ext { background: rgba(50,130,220,0.1); color: rgba(50,130,220,0.7); }
-  .card-close {
-    width: 18px; height: 18px; border-radius: 4px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 12px; color: rgba(0,0,0,0.2); cursor: pointer;
+  .card-title {
+    flex: 1; font-size: 12px; font-weight: 500; color: rgba(30,30,50,0.8);
+    font-family: 'SF Mono', 'Menlo', monospace;
   }
-  .card-close:hover { background: rgba(255,60,60,0.1); color: rgba(255,60,60,0.7); }
 
-  /* External terminal item */
-  .ext-item {
-    display: flex; align-items: center; gap: 4px;
-    padding: 4px 6px;
-    background: rgba(0,0,0,0.02); border: 1px solid rgba(0,0,0,0.05);
-    border-radius: 6px;
+  /* ── Badges ── */
+  .card-badge {
+    font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 3px;
+    letter-spacing: 0.5px;
+    font-family: 'SF Mono', 'Menlo', monospace;
   }
+  .badge-pty { background: rgba(50,170,110,0.1); color: rgba(40,140,90,0.8); }
+  .badge-grid { background: rgba(120,70,200,0.1); color: rgba(110,60,190,0.8); }
+  .badge-ext { background: rgba(40,120,210,0.1); color: rgba(30,100,190,0.8); }
+
+  .card-close {
+    width: 20px; height: 20px; border-radius: 5px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; color: rgba(0,0,0,0.25); cursor: pointer;
+    transition: all 0.12s;
+  }
+  .card-close:hover { background: rgba(255,50,50,0.1); color: rgba(230,50,50,0.8); }
+
+  /* ── External terminal item ── */
+  .ext-item {
+    display: flex; align-items: center; gap: 5px;
+    padding: 5px 6px;
+    background: transparent; border: none; border-bottom: 1px solid rgba(0,0,0,0.04);
+    border-radius: 0;
+    transition: background 0.1s;
+  }
+  .ext-item:last-child { border-bottom: none; }
+  .ext-item:hover { background: rgba(0,0,0,0.03); }
   .ext-item .ext-title {
-    flex: 1; font-size: 10px; color: rgba(40,40,60,0.6);
-    font-family: 'SF Mono', monospace;
+    flex: 1; font-size: 11px; font-weight: 500; color: rgba(0,0,0,0.55);
+    font-family: 'SF Mono', 'Menlo', monospace;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .ext-btn {
-    padding: 2px 8px; border-radius: 4px; font-size: 9px;
-    cursor: pointer; border: 1px solid;
-  }
-  .ext-btn.snap { color: rgba(50,130,220,0.7); border-color: rgba(50,130,220,0.2); background: transparent; }
-  .ext-btn.snap:hover { background: rgba(50,130,220,0.08); }
-  .ext-btn.release { color: rgba(220,80,50,0.7); border-color: rgba(220,80,50,0.2); background: transparent; }
-  .ext-btn.release:hover { background: rgba(220,80,50,0.08); }
 
-  .snapped-badge { font-size: 8px; padding: 1px 5px; border-radius: 3px; background: rgba(50,130,220,0.1); color: rgba(50,130,220,0.7); }
-  .ws-badge { font-size: 8px; padding: 1px 5px; border-radius: 3px; background: rgba(180,120,50,0.12); color: rgba(180,120,50,0.7); white-space: nowrap; }
+  /* ── Buttons ── */
+  .ext-btn {
+    padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 600;
+    cursor: pointer; border: none; transition: all 0.1s;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .ext-btn.snap {
+    color: rgba(40,110,200,0.7); background: rgba(40,120,210,0.08);
+  }
+  .ext-btn.snap:hover { background: rgba(40,120,210,0.16); color: rgba(30,90,180,0.9); }
+  .ext-btn.release {
+    color: rgba(180,50,30,0.7); background: rgba(180,50,30,0.08);
+  }
+  .ext-btn.release:hover { background: rgba(180,50,30,0.15); }
+
+  .snapped-badge {
+    font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 4px;
+    background: rgba(40,120,210,0.12); color: rgba(30,100,190,0.85);
+  }
+  .ws-badge {
+    font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 4px;
+    background: rgba(180,120,40,0.12); color: rgba(160,100,30,0.85); white-space: nowrap;
+  }
 
   .release-all-btn {
     display: flex; align-items: center; justify-content: center;
-    padding: 4px; border-radius: 5px; margin-top: 2px;
-    border: 1px solid rgba(220,80,50,0.15); cursor: pointer;
-    font-size: 9px; color: rgba(220,80,50,0.5); background: transparent;
+    padding: 4px; border-radius: 3px; margin-top: 2px;
+    border: none; cursor: pointer;
+    font-size: 9px; font-weight: 600; color: rgba(180,50,30,0.5); background: rgba(180,50,30,0.05);
+    font-family: 'SF Mono', 'Menlo', monospace;
+    transition: all 0.1s;
   }
-  .release-all-btn:hover { background: rgba(220,80,50,0.06); }
+  .release-all-btn:hover { background: rgba(180,50,30,0.1); color: rgba(180,50,30,0.7); }
 
   .add-btn {
     display: flex; align-items: center; justify-content: center; gap: 4px;
-    padding: 6px; border-radius: 6px;
+    padding: 6px; border-radius: 3px;
     border: 1px dashed rgba(0,0,0,0.08); cursor: pointer;
-    font-size: 10px; color: rgba(60,180,120,0.5);
+    font-size: 10px; font-weight: 500; color: rgba(0,0,0,0.3);
+    font-family: 'SF Mono', 'Menlo', monospace;
+    transition: all 0.1s;
   }
-  .add-btn:hover { border-color: rgba(60,180,120,0.3); background: rgba(60,180,120,0.04); }
-  .add-btn.grid-add { color: rgba(130,80,220,0.5); }
-  .add-btn.grid-add:hover { border-color: rgba(130,80,220,0.3); background: rgba(130,80,220,0.04); }
+  .add-btn:hover { background: rgba(0,0,0,0.04); color: rgba(0,0,0,0.5); border-color: rgba(0,0,0,0.15); }
+  .add-btn.grid-add { color: rgba(0,0,0,0.3); }
+  .add-btn.grid-add:hover { background: rgba(0,0,0,0.04); color: rgba(0,0,0,0.5); }
 
+  /* ── Status bar ── */
   #status {
-    padding: 6px 10px; font-size: 9px; color: rgba(0,0,0,0.25);
-    border-top: 1px solid rgba(0,0,0,0.05); flex-shrink: 0;
-    font-family: 'SF Mono', monospace;
+    padding: 7px 10px; font-size: 10px; font-weight: 500; color: rgba(0,0,0,0.3);
+    border-top: 1px solid rgba(0,0,0,0.06); flex-shrink: 0;
+    font-family: 'SF Mono', 'Menlo', monospace;
   }
 
-  body.compact #titlebar { height: 32px; padding-left: 64px; }
-  body.compact #title { font-size: 11px; }
-  body.compact #content { padding: 4px; gap: 2px; }
+  /* ── Compact mode ── */
+  body.compact #titlebar { height: 34px; padding-left: 64px; }
+  body.compact #title { font-size: 12px; }
+  body.compact #content { padding: 5px; gap: 3px; }
   body.compact .section-title { display: none; }
-  body.compact .term-card .card-header { padding: 3px 5px; }
+  body.compact .term-card .card-header { padding: 4px 6px; }
   body.compact .card-title { font-size: 10px; }
-  body.compact .card-badge, body.compact .snapped-badge, body.compact .ws-badge { font-size: 7px; padding: 0 4px; }
-  body.compact .ext-item { padding: 3px 5px; }
-  body.compact .ext-title { font-size: 9px; }
-  body.compact .ext-btn { font-size: 8px; padding: 1px 6px; }
-  body.compact .add-btn { padding: 4px; font-size: 9px; }
-  body.compact #status { padding: 3px 6px; font-size: 8px; }
+  body.compact .card-badge, body.compact .snapped-badge, body.compact .ws-badge { font-size: 8px; padding: 1px 5px; }
+  body.compact .ext-item { padding: 4px 6px; }
+  body.compact .ext-title { font-size: 10px; }
+  body.compact .ext-btn { font-size: 9px; padding: 2px 8px; }
+  body.compact .add-btn { padding: 5px; font-size: 10px; }
+  body.compact #status { padding: 4px 8px; font-size: 9px; }
   body.compact .term-embed { height: 150px; }
 
-  /* Raise button */
-  #raise-btn {
-    width: 22px; height: 22px; border-radius: 5px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 13px;
-    color: rgba(50,130,220,0.4); cursor: pointer;
-    -webkit-app-region: no-drag;
-    transition: background 0.15s, color 0.15s;
-    flex-shrink: 0; margin-right: 4px;
-  }
-  #raise-btn:hover { background: rgba(50,130,220,0.1); color: rgba(50,130,220,0.7); }
 </style>
 </head>
 <body>
@@ -179,7 +238,6 @@
   <span id="title">TiN</span>
   <input id="title-input" type="text" />
   <div style="flex:1"></div>
-  <div id="raise-btn" title="Bring all terminals to front">&#x25A3;</div>
   <div id="collapse-btn" title="Collapse sidebar (Cmd+B)">‹</div>
 </div>
 <div id="content"></div>
@@ -207,8 +265,8 @@ let gridSlots = {};
 let lastExtIdentity = '';
 let gridCols = 2, gridRows = 2;
 
-// ── Title renaming ──
-titleEl.addEventListener('dblclick', () => {
+// ── Title renaming (click to edit) ──
+titleEl.addEventListener('click', () => {
   titleEl.style.display = 'none';
   titleInput.style.display = 'inline-block';
   titleInput.value = wsName;
@@ -307,14 +365,19 @@ function setGridSize(cols, rows) {
 }
 
 // ── Render ──
+let sidebarCollapsed = true; // Sidebar terminals collapsed by default
+
 function render() {
   content.innerHTML = '';
 
-  // Grid section
+  // ━━ GRID section ━━
+  const gridSection = document.createElement('div');
+  gridSection.className = 'section section-grid';
+
   const gridTitle = document.createElement('div');
   gridTitle.className = 'section-title';
   const gridCount = Object.keys(gridSlots).length + snappedExternals.size;
-  gridTitle.innerHTML = `GRID (${gridCount}/${gridCols * gridRows})`;
+  gridTitle.innerHTML = `<span class="section-accent">GRID</span> (${gridCount}/${gridCols * gridRows})`;
 
   const selector = document.createElement('div');
   selector.className = 'grid-selector';
@@ -326,25 +389,20 @@ function render() {
     selector.appendChild(btn);
   });
   gridTitle.appendChild(selector);
-  content.appendChild(gridTitle);
+  gridSection.appendChild(gridTitle);
 
-  // Grid terminal entries
   for (const [slot, info] of Object.entries(gridSlots)) {
     const card = document.createElement('div');
     card.className = 'ext-item';
-    card.innerHTML = `
-      <span class="card-badge badge-grid">GRID</span>
-      <span class="ext-title">Terminal #${Number(slot) + 1}</span>
-    `;
+    card.innerHTML = `<span class="card-badge badge-grid">GRID</span><span class="ext-title">Terminal #${Number(slot) + 1}</span>`;
     const closeBtn = document.createElement('span');
     closeBtn.className = 'card-close';
     closeBtn.textContent = '\u00d7';
     closeBtn.addEventListener('click', () => removeGridTerminal(slot));
     card.appendChild(closeBtn);
-    content.appendChild(card);
+    gridSection.appendChild(card);
   }
 
-  // Snapped externals
   for (const [wn, info] of snappedExternals) {
     const item = document.createElement('div');
     item.className = 'ext-item';
@@ -356,19 +414,17 @@ function render() {
     btn.textContent = 'Release';
     btn.addEventListener('click', () => unsnapExternal(wn));
     item.appendChild(btn);
-    content.appendChild(item);
+    gridSection.appendChild(item);
   }
 
-  // Add grid terminal button
   if (gridCount < gridCols * gridRows) {
     const addGrid = document.createElement('div');
     addGrid.className = 'add-btn grid-add';
     addGrid.textContent = '+ Grid terminal';
     addGrid.addEventListener('click', addGridTerminal);
-    content.appendChild(addGrid);
+    gridSection.appendChild(addGrid);
   }
 
-  // Release all
   if (snappedExternals.size > 1) {
     const releaseAll = document.createElement('div');
     releaseAll.className = 'release-all-btn';
@@ -376,49 +432,21 @@ function render() {
     releaseAll.addEventListener('click', async () => {
       for (const wn of [...snappedExternals.keys()]) await unsnapExternal(wn);
     });
-    content.appendChild(releaseAll);
+    gridSection.appendChild(releaseAll);
   }
 
-  // Sidebar embedded terminals
-  const embTitle = document.createElement('div');
-  embTitle.className = 'section-title';
-  embTitle.textContent = `SIDEBAR TERMINALS (${embeddedTerms.length})`;
-  content.appendChild(embTitle);
+  content.appendChild(gridSection);
 
-  embeddedTerms.forEach((s, i) => {
-    const card = document.createElement('div');
-    card.className = `term-card${s.expanded ? ' expanded' : ''}`;
-    const header = document.createElement('div');
-    header.className = 'card-header';
-    header.innerHTML = `<span class="card-badge badge-pty">PTY</span><span class="card-title">${s.title}</span><span class="card-close">\u00d7</span>`;
-    header.querySelector('.card-title').addEventListener('click', () => toggleExpand(i));
-    header.querySelector('.card-close').addEventListener('click', (e) => { e.stopPropagation(); removeEmbedded(i); });
-    card.appendChild(header);
-    const embed = document.createElement('div');
-    embed.className = 'term-embed';
-    card.appendChild(embed);
-    content.appendChild(card);
-    if (s.expanded) {
-      s.term.open(embed);
-      requestAnimationFrame(() => {
-        try { s.fitAddon.fit(); ipcRenderer.send('terminal-resize', { id: s.id, cols: s.term.cols, rows: s.term.rows }); } catch {}
-      });
-    }
-  });
-
-  const addBtn = document.createElement('div');
-  addBtn.className = 'add-btn';
-  addBtn.textContent = '+ Sidebar terminal';
-  addBtn.addEventListener('click', () => addEmbedded());
-  content.appendChild(addBtn);
-
-  // Available externals
+  // ━━ AVAILABLE TERMINALS section ━━
   const available = externalWindows.filter(w => !snappedExternals.has(w.windowNumber));
   if (available.length > 0) {
+    const availSection = document.createElement('div');
+    availSection.className = 'section section-available';
+
     const extTitle = document.createElement('div');
     extTitle.className = 'section-title';
-    extTitle.textContent = `AVAILABLE TERMINALS (${available.length})`;
-    content.appendChild(extTitle);
+    extTitle.innerHTML = `<span class="section-accent">AVAILABLE</span> (${available.length})`;
+    availSection.appendChild(extTitle);
 
     available.forEach(w => {
       const item = document.createElement('div');
@@ -436,11 +464,54 @@ function render() {
         btn.addEventListener('click', () => snapExternal(w));
         item.appendChild(btn);
       }
-      content.appendChild(item);
+      availSection.appendChild(item);
     });
+
+    content.appendChild(availSection);
   }
 
-  statusEl.textContent = `${Object.keys(gridSlots).length} grid \u00b7 ${snappedExternals.size} ext \u00b7 ${embeddedTerms.length} sidebar`;
+  // ━━ SIDEBAR TERMINALS section (collapsible, compact) ━━
+  const sideSection = document.createElement('div');
+  sideSection.className = 'section section-console';
+
+  const sideTitle = document.createElement('div');
+  sideTitle.className = 'section-title section-title-clickable';
+  sideTitle.innerHTML = `<span class="section-toggle">${sidebarCollapsed ? '▸' : '▾'}</span> CONSOLE (${embeddedTerms.length})`;
+  sideTitle.addEventListener('click', () => { sidebarCollapsed = !sidebarCollapsed; render(); });
+  sideSection.appendChild(sideTitle);
+
+  if (!sidebarCollapsed) {
+    embeddedTerms.forEach((s, i) => {
+      const card = document.createElement('div');
+      card.className = `term-card${s.expanded ? ' expanded' : ''}`;
+      const header = document.createElement('div');
+      header.className = 'card-header';
+      header.innerHTML = `<span class="card-badge badge-pty">PTY</span><span class="card-title">${s.title}</span><span class="card-close">\u00d7</span>`;
+      header.querySelector('.card-title').addEventListener('click', () => toggleExpand(i));
+      header.querySelector('.card-close').addEventListener('click', (e) => { e.stopPropagation(); removeEmbedded(i); });
+      card.appendChild(header);
+      const embed = document.createElement('div');
+      embed.className = 'term-embed';
+      card.appendChild(embed);
+      sideSection.appendChild(card);
+      if (s.expanded) {
+        s.term.open(embed);
+        requestAnimationFrame(() => {
+          try { s.fitAddon.fit(); ipcRenderer.send('terminal-resize', { id: s.id, cols: s.term.cols, rows: s.term.rows }); } catch {}
+        });
+      }
+    });
+
+    const addBtn = document.createElement('div');
+    addBtn.className = 'add-btn';
+    addBtn.textContent = '+ Console';
+    addBtn.addEventListener('click', () => addEmbedded());
+    sideSection.appendChild(addBtn);
+  }
+
+  content.appendChild(sideSection);
+
+  statusEl.textContent = `${Object.keys(gridSlots).length} grid \u00b7 ${snappedExternals.size} ext \u00b7 ${embeddedTerms.length} console`;
 }
 
 // ── IPC ──
@@ -469,12 +540,7 @@ ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo) => {
   render();
 });
 
-// ── Raise button ──
-document.getElementById('raise-btn').addEventListener('click', () => {
-  ipcRenderer.send('raise-all');
-});
-
-// ── Raise on any click on workspace (alwaysOnTop means focus event won't re-fire) ──
+// ── Raise on any click on workspace ──
 document.addEventListener('mousedown', () => {
   ipcRenderer.send('raise-all');
 });
