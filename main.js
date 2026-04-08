@@ -118,13 +118,17 @@ function isExternalSnapped(windowNumber) {
 }
 
 // ── Grid geometry ──
+// Never rely on overlay.getBounds() — transparent windows report wrong bounds on macOS multi-display.
+// Always calculate from workspace position + stored grid size.
 function getGridArea(ws) {
-  if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) {
-    return ws.gridOverlay.getBounds();
-  }
   if (!ws.win || ws.win.isDestroyed()) return null;
   const b = ws.win.getBounds();
-  return { x: b.x + b.width + 12, y: b.y, width: 800, height: b.height };
+  return {
+    x: b.x + b.width + 12,
+    y: b.y,
+    width: ws.gridWidth || 800,
+    height: b.height,
+  };
 }
 
 function getSlotBounds(ws, slot) {
@@ -446,6 +450,7 @@ function createWorkspace(name) {
     moveThrottle: null,
     overlayThrottle: null,
     gridCols: 2, gridRows: 2, // default 2x2
+    gridWidth: 800, // tracked separately — overlay getBounds is unreliable
   };
   workspaces.set(wsId, ws);
 
@@ -502,8 +507,7 @@ function createWorkspace(name) {
   const syncOverlay = () => {
     if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.win && !ws.win.isDestroyed()) {
       const sb = ws.win.getBounds();
-      const ob = ws.gridOverlay.getBounds();
-      ws.gridOverlay.setBounds({ x: sb.x + sb.width + 12, y: sb.y, width: ob.width, height: sb.height });
+      ws.gridOverlay.setBounds({ x: sb.x + sb.width + 12, y: sb.y, width: ws.gridWidth, height: sb.height });
     }
   };
   const scheduleRetile = () => {
@@ -628,7 +632,7 @@ ipcMain.on('set-overlay-clickthrough', (event, clickthrough) => {
 ipcMain.handle('get-overlay-bounds', (event) => {
   for (const [, ws] of workspaces) {
     if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
-      return ws.gridOverlay.getBounds();
+      return getGridArea(ws); // use calculated bounds, not overlay.getBounds()
     }
   }
   return null;
@@ -637,8 +641,10 @@ ipcMain.handle('get-overlay-bounds', (event) => {
 ipcMain.on('resize-overlay', (event, { width, height }) => {
   for (const [, ws] of workspaces) {
     if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
-      const b = ws.gridOverlay.getBounds();
-      ws.gridOverlay.setBounds({ x: b.x, y: b.y, width, height });
+      // Use workspace position to calculate overlay position (not overlay.getBounds)
+      const sb = ws.win.getBounds();
+      ws.gridOverlay.setBounds({ x: sb.x + sb.width + 12, y: sb.y, width, height });
+      ws.gridWidth = width; // track for getGridArea
       return;
     }
   }
