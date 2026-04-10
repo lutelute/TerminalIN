@@ -1,11 +1,11 @@
 {
   "id": "tin-bridge",
   "name": "TiN Bridge",
-  "version": "1.2.0",
+  "version": "1.2.3",
   "description": "TerminalIN (TiN) と連携し、TiN管理中ウィンドウをAtelierXのGrid対象から自動除外する",
   "author": "lutelute",
   "main": "main.js",
-  "minAppVersion": "1.13.1",
+  "minAppVersion": "1.13.3",
   "platforms": ["darwin"],
   "homepage": "https://github.com/lutelute/TerminalIN",
   "compatibleTinProtocols": ["1.0"]

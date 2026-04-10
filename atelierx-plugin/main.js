@@ -32,6 +32,18 @@ let tinInfo = null;            // { protocol, version, capabilities, ... } or nu
 let tinCapabilities = new Set();
 let registeredActionIds = [];  // unregister 用
 
+// macOS はロケールによって CGWindowList のアプリ名が変わる
+// AtelierX は AppleScript で英語名 "Terminal" を取得、TiN は CGWindowList で
+// "ターミナル" を取得するため、マッチング前に正規化する
+const APP_NAME_MAP = {
+  'ターミナル': 'Terminal',
+  'ファインダー': 'Finder',
+};
+function normalizeAppName(name) {
+  if (!name) return name;
+  return APP_NAME_MAP[name] || name;
+}
+
 // ── ユーティリティ ──
 
 function safeReadJSON(filePath) {
@@ -90,13 +102,15 @@ function buildMatchKeys(windowRef) {
 
 function buildSnappedLookup(snapped) {
   // snapped.json の各エントリに対して、マッチングキーを逆引き可能にする
-  const byNumKey = new Set();   // "app:windowNumber"
-  const byFullTitle = new Set(); // "app:title"
-  const byPrefix = [];           // { app, prefix }
+  // app 名は normalize (ターミナル → Terminal) して AtelierX カード側と揃える
+  const byNumKey = new Set();   // "normalizedApp:windowNumber"
+  const byFullTitle = new Set(); // "normalizedApp:title"
+  const byPrefix = [];           // { app: normalized, prefix }
   for (const w of (snapped?.snappedWindows || [])) {
-    if (w.windowNumber) byNumKey.add(`${w.app}:${w.windowNumber}`);
-    if (w.title) byFullTitle.add(`${w.app}:${w.title}`);
-    if (w.title) byPrefix.push({ app: w.app, prefix: w.title.slice(0, Math.min(40, w.title.length)) });
+    const app = normalizeAppName(w.app);
+    if (w.windowNumber) byNumKey.add(`${app}:${w.windowNumber}`);
+    if (w.title) byFullTitle.add(`${app}:${w.title}`);
+    if (w.title) byPrefix.push({ app, prefix: w.title.slice(0, Math.min(40, w.title.length)) });
   }
   return { byNumKey, byFullTitle, byPrefix };
 }
@@ -112,10 +126,11 @@ function cardHasSnappedWindow(card, lookup) {
   }
   for (const w of card.windows) {
     if (!w || !w.app) continue;
-    const app = w.app;
+    // app 名を normalize (AtelierX 側は "Terminal" 英語を使う)
+    const app = normalizeAppName(w.app);
     const id = w.id || '';
     const name = w.name || '';
-    // 第1候補: app + 数値ID
+    // 第1候補: app + 数値ID (AtelierX の getAppWindows は `id of w` で numericId を返す)
     if (/^\d+$/.test(id) && lookup.byNumKey.has(`${app}:${id}`)) {
       return w;
     }
@@ -162,8 +177,18 @@ function syncDecorators() {
     }
   }
 
-  if (matchedCount > 0) {
-    api.log(`synced ${matchedCount} TiN-snapped cards`);
+  // カードに紐付いていないウィンドウも Grid から除外するため、
+  // window 単位の除外リストも登録する (setWindowExclusion が使える AtelierX v1.13.3+)
+  if (typeof api.setWindowExclusion === 'function') {
+    const excludeIds = [];
+    for (const w of (snapped.snappedWindows || [])) {
+      if (w.windowNumber) excludeIds.push(String(w.windowNumber));
+    }
+    api.setWindowExclusion(excludeIds);
+  }
+
+  if (matchedCount > 0 || (snapped.snappedWindows || []).length > 0) {
+    api.log(`synced ${matchedCount} TiN-snapped cards, ${(snapped.snappedWindows || []).length} window exclusions`);
   }
 }
 
