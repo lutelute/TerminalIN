@@ -132,12 +132,22 @@ func handleMove(_ windows: [[String: Any]]) -> Any {
         // compositor (CGWindowList) で実位置を検証
         // AX read は信用できない (別Space/フルスクリーンの window は AX set が成功しても
         // compositor には反映されない)
+        // 注: compositor は AX set からの反映に最大 ~100ms かかるため、20ms 間隔で
+        //     最大 5 回リトライする
         var appliedOk = false
-        if let wn = windowNumber, let actual = readCompositorPosition(windowNumber: wn) {
-            let dx = abs(actual.origin.x - x), dy = abs(actual.origin.y - y)
-            appliedOk = (dx < 3 && dy < 3)
+        if let wn = windowNumber {
+            for _ in 0..<5 {
+                if let actual = readCompositorPosition(windowNumber: wn) {
+                    let dx = abs(actual.origin.x - x), dy = abs(actual.origin.y - y)
+                    if dx < 3 && dy < 3 {
+                        appliedOk = true
+                        break
+                    }
+                }
+                usleep(20_000) // 20ms
+            }
         } else {
-            // windowNumber がない / compositor にない場合は AX set の成功を信じる
+            // windowNumber がない場合は AX set の成功を信じる
             appliedOk = true
         }
         if appliedOk {
