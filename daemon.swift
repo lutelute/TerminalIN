@@ -117,6 +117,25 @@ func handleRaise(_ windows: [[String: Any]]) -> Any {
     return ["raised": raised]
 }
 
+// Verify whether windows still exist via AXUIElement.
+// Unlike CGWindowListCopyWindowInfo with .optionOnScreenOnly, this returns
+// true even for off-screen windows (e.g. on a disconnected display), so
+// we can distinguish "user closed the window" from "display disconnected".
+func handleVerify(_ windows: [[String: Any]]) -> Any {
+    clearCache()
+    var alive: [Int] = []
+    for cmd in windows {
+        guard let wn = cmd["windowNumber"] as? Int else { continue }
+        let appName = cmd["app"] as? String
+        let pid = (cmd["pid"] as? Int).map { pid_t($0) }
+        guard let appInfo = getApp(pid: pid, name: appName) else { continue }
+        if findWindow(in: appInfo.windows, windowNumber: wn, title: cmd["title"] as? String, windowIndex: nil) != nil {
+            alive.append(wn)
+        }
+    }
+    return ["alive": alive]
+}
+
 // ── Main loop ──
 setbuf(stdout, nil)
 let readyData = try! JSONSerialization.data(withJSONObject: ["ready": true], options: [])
@@ -133,6 +152,7 @@ while let line = readLine() {
     case "list": result = handleList()
     case "move": result = handleMove(json["windows"] as? [[String: Any]] ?? [])
     case "raise": result = handleRaise(json["windows"] as? [[String: Any]] ?? [])
+    case "verify": result = handleVerify(json["windows"] as? [[String: Any]] ?? [])
     default: result = ["error": "unknown command"]
     }
     let response: [String: Any] = ["id": reqId, "result": result]

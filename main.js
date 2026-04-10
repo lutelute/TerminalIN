@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, screen, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Menu, powerMonitor } = require('electron');
 const path = require('path');
 const pty = require('node-pty');
 const { spawn, exec } = require('child_process');
@@ -58,6 +58,26 @@ function daemonRequest(cmd, extra = {}) {
 }
 
 function listWindows() { return daemonRequest('list'); }
+
+// Verify windows still exist via AX (includes off-screen windows, unlike list)
+function verifyWindows(cmds) { return daemonRequest('verify', { windows: cmds }); }
+
+// ── Stabilization guard ──
+// Display reconnection and sleep/resume cause windows to temporarily
+// disappear from CGWindowList even though they are still alive in AX.
+// We set `stabilizingUntil` on these events to suppress release logic
+// for a while afterward.
+let stabilizingUntil = 0;
+const STABILIZE_MS = 15000;
+function beginStabilize(reason) {
+  stabilizingUntil = Date.now() + STABILIZE_MS;
+  // Reset all miss counters on every workspace
+  for (const [, ws] of workspaces) {
+    for (const [, info] of ws.snappedExternals) info._missCount = 0;
+  }
+  console.log(`[tin] stabilizing for ${STABILIZE_MS}ms (reason: ${reason})`);
+}
+function isStabilizing() { return Date.now() < stabilizingUntil; }
 
 // Move windows: daemon (fast, needs AX permission) with osascript fallback
 async function batchMove(cmds) {
@@ -569,11 +589,31 @@ function createWorkspace(name) {
       }
     }
     const liveMap = new Map(windows.map(w => [w.windowNumber, w]));
+    // Collect snapped externals that are missing from the on-screen list.
+    // These MIGHT be truly gone, or they might be off-screen on a disconnected
+    // display — use AX verify to distinguish.
+    const missingList = [];
+    for (const [k, info] of ws.snappedExternals) {
+      if (!liveMap.has(k)) missingList.push({ key: k, info });
+    }
+    let axAlive = new Set();
+    if (missingList.length > 0) {
+      const verifyCmds = missingList.map(({ key, info }) => ({
+        windowNumber: key, pid: info.pid, app: info.app, title: info.title,
+      }));
+      const vr = await verifyWindows(verifyCmds);
+      if (vr && Array.isArray(vr.alive)) axAlive = new Set(vr.alive);
+    }
     for (const [k, info] of ws.snappedExternals) {
       const live = liveMap.get(k);
       if (!live) {
-        // Grace period: don't release immediately — display reconnection
-        // can cause windows to temporarily disappear from CGWindowList
+        // Missing from on-screen list. If AX says it's still alive (e.g. on a
+        // disconnected display) or we're stabilizing after a system event,
+        // keep it and reset the counter. Otherwise apply the grace period.
+        if (axAlive.has(k) || isStabilizing()) {
+          info._missCount = 0;
+          continue;
+        }
         info._missCount = (info._missCount || 0) + 1;
         if (info._missCount >= 8) {  // ~6.4s at 800ms poll interval
           ws.snappedExternals.delete(k);
@@ -693,6 +733,16 @@ app.isQuitting = false;
 
 app.whenReady().then(() => {
   startDaemon();
+
+  // ── System event listeners: pause release logic on events that cause
+  // windows to temporarily disappear from CGWindowList ──
+  powerMonitor.on('suspend', () => beginStabilize('power:suspend'));
+  powerMonitor.on('resume', () => beginStabilize('power:resume'));
+  powerMonitor.on('lock-screen', () => beginStabilize('power:lock-screen'));
+  powerMonitor.on('unlock-screen', () => beginStabilize('power:unlock-screen'));
+  screen.on('display-added', () => beginStabilize('display-added'));
+  screen.on('display-removed', () => beginStabilize('display-removed'));
+  screen.on('display-metrics-changed', () => beginStabilize('display-metrics-changed'));
 
   const template = [
     { label: app.name, submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] },
