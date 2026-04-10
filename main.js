@@ -69,6 +69,7 @@ function verifyWindows(cmds) { return daemonRequest('verify', { windows: cmds })
 // for a while afterward.
 let stabilizingUntil = 0;
 const STABILIZE_MS = 15000;
+let retileAfterStabilize = null;
 function beginStabilize(reason) {
   stabilizingUntil = Date.now() + STABILIZE_MS;
   // Reset all miss counters on every workspace
@@ -76,8 +77,47 @@ function beginStabilize(reason) {
     for (const [, info] of ws.snappedExternals) info._missCount = 0;
   }
   console.log(`[tin] stabilizing for ${STABILIZE_MS}ms (reason: ${reason})`);
+  // After stabilization, reposition all snapped windows — display changes
+  // can leave them on the wrong coordinates even though they're still alive.
+  // Delay also helps when workspace sidebars have been moved to a still-
+  // valid display by the OS and we want their new bounds as the reference.
+  if (retileAfterStabilize) clearTimeout(retileAfterStabilize);
+  retileAfterStabilize = setTimeout(async () => {
+    retileAfterStabilize = null;
+    for (const [, ws] of workspaces) {
+      if (!ws.win || ws.win.isDestroyed()) continue;
+      // Ensure the sidebar itself is on a valid display — if its saved
+      // bounds are entirely off every connected display, move it to the
+      // primary display.
+      ensureOnScreen(ws);
+      try { await retileAll(ws); } catch {}
+    }
+    console.log('[tin] retiled after stabilize');
+  }, STABILIZE_MS + 500);
 }
 function isStabilizing() { return Date.now() < stabilizingUntil; }
+
+// Move a workspace sidebar back onto a visible display if its bounds are
+// entirely outside every display's work area (e.g. the display it was on
+// got disconnected).
+function ensureOnScreen(ws) {
+  if (!ws.win || ws.win.isDestroyed()) return;
+  const b = ws.win.getBounds();
+  const displays = screen.getAllDisplays();
+  const overlaps = displays.some(d => {
+    const wa = d.workArea;
+    return !(b.x + b.width < wa.x || b.x > wa.x + wa.width ||
+             b.y + b.height < wa.y || b.y > wa.y + wa.height);
+  });
+  if (overlaps) return;
+  const primary = screen.getPrimaryDisplay().workArea;
+  ws.win.setBounds({
+    x: primary.x + 50,
+    y: primary.y + Math.round((primary.height - b.height) / 2),
+    width: b.width,
+    height: b.height,
+  });
+}
 
 // Move windows: daemon (fast, needs AX permission) with osascript fallback
 async function batchMove(cmds) {
@@ -762,6 +802,28 @@ app.whenReady().then(() => {
       { label: 'Close Terminal', accelerator: 'CmdOrCtrl+W', click: () => {
         const win = BrowserWindow.getFocusedWindow();
         if (win) win.webContents.send('close-current');
+      }},
+      { type: 'separator' },
+      { label: 'Retile Windows', accelerator: 'CmdOrCtrl+R', click: async () => {
+        // Force reposition all snapped externals to their assigned slots.
+        // Use the workspace owning the focused window, or all workspaces.
+        const focused = BrowserWindow.getFocusedWindow();
+        let targets = [];
+        if (focused) {
+          for (const [, ws] of workspaces) {
+            if (!ws.win || ws.win.isDestroyed()) continue;
+            if (ws.win === focused || ws.gridOverlay === focused) { targets = [ws]; break; }
+            for (const [, gw] of ws.gridWindows) {
+              if (gw.win === focused) { targets = [ws]; break; }
+            }
+            if (targets.length) break;
+          }
+        }
+        if (!targets.length) targets = [...workspaces.values()].filter(ws => ws.win && !ws.win.isDestroyed());
+        for (const ws of targets) {
+          ensureOnScreen(ws);
+          try { await retileAll(ws); } catch {}
+        }
       }},
     ]},
     { label: 'Edit', submenu: [{ role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
