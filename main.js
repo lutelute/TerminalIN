@@ -1,10 +1,90 @@
 const { app, BrowserWindow, ipcMain, screen, Menu, powerMonitor } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const pty = require('node-pty');
 const { spawn, exec } = require('child_process');
+const pkg = require('./package.json');
 
 // Always enable remote debugging for MCP integration
 app.commandLine.appendSwitch('remote-debugging-port', '9222');
+
+// ── Integration protocol (docs/PROTOCOL.md) ──
+// 外部ツール (AtelierX plugin 等) と連携するための状態ファイル書き出し。
+// 依存関係: AtelierX 固有のコードは一切含めない — 汎用 URL scheme/ファイル IPC として公開する。
+const PROTOCOL_VERSION = '1.0';
+const TIN_CAPABILITIES = ['snap', 'raise', 'workspace', 'grid-terminal', 'window-list'];
+const INTEGRATION_DIR = path.join(app.getPath('userData'));
+const INFO_JSON = path.join(INTEGRATION_DIR, 'info.json');
+const SNAPPED_JSON = path.join(INTEGRATION_DIR, 'snapped.json');
+const TIN_START_TIME = Date.now();
+
+function atomicWriteJSON(filePath, obj) {
+  try {
+    if (!fs.existsSync(INTEGRATION_DIR)) fs.mkdirSync(INTEGRATION_DIR, { recursive: true });
+    const tmp = filePath + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', 'utf-8');
+    fs.renameSync(tmp, filePath);
+  } catch (e) {
+    // 書き出し失敗は TiN 本体機能を妨げない (graceful)
+    console.warn('[integration] write failed:', filePath, e.message);
+  }
+}
+
+function writeInfoJson() {
+  atomicWriteJSON(INFO_JSON, {
+    protocol: PROTOCOL_VERSION,
+    app: 'TiN',
+    version: pkg.version,
+    startedAt: TIN_START_TIME,
+    updatedAt: Date.now(),
+    capabilities: TIN_CAPABILITIES,
+    endpoints: {
+      snappedFile: 'snapped.json',
+      urlScheme: 'tin',
+    },
+  });
+}
+
+function writeSnappedJson() {
+  const snappedWindows = [];
+  let activeWorkspaceId = null;
+  // フォーカス中 workspace を activeWorkspaceId として記録
+  const focused = BrowserWindow.getFocusedWindow();
+  for (const [, ws] of workspaces) {
+    if (!ws || !ws.win || ws.win.isDestroyed()) continue;
+    if (focused && (ws.win === focused || ws.gridOverlay === focused)) {
+      activeWorkspaceId = String(ws.id);
+    }
+    for (const [, info] of ws.snappedExternals) {
+      snappedWindows.push({
+        app: info.app || '',
+        pid: info.pid || 0,
+        windowNumber: info.windowNumber || 0,
+        title: info.title || '',
+        windowIndex: info.windowIndex || 0,
+        slot: info.slot,
+        workspaceId: String(ws.id),
+        snappedAt: info.snappedAt || 0,
+      });
+    }
+  }
+  atomicWriteJSON(SNAPPED_JSON, {
+    protocol: PROTOCOL_VERSION,
+    updatedAt: Date.now(),
+    activeWorkspaceId,
+    snappedWindows,
+  });
+}
+
+// 書き出しのデバウンス (rapid snap/unsnap/move で多重書き込みを避ける)
+let _syncTimer = null;
+function scheduleSyncSnapped(delay = 80) {
+  if (_syncTimer) return;
+  _syncTimer = setTimeout(() => {
+    _syncTimer = null;
+    try { writeSnappedJson(); } catch {}
+  }, delay);
+}
 
 // ── Workspace registry ──
 const workspaces = new Map();
@@ -433,20 +513,25 @@ ipcMain.handle('remove-grid-terminal', (event, { slot }) => {
 });
 
 // ── IPC: snap/unsnap external ──
-ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName, title, x, y, width, height }) => {
+ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName, title, x, y, width, height, windowIndex }) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return { ok: false };
   const existing = isExternalSnapped(windowNumber);
   if (existing && existing.id !== ws.id) return { ok: false, reason: 'snapped-elsewhere' };
   const slot = nextFreeSlot(ws);
   if (slot < 0) return { ok: false, reason: 'no-slot' };
-  ws.snappedExternals.set(windowNumber, { app: appName, pid, title, windowNumber, slot, origX: x, origY: y, origW: width, origH: height });
+  ws.snappedExternals.set(windowNumber, {
+    app: appName, pid, title, windowNumber, windowIndex: windowIndex || 0, slot,
+    origX: x, origY: y, origW: width, origH: height,
+    snappedAt: Date.now(),
+  });
   const pos = getSlotBounds(ws, slot);
   if (pos) await batchMove([{ windowNumber, pid, app: appName, title, ...pos }]);
   // Restore z-order: the move (especially via osascript fallback) may have
   // activated the target app, pushing ALL its windows — including ones not
   // snapped — in front of TiN. Raise only the snapped window + TiN sidebar.
   await raiseAllWorkspaceWindows(ws, true);
+  scheduleSyncSnapped();
   return { ok: true, slot };
 });
 
@@ -462,7 +547,24 @@ ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
   await retileAll(ws);
   // Same reason as snap: restore TiN to the top after external move.
   await raiseAllWorkspaceWindows(ws, true);
+  scheduleSyncSnapped();
   return { ok: true };
+});
+
+// ── IPC: 個別 snapped window を前面化 (相互機能: 解釈A)
+// workspace sidebar の個別スロットクリックから呼ばれる。
+// URL スキーム tin://raise でも同じロジックを叩けるが、そちらは match-key 検索を伴う。
+ipcMain.handle('raise-snapped', async (event, { windowNumber }) => {
+  for (const [, ws] of workspaces) {
+    const info = ws.snappedExternals.get(windowNumber);
+    if (!info) continue;
+    await raiseSpecificWindows([{
+      app: info.app, pid: info.pid, title: info.title,
+      windowNumber: info.windowNumber, windowIndex: info.windowIndex,
+    }]);
+    return { ok: true };
+  }
+  return { ok: false };
 });
 
 ipcMain.handle('get-snapped-externals', (event) => {
@@ -717,7 +819,11 @@ app.on('browser-window-focus', (_event, focusedWin) => {
     }
     if (ws) break;
   }
-  if (ws) raiseAllWorkspaceWindows(ws);
+  if (ws) {
+    raiseAllWorkspaceWindows(ws);
+    // activeWorkspaceId が変わった可能性 → snapped.json 更新
+    scheduleSyncSnapped(200);
+  }
 });
 
 ipcMain.on('raise-all', (event) => {
@@ -768,11 +874,199 @@ ipcMain.on('resize-overlay', (event, { width, height }) => {
   }
 });
 
+// ── URL scheme handler (docs/PROTOCOL.md §5) ──
+// tin://<action>?<params> を受け取って内部アクションにルーティングする。
+// fire-and-forget: 応答は返さない (状態変化があれば snapped.json が更新される)
+
+function handleTinUrl(rawUrl) {
+  let u;
+  try { u = new URL(rawUrl); } catch { return; }
+  if (u.protocol !== 'tin:') return;
+
+  // Normalize: "tin://snap" → host="snap"、"tin://workspace/focus" → host="workspace", pathname="/focus"
+  const action = u.hostname + (u.pathname && u.pathname !== '/' ? u.pathname : '');
+  const params = Object.fromEntries(u.searchParams);
+
+  // 全 workspace の中からマッチする snapped window を探すヘルパー
+  function findInfoByKey({ app: appName, windowNumber, title, pid }) {
+    const wn = windowNumber ? Number(windowNumber) : null;
+    const p = pid ? Number(pid) : null;
+    for (const [, ws] of workspaces) {
+      // 第1候補: windowNumber 完全一致
+      if (wn) {
+        for (const [k, info] of ws.snappedExternals) {
+          if (k === wn && (!appName || info.app === appName)) return { ws, info };
+        }
+      }
+      // 第2候補: pid + app
+      if (p) {
+        for (const [, info] of ws.snappedExternals) {
+          if (info.pid === p && (!appName || info.app === appName)) return { ws, info };
+        }
+      }
+      // 第3候補: app + title 完全一致
+      if (appName && title) {
+        for (const [, info] of ws.snappedExternals) {
+          if (info.app === appName && info.title === title) return { ws, info };
+        }
+      }
+      // 第4候補: app + title 前方一致
+      if (appName && title) {
+        const prefix = title.slice(0, Math.min(40, title.length));
+        for (const [, info] of ws.snappedExternals) {
+          if (info.app === appName && info.title && info.title.startsWith(prefix)) return { ws, info };
+        }
+      }
+    }
+    return null;
+  }
+
+  (async () => {
+    try {
+      switch (action) {
+        case 'raise': {
+          // tin://raise?app=X&windowNumber=Y&title=Z&pid=W
+          const match = findInfoByKey(params);
+          if (match) {
+            await raiseSpecificWindows([{
+              app: match.info.app, pid: match.info.pid, title: match.info.title,
+              windowNumber: match.info.windowNumber, windowIndex: match.info.windowIndex,
+            }]);
+          } else if (params.app && params.windowNumber) {
+            // snapped でないウィンドウも raise 可能にする (汎用 raise)
+            await raiseSpecificWindows([{
+              app: params.app, pid: params.pid ? Number(params.pid) : undefined,
+              title: params.title, windowNumber: Number(params.windowNumber),
+            }]);
+          }
+          break;
+        }
+        case 'workspace/focus': {
+          // アクティブ workspace を前面化。なければ最初の workspace。
+          const focused = BrowserWindow.getFocusedWindow();
+          let target = null;
+          for (const [, ws] of workspaces) {
+            if (!ws.win || ws.win.isDestroyed()) continue;
+            if (focused && (ws.win === focused || ws.gridOverlay === focused)) { target = ws; break; }
+          }
+          if (!target) {
+            for (const [, ws] of workspaces) {
+              if (ws.win && !ws.win.isDestroyed()) { target = ws; break; }
+            }
+          }
+          if (target) await raiseAllWorkspaceWindows(target, true);
+          break;
+        }
+        case 'workspace/switch': {
+          // tin://workspace/switch?id=X
+          const id = Number(params.id);
+          for (const [, ws] of workspaces) {
+            if (ws.id === id) { await raiseAllWorkspaceWindows(ws, true); break; }
+          }
+          break;
+        }
+        case 'terminal/new': {
+          // tin://terminal/new?cwd=X — 現在アクティブ workspace で新規 grid terminal 作成
+          // 実装は sidebar 経由でワンステップ送るのが安全
+          let target = null;
+          const focused = BrowserWindow.getFocusedWindow();
+          for (const [, ws] of workspaces) {
+            if (!ws.win || ws.win.isDestroyed()) continue;
+            if (focused && (ws.win === focused || ws.gridOverlay === focused)) { target = ws; break; }
+          }
+          if (!target) {
+            for (const [, ws] of workspaces) {
+              if (ws.win && !ws.win.isDestroyed()) { target = ws; break; }
+            }
+          }
+          if (target && target.win && !target.win.isDestroyed()) {
+            target.win.webContents.send('new-terminal', { cwd: params.cwd || '' });
+          }
+          break;
+        }
+        case 'snap': {
+          // tin://snap?app=X&windowNumber=Y&slot=N
+          // 現在のアクティブ workspace に対して snap 操作を送る
+          // (注: 外部から snap するには windowNumber 等の情報が必要)
+          // 簡易実装: sidebar に "external-snap-request" を送って UI 側で処理
+          let target = null;
+          const focused = BrowserWindow.getFocusedWindow();
+          for (const [, ws] of workspaces) {
+            if (!ws.win || ws.win.isDestroyed()) continue;
+            if (focused && (ws.win === focused || ws.gridOverlay === focused)) { target = ws; break; }
+          }
+          if (!target) {
+            for (const [, ws] of workspaces) {
+              if (ws.win && !ws.win.isDestroyed()) { target = ws; break; }
+            }
+          }
+          if (target && target.win && !target.win.isDestroyed()) {
+            target.win.webContents.send('external-snap-request', params);
+          }
+          break;
+        }
+        case 'release':
+        case 'unsnap': {
+          const match = findInfoByKey(params);
+          if (match) {
+            match.ws.snappedExternals.delete(match.info.windowNumber);
+            compactSlots(match.ws);
+            try {
+              await batchMove([{
+                windowNumber: match.info.windowNumber,
+                pid: match.info.pid,
+                app: match.info.app,
+                title: match.info.title,
+                x: match.info.origX, y: match.info.origY,
+                width: match.info.origW, height: match.info.origH,
+              }]);
+            } catch {}
+            await retileAll(match.ws);
+            scheduleSyncSnapped();
+          }
+          break;
+        }
+        case 'info':
+          // info は info.json で公開中。URL では no-op (ただし呼ばれたら info.json を更新)
+          writeInfoJson();
+          break;
+        default:
+          // 未知のアクションは無視
+          break;
+      }
+    } catch (e) {
+      console.warn('[tin://] handler error:', e.message);
+    }
+  })();
+}
+
+// URL scheme を自身に関連付ける (Info.plist の CFBundleURLTypes と連携)
+try { app.setAsDefaultProtocolClient('tin'); } catch {}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleTinUrl(url);
+});
+
+// 二重起動時に URL が process.argv で渡るケース (windows/linux想定、macでも保険)
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    for (const arg of argv) {
+      if (typeof arg === 'string' && arg.startsWith('tin:')) handleTinUrl(arg);
+    }
+  });
+}
+
 // ── App ──
 app.isQuitting = false;
 
 app.whenReady().then(() => {
   startDaemon();
+  writeInfoJson();
+  writeSnappedJson();
 
   // ── System event listeners: pause release logic on events that cause
   // windows to temporarily disappear from CGWindowList ──
@@ -869,6 +1163,9 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   app.isQuitting = true;
   if (daemon) { try { daemon.kill(); } catch {} daemon = null; }
+  // 統合ステートファイルのクリーンアップ (クライアントが "TiN 未起動" と判定できるように)
+  try { if (fs.existsSync(INFO_JSON)) fs.unlinkSync(INFO_JSON); } catch {}
+  try { if (fs.existsSync(SNAPPED_JSON)) fs.unlinkSync(SNAPPED_JSON); } catch {}
 });
 
 app.on('window-all-closed', () => app.quit());

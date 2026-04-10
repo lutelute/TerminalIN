@@ -409,10 +409,17 @@ function render() {
     let t = info.title || '';
     if (t.length > 35) t = t.substring(0, 32) + '...';
     item.innerHTML = `<span class="card-badge badge-ext">EXT</span><span class="ext-title">${t}</span>`;
+    item.style.cursor = 'pointer';
+    item.title = 'Click to raise window';
+    // 相互機能: 個別 snapped window を前面化 (解釈A)
+    item.addEventListener('click', (e) => {
+      if (e.target && e.target.classList && e.target.classList.contains('ext-btn')) return;
+      ipcRenderer.invoke('raise-snapped', { windowNumber: wn });
+    });
     const btn = document.createElement('button');
     btn.className = 'ext-btn release';
     btn.textContent = 'Release';
-    btn.addEventListener('click', () => unsnapExternal(wn));
+    btn.addEventListener('click', (e) => { e.stopPropagation(); unsnapExternal(wn); });
     item.appendChild(btn);
     gridSection.appendChild(item);
   }

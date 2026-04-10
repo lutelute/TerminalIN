@@ -45,6 +45,35 @@ Swift Daemon (background process)
 - Node.js 20+
 - Accessibility permission (System Settings > Privacy > Accessibility)
 
+## Integration with Other Tools
+
+TiN v1.2.0+ exposes a public integration protocol for third-party tools to
+read TiN's state and send commands.
+
+- **State files** (read-only, `~/Library/Application Support/TiN/`):
+  - `info.json` — TiN process info and capability list
+  - `snapped.json` — currently snapped windows
+- **URL scheme** (fire-and-forget):
+  - `tin://raise?app=X&windowNumber=Y` — raise a specific window
+  - `tin://workspace/focus` — raise active workspace
+  - `tin://workspace/switch?id=N` — switch workspace
+  - `tin://terminal/new?cwd=X` — create grid terminal
+
+See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the full specification.
+
+### AtelierX Integration
+
+If you use [AtelierX](https://github.com/lutelute/AtelierX) (window kanban
+board), install the companion plugin to have AtelierX automatically exclude
+TiN-managed terminals from its Grid arrangement:
+
+1. In AtelierX: **Settings → Plugins → Install from GitHub**
+2. Enter `lutelute/TerminalIN:atelierx-plugin`
+3. Enable the plugin
+
+The plugin lives in this repository under [`atelierx-plugin/`](atelierx-plugin/).
+It is **not** bundled into the TiN.app DMG — TiN works fully standalone.
+
 ## License
 
 ISC

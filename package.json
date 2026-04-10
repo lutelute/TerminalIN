@@ -1,6 +1,6 @@
 {
   "name": "tin",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Terminal workspace manager for macOS",
   "main": "main.js",
   "scripts": {
@@ -30,6 +30,9 @@
           "from": "daemon",
           "to": "daemon"
         }
+      ],
+      "protocols": [
+        { "name": "TiN URL", "schemes": ["tin"] }
       ]
     },
     "files": [
@@ -37,8 +40,13 @@
       "workspace.html",
       "grid-terminal.html",
       "grid-overlay.html",
+      "package.json",
       "node_modules/@xterm/**",
-      "node_modules/node-pty/**"
+      "node_modules/node-pty/**",
+      "!atelierx-plugin/**",
+      "!docs/**",
+      "!logs/**",
+      "!scripts/**"
     ],
     "asarUnpack": [
       "node_modules/node-pty/**"
