@@ -94,11 +94,39 @@ func handleMove(_ windows: [[String: Any]]) -> Any {
         let pid = (cmd["pid"] as? Int).map { pid_t($0) }
         guard let appInfo = getApp(pid: pid, name: appName) else { continue }
         guard let win = findWindow(in: appInfo.windows, windowNumber: cmd["windowNumber"] as? Int, title: cmd["title"] as? String, windowIndex: cmd["windowIndex"] as? Int) else { continue }
+        // 1回目: 要求位置/サイズ通りに設定を試みる
+        // 2回目: 位置→サイズ→位置 の順で再適用 (macOS AX は size 適用時に
+        //        親 display がジャンプすることがあるため、位置を後で
+        //        再設定して最終位置を強制する)
         var point = CGPoint(x: x, y: y)
-        if let val = AXValueCreate(.cgPoint, &point) { AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val) }
         var size = CGSize(width: w, height: h)
-        if let val = AXValueCreate(.cgSize, &size) { AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, val) }
-        moved += 1
+        var posErr: AXError = .failure
+        var sizeErr: AXError = .failure
+        if let val = AXValueCreate(.cgPoint, &point) {
+            posErr = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
+        }
+        if let val = AXValueCreate(.cgSize, &size) {
+            sizeErr = AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, val)
+        }
+        // 位置を再設定 (size 適用後に位置がずれるケースへの保険)
+        if let val = AXValueCreate(.cgPoint, &point) {
+            let reErr = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
+            if reErr == .success { posErr = .success }
+        }
+        // 実際に適用されたか検証: 1px 以内の誤差は許容
+        var appliedOk = false
+        var actualPosRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(win, kAXPositionAttribute as CFString, &actualPosRef) == .success,
+           let actualVal = actualPosRef {
+            var actual = CGPoint.zero
+            if AXValueGetValue(actualVal as! AXValue, .cgPoint, &actual) {
+                let dx = abs(actual.x - x), dy = abs(actual.y - y)
+                appliedOk = (dx < 2 && dy < 2)
+            }
+        }
+        if posErr == .success && sizeErr == .success && appliedOk {
+            moved += 1
+        }
     }
     return ["moved": moved]
 }
