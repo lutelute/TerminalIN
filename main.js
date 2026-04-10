@@ -80,25 +80,36 @@ end tell'`, { timeout: 3000 });
   }
 }
 
-// Raise: daemon (fast) with osascript fallback
+// Raise: daemon (fast) with osascript fallback.
+// The daemon uses AXRaise directly which reorders the window WITHIN its app
+// without activating the app (so other-app windows stay where they are).
+// Partial failure (stale windows) is trusted — we must NOT run the fallback
+// in that case because the fallback's "set frontmost to true" would activate
+// the entire target app, hiding TiN behind all of its windows.
 async function raiseSpecificWindows(cmds) {
   if (!cmds.length) return;
   const result = await daemonRequest('raise', { windows: cmds });
-  if (result.raised && result.raised >= cmds.length) return;
-  // osascript fallback: raise only the specific windows, not the whole app
+  // Trust partial success: daemon uses AXRaise which is the correct primitive.
+  // Stale entries just get skipped (grace-period polling will clean them up).
+  if (typeof result.raised === 'number') return;
+  // Daemon unavailable (no AX permission or crashed). Fall back to osascript,
+  // but WITHOUT `set frontmost to true` — we only want to reorder windows
+  // within the target app, not activate it.
   const byApp = new Map();
   for (const cmd of cmds) {
     if (!cmd.app) continue;
     if (!byApp.has(cmd.app)) byApp.set(cmd.app, []);
     byApp.get(cmd.app).push(cmd);
   }
+  const { execSync } = require('child_process');
   for (const [appName, wins] of byApp) {
     const raiseLines = wins.map(w => {
       const t = (w.title || '').substring(0, 20).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       return `    try\n      perform action "AXRaise" of (first window whose name contains "${t}")\n    end try`;
     }).join('\n');
-    const script = `tell application "System Events" to tell process "${appName}"\n  set frontmost to true\n${raiseLines}\nend tell`;
-    exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`);
+    const script = `tell application "System Events" to tell process "${appName}"\n${raiseLines}\nend tell`;
+    // execSync so we complete before the caller proceeds to focus TiN
+    try { execSync(`osascript -e '${script.replace(/'/g, "'\\''")}'`, { timeout: 2000 }); } catch {}
   }
 }
 
@@ -149,18 +160,20 @@ function getSlotBounds(ws, slot) {
 // ── Raise all workspace windows (grid + snapped externals) ──
 let lastRaiseTime = 0;
 
-function raiseAllWorkspaceWindows(ws, force = false) {
+async function raiseAllWorkspaceWindows(ws, force = false) {
   if (!ws) return;
   const now = Date.now();
   if (!force && now - lastRaiseTime < 300) return;
   lastRaiseTime = now;
 
-  // 1. Raise snapped external terminal windows first
+  // 1. Raise snapped external terminal windows first.
+  // MUST be awaited — otherwise the async daemon raise completes AFTER
+  // we raise TiN, clobbering the intended z-order.
   if (ws.snappedExternals.size > 0) {
     const cmds = [...ws.snappedExternals.values()].map(info => ({
       windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
     }));
-    raiseSpecificWindows(cmds);
+    await raiseSpecificWindows(cmds);
   }
 
   // 2. Raise grid BrowserWindows above the externals
@@ -170,11 +183,15 @@ function raiseAllWorkspaceWindows(ws, force = false) {
     }
   }
 
-  // 3. Bring overlay + workspace sidebar to the top
+  // 3. Bring overlay + workspace sidebar to the top.
+  // app.focus({steal:true}) is required to steal focus from another macOS app
+  // (e.g. Terminal.app). A plain win.focus() is a no-op when the frontmost
+  // app is not TiN itself due to macOS focus-stealing prevention.
   if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) {
     ws.gridOverlay.show();
   }
   if (ws.win && !ws.win.isDestroyed()) {
+    app.focus({ steal: true });
     ws.win.show();
     ws.win.focus();
   }
@@ -237,12 +254,15 @@ function createGridTerminal(ws, slot) {
     ...b,
     frame: false,
     acceptFirstMouse: true,
+    skipTaskbar: true,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
       sandbox: false,
     },
   });
+  // Hide from macOS native Window menu listing (must be set via property, not constructor)
+  gridWin.excludedFromShownWindowsMenu = true;
 
   const ptyId = nextPtyId++;
   const p = pty.spawn(process.env.SHELL || '/bin/zsh', [], {
@@ -363,6 +383,10 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
   ws.snappedExternals.set(windowNumber, { app: appName, pid, title, windowNumber, slot, origX: x, origY: y, origW: width, origH: height });
   const pos = getSlotBounds(ws, slot);
   if (pos) await batchMove([{ windowNumber, pid, app: appName, title, ...pos }]);
+  // Restore z-order: the move (especially via osascript fallback) may have
+  // activated the target app, pushing ALL its windows — including ones not
+  // snapped — in front of TiN. Raise only the snapped window + TiN sidebar.
+  await raiseAllWorkspaceWindows(ws, true);
   return { ok: true, slot };
 });
 
@@ -376,6 +400,8 @@ ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
   await batchMove([{ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
     x: info.origX, y: info.origY, width: info.origW, height: info.origH }]);
   await retileAll(ws);
+  // Same reason as snap: restore TiN to the top after external move.
+  await raiseAllWorkspaceWindows(ws, true);
   return { ok: true };
 });
 
@@ -471,8 +497,11 @@ function createWorkspace(name) {
       hasShadow: false,
       resizable: true,
       acceptFirstMouse: true,
+      skipTaskbar: true,
       webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
     });
+    // Hide from macOS native Window menu listing (must be set via property, not constructor)
+    overlay.excludedFromShownWindowsMenu = true;
     overlay.loadFile('grid-overlay.html');
     // Force position after creation (transparent windows can drift)
     overlay.setBounds({ x: overlayX, y: overlayY, width: 800, height: wb.height });
@@ -542,7 +571,16 @@ function createWorkspace(name) {
     const liveMap = new Map(windows.map(w => [w.windowNumber, w]));
     for (const [k, info] of ws.snappedExternals) {
       const live = liveMap.get(k);
-      if (!live) { ws.snappedExternals.delete(k); continue; }
+      if (!live) {
+        // Grace period: don't release immediately — display reconnection
+        // can cause windows to temporarily disappear from CGWindowList
+        info._missCount = (info._missCount || 0) + 1;
+        if (info._missCount >= 8) {  // ~6.4s at 800ms poll interval
+          ws.snappedExternals.delete(k);
+        }
+        continue;
+      }
+      info._missCount = 0;  // reset on sight
       // Keep title fresh for AppleScript set index
       info.title = live.title;
       info.pid = live.pid;
@@ -685,6 +723,31 @@ app.whenReady().then(() => {
       { type: 'separator' },
       { role: 'toggleDevTools' },
       { role: 'togglefullscreen' },
+    ]},
+    { label: 'Window', submenu: [
+      { role: 'minimize' },
+      { role: 'zoom' },
+      { type: 'separator' },
+      { label: 'Cycle Workspace', accelerator: 'CmdOrCtrl+`', click: () => {
+        // Cycle through workspace windows only (skip overlay/grid)
+        const wsList = [...workspaces.values()].filter(ws => ws.win && !ws.win.isDestroyed());
+        if (wsList.length <= 1) return;
+        const focused = BrowserWindow.getFocusedWindow();
+        // Find which workspace currently has focus (sidebar, overlay, or grid)
+        let currentIdx = -1;
+        for (let i = 0; i < wsList.length; i++) {
+          const ws = wsList[i];
+          if (ws.win === focused || ws.gridOverlay === focused) { currentIdx = i; break; }
+          for (const [, gw] of ws.gridWindows) {
+            if (gw.win === focused) { currentIdx = i; break; }
+          }
+          if (currentIdx >= 0) break;
+        }
+        const nextWs = wsList[(currentIdx + 1) % wsList.length];
+        raiseAllWorkspaceWindows(nextWs, true);
+      }},
+      { type: 'separator' },
+      { role: 'front' },
     ]},
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
