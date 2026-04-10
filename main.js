@@ -210,28 +210,21 @@ function normalizeAppName(name) {
   return map[name] || name;
 }
 
-// Move windows: daemon (fast, needs AX permission) with osascript fallback
+// Move windows: daemon (AX set, global coords) のみ使用
+//
+// 以前は osascript `tell application "Terminal" set bounds` fallback を
+// 使っていたが、これは **display-local 座標**で解釈されるバグがあった
+// (ウィンドウが現在置かれているディスプレイの左上基準)。そのため、
+// display 3 (Y=[-1440,0]) 上の window を (369, 101) へ移動しようとすると
+// (369, -1440+101=-1339) と解釈されて cross-display snap が壊れていた。
+//
+// daemon の AXUIElementSetAttributeValue は一貫してグローバル座標を使うため
+// fallback を廃止し、daemon のみに委ねる。AX permission が無い場合は何も
+// しない (正常動作を保証できないため)。
 async function batchMove(cmds) {
   if (!cmds.length) return;
-  // Try daemon first
-  const result = await daemonRequest('move', { windows: cmds });
-  if (result.moved && result.moved >= cmds.length) return;
-  // osascript fallback: use window id (unique) instead of title (can match wrong window)
-  // アプリ名は英語に正規化 (AppleScript は日本語アプリ名でも tell 可能だが、
-  // エスケープやバンドル解決で不具合が出ることがあるため英語名を使う)
-  const { execSync } = require('child_process');
-  for (const cmd of cmds) {
-    if (!cmd.windowNumber || cmd.x == null || !cmd.app) continue;
-    const appName = normalizeAppName(cmd.app);
-    try {
-      execSync(`osascript -e 'tell application "${appName}"
-  try
-    set w to window id ${cmd.windowNumber}
-    set bounds of w to {${cmd.x}, ${cmd.y}, ${cmd.x + cmd.width}, ${cmd.y + cmd.height}}
-  end try
-end tell'`, { timeout: 3000 });
-    } catch {}
-  }
+  await daemonRequest('move', { windows: cmds });
+  // daemon の結果値は返さない (verify は daemon 側で完結)
 }
 
 // Raise: daemon (fast) with osascript fallback.
@@ -286,32 +279,20 @@ function isExternalSnapped(windowNumber) {
 // Never rely on overlay.getBounds() — transparent windows report wrong bounds on macOS multi-display.
 // Always calculate from workspace position + stored grid size.
 //
-// Multi-display clamp: sidebar が置かれているディスプレイの workArea 内に
-// grid area をクランプする。これをしないと grid area がディスプレイ境界を
-// またぐことがあり、macOS AX は cross-display 移動を silently reject する。
+// 以前は sidebar の置かれているディスプレイに grid area を強制 clamp していたが
+// これは cross-display snap を壊していた (ユーザー報告)。
+// 現在は raw 座標をそのまま返す。AX (System Events) はグローバル座標で動作するため
+// 境界をまたいでも正しく配置される。ディスプレイ外にはみ出しても macOS が適切に
+// ウィンドウを可視領域に寄せる。
 function getGridArea(ws) {
   if (!ws.win || ws.win.isDestroyed()) return null;
   const b = ws.win.getBounds();
-  // 目的ディスプレイ: sidebar の中心座標から決定
-  const centerPoint = { x: b.x + Math.floor(b.width / 2), y: b.y + Math.floor(b.height / 2) };
-  const display = screen.getDisplayNearestPoint(centerPoint);
-  const work = display.workArea;
-
-  const rawX = b.x + b.width + 12;
-  const rawY = b.y;
-  const rawW = ws.gridWidth || 800;
-  const rawH = b.height;
-
-  // 右端・下端がディスプレイを超える場合は位置/サイズを内側に寄せる
-  const x = Math.max(rawX, work.x);
-  const y = Math.max(rawY, work.y);
-  const maxRight = work.x + work.width;
-  const maxBottom = work.y + work.height;
-  // width/height はディスプレイ内に収める (最低 100px 確保)
-  const width = Math.max(100, Math.min(rawW, maxRight - x));
-  const height = Math.max(100, Math.min(rawH, maxBottom - y));
-
-  return { x, y, width, height };
+  return {
+    x: b.x + b.width + 12,
+    y: b.y,
+    width: ws.gridWidth || 800,
+    height: b.height,
+  };
 }
 
 function getSlotBounds(ws, slot) {
