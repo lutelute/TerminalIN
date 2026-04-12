@@ -220,7 +220,7 @@ function registerCardActions() {
   if (tinCapabilities.has('raise')) {
     api.registerCardAction({
       id: 'tin-raise',
-      label: '🪟',
+      label: 'TiN',
       title: 'TiNで前面化',
       position: 'card-header',
       handler: (_cardId, cardData) => {
@@ -249,19 +249,6 @@ function registerCardActions() {
     registeredActionIds.push('tin-workspace-focus');
   }
 
-  if (tinCapabilities.has('grid-terminal')) {
-    api.registerCardAction({
-      id: 'tin-terminal-new',
-      label: '+ TiN Term',
-      title: 'TiN に新規 Grid ターミナル作成',
-      position: 'card-footer',
-      handler: (_cardId, cardData) => {
-        const cwd = cardData?.windowPath || '';
-        openTinUrl('terminal/new', cwd ? { cwd } : {});
-      },
-    });
-    registeredActionIds.push('tin-terminal-new');
-  }
 
   api.log(`registered ${registeredActionIds.length} TiN actions`);
 }
