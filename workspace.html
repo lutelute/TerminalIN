@@ -137,6 +137,18 @@
   .badge-pty { background: rgba(50,170,110,0.1); color: rgba(40,140,90,0.8); }
   .badge-grid { background: rgba(120,70,200,0.1); color: rgba(110,60,190,0.8); }
   .badge-ext { background: rgba(40,120,210,0.1); color: rgba(30,100,190,0.8); }
+  .badge-term { background: rgba(40,120,210,0.12); color: rgba(20,90,180,0.85); }
+  .badge-finder { background: rgba(255,170,40,0.15); color: rgba(200,120,0,0.9); }
+
+  /* サブセクション見出し (TERMINAL / FINDER) */
+  .subsection-title {
+    font-size: 9px; font-weight: 600; letter-spacing: 0.8px;
+    padding: 6px 8px 3px; color: rgba(0,0,0,0.35);
+    display: flex; align-items: center; gap: 5px;
+  }
+  .subsection-title .subsection-icon { font-size: 11px; }
+  .subsection-title.term { color: rgba(30,100,190,0.6); }
+  .subsection-title.finder { color: rgba(200,120,0,0.75); }
 
   .card-close {
     width: 20px; height: 20px; border-radius: 5px;
@@ -348,7 +360,7 @@ async function snapExternal(w) {
     windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title,
     x: w.x, y: w.y, width: w.width, height: w.height,
   });
-  if (result.ok) { snappedExternals.set(w.windowNumber, { title: w.title }); render(); }
+  if (result.ok) { snappedExternals.set(w.windowNumber, { title: w.title, app: w.app }); render(); }
 }
 
 async function unsnapExternal(windowNumber) {
@@ -366,6 +378,16 @@ function setGridSize(cols, rows) {
 
 // ── Render ──
 let sidebarCollapsed = true; // Sidebar terminals collapsed by default
+
+// アプリ種別判定 (Finder / Terminal 系)
+const FINDER_APPS = new Set(['Finder', 'ファインダー']);
+function isFinderApp(appName) {
+  return !!appName && FINDER_APPS.has(appName);
+}
+function appBadgeHtml(appName) {
+  if (isFinderApp(appName)) return '<span class="card-badge badge-finder">FINDER</span>';
+  return '<span class="card-badge badge-term">TERM</span>';
+}
 
 function render() {
   content.innerHTML = '';
@@ -408,7 +430,11 @@ function render() {
     item.className = 'ext-item';
     let t = info.title || '';
     if (t.length > 35) t = t.substring(0, 32) + '...';
-    item.innerHTML = `<span class="card-badge badge-ext">EXT</span><span class="ext-title">${t}</span>`;
+    // snapped も外部ウィンドウの種別を判定してタイプバッジを出す
+    // externalWindows から生存している window の app 名を取得 (snapped info にも app は保存されているが、live の方が確実)
+    const liveForBadge = externalWindows.find(w => w.windowNumber === wn);
+    const appForBadge = liveForBadge ? liveForBadge.app : (info.app || '');
+    item.innerHTML = `${appBadgeHtml(appForBadge)}<span class="ext-title">${t}</span>`;
     item.style.cursor = 'pointer';
     item.title = 'Click to locate & raise window';
     // 相互機能: 個別 snapped window を wobble + 前面化
@@ -452,7 +478,7 @@ function render() {
 
   content.appendChild(gridSection);
 
-  // ━━ AVAILABLE TERMINALS section ━━
+  // ━━ AVAILABLE section (TERMINAL / FINDER サブセクションに分割) ━━
   const available = externalWindows.filter(w => !snappedExternals.has(w.windowNumber));
   if (available.length > 0) {
     const availSection = document.createElement('div');
@@ -463,16 +489,20 @@ function render() {
     extTitle.innerHTML = `<span class="section-accent">AVAILABLE</span> (${available.length})`;
     availSection.appendChild(extTitle);
 
-    available.forEach(w => {
+    // アプリ種別で分割
+    const availableTerminal = available.filter(w => !isFinderApp(w.app));
+    const availableFinder = available.filter(w => isFinderApp(w.app));
+
+    const renderAvailItem = (w) => {
       const item = document.createElement('div');
       item.className = 'ext-item';
       let t = w.title || 'untitled';
-      if (t.length > 30) t = t.substring(0, 27) + '...';
+      if (t.length > 28) t = t.substring(0, 25) + '...';
       const otherWs = snappedByOther[w.windowNumber];
       if (otherWs) {
-        item.innerHTML = `<span class="ext-title">${t}</span><span class="ws-badge">\u2192 ${otherWs}</span>`;
+        item.innerHTML = `${appBadgeHtml(w.app)}<span class="ext-title">${t}</span><span class="ws-badge">\u2192 ${otherWs}</span>`;
       } else {
-        item.innerHTML = `<span class="ext-title">${t}</span>`;
+        item.innerHTML = `${appBadgeHtml(w.app)}<span class="ext-title">${t}</span>`;
         item.style.cursor = 'pointer';
         item.title = 'Click title to locate, Snap to dock';
         // タイトル部分クリックで wobble (どのウィンドウか視覚確認)
@@ -489,8 +519,23 @@ function render() {
         btn.addEventListener('click', (e) => { e.stopPropagation(); snapExternal(w); });
         item.appendChild(btn);
       }
-      availSection.appendChild(item);
-    });
+      return item;
+    };
+
+    if (availableTerminal.length > 0) {
+      const subTitle = document.createElement('div');
+      subTitle.className = 'subsection-title term';
+      subTitle.innerHTML = `<span class="subsection-icon">\u2328\uFE0F</span>TERMINAL (${availableTerminal.length})`;
+      availSection.appendChild(subTitle);
+      availableTerminal.forEach(w => availSection.appendChild(renderAvailItem(w)));
+    }
+    if (availableFinder.length > 0) {
+      const subTitle = document.createElement('div');
+      subTitle.className = 'subsection-title finder';
+      subTitle.innerHTML = `<span class="subsection-icon">\uD83D\uDCC2</span>FINDER (${availableFinder.length})`;
+      availSection.appendChild(subTitle);
+      availableFinder.forEach(w => availSection.appendChild(renderAvailItem(w)));
+    }
 
     content.appendChild(availSection);
   }

@@ -1,7 +1,7 @@
 {
   "id": "tin-bridge",
   "name": "TiN Bridge",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "description": "TerminalIN (TiN) と連携し、TiN管理中ウィンドウをAtelierXのGrid対象から自動除外する",
   "author": "lutelute",
   "main": "main.js",
