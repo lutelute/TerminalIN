@@ -1602,15 +1602,30 @@ if (!gotLock) {
 }
 
 // ── Auto Snap (AI クラスタリング) ──
-async function triggerAutoSnap() {
+// バッジクリックで対象 workspace 全体を前面化
+ipcMain.on('switch-to-workspace-of', (_event, { windowNumber }) => {
+  for (const [, ws] of workspaces) {
+    if (ws.snappedExternals.has(windowNumber)) {
+      raiseAllWorkspaceWindows(ws, true);
+      return;
+    }
+  }
+});
+
+ipcMain.on('trigger-auto-snap', (_event, opts) => triggerAutoSnap(opts));
+async function triggerAutoSnap(opts = {}) {
+  const filter = (opts && opts.filter) || 'all';
+  const FINDER_APPS = new Set(['Finder', 'ファインダー']);
   // 全 workspace から snapped 済みの windowNumber を収集
   const snappedSet = new Set();
   for (const [, ws] of workspaces) {
     for (const k of ws.snappedExternals.keys()) snappedSet.add(k);
   }
-  // available (未 snap) ウィンドウを取得
+  // available (未 snap) ウィンドウを取得 + フィルター適用
   const allWindows = await listWindows();
-  const available = allWindows.filter(w => !snappedSet.has(w.windowNumber));
+  let available = allWindows.filter(w => !snappedSet.has(w.windowNumber));
+  if (filter === 'terminal') available = available.filter(w => !FINDER_APPS.has(w.app));
+  if (filter === 'finder') available = available.filter(w => FINDER_APPS.has(w.app));
   if (available.length === 0) {
     dialog.showMessageBox({ type: 'info', title: 'Auto Snap', message: 'スナップ可能なウィンドウがありません。' });
     return;
@@ -1715,7 +1730,7 @@ app.whenReady().then(() => {
         }
       }},
       { type: 'separator' },
-      { label: 'Auto Snap (AI)', accelerator: 'CmdOrCtrl+Shift+G', click: () => triggerAutoSnap() },
+      { label: 'Auto Snap (AI) — All', accelerator: 'CmdOrCtrl+Shift+G', click: () => triggerAutoSnap({ filter: 'all' }) },
       { label: 'Edit Auto-Snap Config...', click: () => {
         autoSnap.ensureConfig();
         require('child_process').exec(`open "${autoSnap.CONFIG_FILE}"`);

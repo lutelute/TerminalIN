@@ -92,14 +92,22 @@ function loadRecentHistory(maxEntries = 20) {
 function callClaude(prompt) {
   return new Promise((resolve, reject) => {
     const claudePath = process.env.HOME + '/.local/bin/claude';
-    execFile(claudePath, ['-p', '--model', 'haiku', prompt], {
+    const child = require('child_process').spawn(claudePath, ['-p', '--model', 'haiku'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 30000,
-      maxBuffer: 1024 * 1024,
       env: { ...process.env },
-    }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(stderr || err.message));
+    });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', d => { stdout += d; });
+    child.stderr.on('data', d => { stderr += d; });
+    child.on('close', (code) => {
+      if (code !== 0) return reject(new Error(stderr.trim() || `exit code ${code}`));
       resolve(stdout.trim());
     });
+    child.on('error', reject);
+    // プロンプトを stdin に書き込んで閉じる
+    child.stdin.write(prompt);
+    child.stdin.end();
   });
 }
 

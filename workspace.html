@@ -636,13 +636,28 @@ function render() {
   const available = externalWindows.filter(w => !snappedExternals.has(w.windowNumber));
   _availSection.innerHTML = '';
   if (available.length > 0) {
+    const availableTerminal = available.filter(w => !isFinderApp(w.app));
+    const availableFinder = available.filter(w => isFinderApp(w.app));
+
     const extTitle = document.createElement('div');
     extTitle.className = 'section-title';
     extTitle.innerHTML = `<span class="section-accent">AVAILABLE</span> (${available.length})`;
+    // Auto Snap ボタン群
+    const snapBtns = document.createElement('div');
+    snapBtns.style.cssText = 'display:flex;gap:2px;margin-left:auto;';
+    const makeAutoBtn = (label, filter) => {
+      const b = document.createElement('button');
+      b.className = 'grid-opt';
+      b.textContent = label;
+      b.title = `AI Auto Snap: ${label}`;
+      b.addEventListener('click', () => ipcRenderer.send('trigger-auto-snap', { filter }));
+      return b;
+    };
+    snapBtns.appendChild(makeAutoBtn('AI', 'all'));
+    if (availableTerminal.length > 0) snapBtns.appendChild(makeAutoBtn('T', 'terminal'));
+    if (availableFinder.length > 0) snapBtns.appendChild(makeAutoBtn('F', 'finder'));
+    extTitle.appendChild(snapBtns);
     _availSection.appendChild(extTitle);
-
-    const availableTerminal = available.filter(w => !isFinderApp(w.app));
-    const availableFinder = available.filter(w => isFinderApp(w.app));
 
     const renderAvailItem = (w) => {
       const item = document.createElement('div');
@@ -652,8 +667,13 @@ function render() {
       const otherWs = snappedByOther[w.windowNumber];
       if (otherWs) {
         const ownerColor = snappedByOther[w.windowNumber];
-        const wsBadgeStyle = ownerColor && ownerColor.color ? `style="background:${ownerColor.color.bg};color:${ownerColor.color.fg}"` : '';
-        item.innerHTML = `${appBadgeHtml(w.app)}<span class="ext-title">${t}</span><span class="ws-badge" ${wsBadgeStyle}>\u2192 ${ownerColor.name}</span>`;
+        const wsBadgeStyle = ownerColor && ownerColor.color ? `style="background:${ownerColor.color.bg};color:${ownerColor.color.fg};cursor:pointer"` : 'style="cursor:pointer"';
+        item.innerHTML = `${appBadgeHtml(w.app)}<span class="ext-title">${t}</span><span class="ws-badge" ${wsBadgeStyle} title="クリックでこのウィンドウを前面化">\u2192 ${ownerColor.name}</span>`;
+        // バッジクリックで所属 workspace 全体を前面化
+        item.querySelector('.ws-badge').addEventListener('click', (e) => {
+          e.stopPropagation();
+          ipcRenderer.send('switch-to-workspace-of', { windowNumber: w.windowNumber });
+        });
       } else {
         item.innerHTML = `${appBadgeHtml(w.app)}<span class="ext-title">${t}</span>`;
         item.style.cursor = 'pointer';
