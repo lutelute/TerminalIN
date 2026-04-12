@@ -88,14 +88,13 @@ func handleList() -> Any {
 }
 
 
-func handleMove(_ windows: [[String: Any]]) -> Any {
+func handleMove(_ windows: [[String: Any]], positionOnly: Bool = false) -> Any {
     clearCache()
     var moved = 0
     var failed: [Int] = []
     let axTrusted = AXIsProcessTrusted()
     for cmd in windows {
-        guard let x = cmd["x"] as? Double, let y = cmd["y"] as? Double,
-              let w = cmd["width"] as? Double, let h = cmd["height"] as? Double else { continue }
+        guard let x = cmd["x"] as? Double, let y = cmd["y"] as? Double else { continue }
         let appName = cmd["app"] as? String
         let pid = (cmd["pid"] as? Int).map { pid_t($0) }
         let windowNumber = cmd["windowNumber"] as? Int
@@ -108,28 +107,31 @@ func handleMove(_ windows: [[String: Any]]) -> Any {
             continue
         }
 
-        // 位置 → サイズ → 位置 の順で 2 回適用
-        // macOS AX は size 適用時に window を親 display の端に吸着する挙動があるため
-        // 位置を後で再設定して最終位置を強制する
-        //
-        // **verify 方針**: AXError 戻り値のみで判定 (v1.2.6 方針維持)。
-        // 座標系オフセットによる false-fail を避ける。
-        // Terminal.app の「AX set size が大きな拡大で silent fail する」問題は
-        // unsnap 側で osascriptMove を直接呼ぶことで回避 (v1.2.8)。
         var point = CGPoint(x: x, y: y)
-        var size = CGSize(width: w, height: h)
         var lastErr: AXError = .success
-        if let val = AXValueCreate(.cgPoint, &point) {
-            let err = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
-            if err != .success { lastErr = err }
-        }
-        if let val = AXValueCreate(.cgSize, &size) {
-            let err = AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, val)
-            if err != .success { lastErr = err }
-        }
-        if let val = AXValueCreate(.cgPoint, &point) {
-            let err = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
-            if err != .success { lastErr = err }
+
+        if positionOnly {
+            // ドラッグ中の軽量モード: position のみ (1回の AX 呼び出し)
+            if let val = AXValueCreate(.cgPoint, &point) {
+                let err = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
+                if err != .success { lastErr = err }
+            }
+        } else {
+            // 通常モード: position → size → position (3回)
+            guard let w = cmd["width"] as? Double, let h = cmd["height"] as? Double else { continue }
+            var size = CGSize(width: w, height: h)
+            if let val = AXValueCreate(.cgPoint, &point) {
+                let err = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
+                if err != .success { lastErr = err }
+            }
+            if let val = AXValueCreate(.cgSize, &size) {
+                let err = AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, val)
+                if err != .success { lastErr = err }
+            }
+            if let val = AXValueCreate(.cgPoint, &point) {
+                let err = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
+                if err != .success { lastErr = err }
+            }
         }
         if lastErr == .success {
             moved += 1
@@ -235,7 +237,7 @@ while let line = readLine() {
     var result: Any
     switch cmd {
     case "list": result = handleList()
-    case "move": result = handleMove(json["windows"] as? [[String: Any]] ?? [])
+    case "move": result = handleMove(json["windows"] as? [[String: Any]] ?? [], positionOnly: json["positionOnly"] as? Bool ?? false)
     case "raise": result = handleRaise(json["windows"] as? [[String: Any]] ?? [])
     case "wobble": result = handleWobble(json["windows"] as? [[String: Any]] ?? [])
     case "verify": result = handleVerify(json["windows"] as? [[String: Any]] ?? [])

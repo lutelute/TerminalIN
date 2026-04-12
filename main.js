@@ -160,7 +160,8 @@ async function writeWorkspacesJson() {
     payload.workspaces.push({
       name: ws.name,
       sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
-      grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800 },
+      grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800, height: ws.gridHeight || 0 },
+      colorIndex: ws.colorIndex,
       snappedExternals: snapped,
     });
   }
@@ -314,6 +315,17 @@ async function restoreSnappedWindows(ws, persistedList) {
   console.log(`[tin] restored ${restored.length} snapped windows, ${missing.length} missing`);
 }
 
+// ── Workspace colors ──
+// workspace ごとに固有色を割り当て、snapped バッジの色に使う
+const WS_COLORS = [
+  { name: 'blue',   h: 215, bg: 'rgba(50,120,220,0.12)',  fg: 'rgba(40,100,200,0.9)',  accent: 'rgba(50,120,220,0.7)' },
+  { name: 'purple', h: 270, bg: 'rgba(130,70,220,0.12)',  fg: 'rgba(110,55,200,0.9)',  accent: 'rgba(130,70,220,0.7)' },
+  { name: 'green',  h: 150, bg: 'rgba(40,170,100,0.12)',  fg: 'rgba(30,140,80,0.9)',   accent: 'rgba(40,170,100,0.7)' },
+  { name: 'orange', h: 30,  bg: 'rgba(220,140,30,0.12)',  fg: 'rgba(190,110,20,0.9)',  accent: 'rgba(220,140,30,0.7)' },
+  { name: 'red',    h: 0,   bg: 'rgba(210,60,50,0.12)',   fg: 'rgba(190,50,40,0.9)',   accent: 'rgba(210,60,50,0.7)' },
+  { name: 'teal',   h: 180, bg: 'rgba(30,170,170,0.12)',  fg: 'rgba(20,140,140,0.9)',  accent: 'rgba(30,170,170,0.7)' },
+];
+
 // ── Workspace registry ──
 const workspaces = new Map();
 let nextWsId = 1;
@@ -372,12 +384,13 @@ function listWindows() { return daemonRequest('list'); }
 // Fire-and-forget: daemon に move を送るが応答を待たない。
 // sidebar ドラッグ中のリアルタイム retile 用。応答待ちで event loop を
 // ブロックしないので、次の move イベントをすぐ処理できる。
-function daemonMoveFireAndForget(windows) {
+function daemonMoveFireAndForget(windows, positionOnly = false) {
   if (!daemon || !daemonReady || !windows.length) return;
   try {
     const id = String(nextReqId++);
-    daemon.stdin.write(JSON.stringify({ id, cmd: 'move', windows }) + '\n');
-    // 応答は pendingRequests に入れない → 自動的に無視される
+    const msg = { id, cmd: 'move', windows };
+    if (positionOnly) msg.positionOnly = true;
+    daemon.stdin.write(JSON.stringify(msg) + '\n');
   } catch {}
 }
 
@@ -628,7 +641,7 @@ function getGridArea(ws) {
     x: b.x + b.width + 12,
     y: b.y,
     width: ws.gridWidth || 800,
-    height: b.height,
+    height: ws.gridHeight || b.height,
   };
 }
 
@@ -1031,6 +1044,9 @@ function createWorkspace(name, savedState) {
     gridCols: savedGrid ? (savedGrid.cols || 2) : 2,
     gridRows: savedGrid ? (savedGrid.rows || 2) : 2,
     gridWidth: savedGrid ? (savedGrid.width || 800) : 800,
+    gridHeight: savedGrid ? (savedGrid.height || 0) : 0,
+    color: (savedState && savedState.colorIndex != null) ? WS_COLORS[savedState.colorIndex % WS_COLORS.length] : WS_COLORS[(wsId - 1) % WS_COLORS.length],
+    colorIndex: (savedState && savedState.colorIndex != null) ? savedState.colorIndex : (wsId - 1) % WS_COLORS.length,
   };
   workspaces.set(wsId, ws);
   registerWorkspaceContents(ws);
@@ -1045,11 +1061,13 @@ function createWorkspace(name, savedState) {
     const wb = win.getBounds();
     const overlayX = wb.x + wb.width + 12;
     const overlayY = wb.y;
+    const overlayW = ws.gridWidth || 800;
+    const overlayH = ws.gridHeight || wb.height;
     const overlay = new BrowserWindow({
       x: overlayX,
       y: overlayY,
-      width: 800,
-      height: wb.height,
+      width: overlayW,
+      height: overlayH,
       minWidth: 300, minHeight: 200,
       frame: false,
       transparent: true,
@@ -1063,7 +1081,7 @@ function createWorkspace(name, savedState) {
     overlay.excludedFromShownWindowsMenu = true;
     overlay.loadFile('grid-overlay.html');
     // Force position after creation (transparent windows can drift)
-    overlay.setBounds({ x: overlayX, y: overlayY, width: 800, height: wb.height });
+    overlay.setBounds({ x: overlayX, y: overlayY, width: overlayW, height: overlayH });
     // Click-through by default — only handles are interactive
     overlay.setIgnoreMouseEvents(true, { forward: true });
     ws.gridOverlay = overlay;
@@ -1084,7 +1102,7 @@ function createWorkspace(name, savedState) {
 
   win.loadFile('workspace.html');
   win.webContents.on('did-finish-load', () => {
-    win.webContents.send('workspace-info', { id: wsId, name: wsName });
+    win.webContents.send('workspace-info', { id: wsId, name: wsName, color: ws.color });
     // 復元対象があればここで実行 (renderer が準備完了後に実ウィンドウを配置)
     if (ws._pendingRestore) {
       const pending = ws._pendingRestore;
@@ -1109,7 +1127,7 @@ function createWorkspace(name, savedState) {
     // overlay を即座に同期 (BrowserWindow — 同期、コストゼロ)
     if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.win && !ws.win.isDestroyed()) {
       const sb = ws.win.getBounds();
-      ws.gridOverlay.setBounds({ x: sb.x + sb.width + 12, y: sb.y, width: ws.gridWidth, height: sb.height });
+      ws.gridOverlay.setBounds({ x: sb.x + sb.width + 12, y: sb.y, width: ws.gridWidth, height: ws.gridHeight || sb.height });
     }
     // embedded grid windows も即座に同期 (BrowserWindow)
     for (const [slot, gw] of ws.gridWindows) {
@@ -1127,17 +1145,27 @@ function createWorkspace(name, savedState) {
       const b = getSlotBounds(ws, info.slot);
       if (b) moveCmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
     }
-    if (moveCmds.length) daemonMoveFireAndForget(moveCmds);
+    // ドラッグ中は positionOnly で高速化 (AX 呼び出し 1/3)
+    if (moveCmds.length) daemonMoveFireAndForget(moveCmds, true);
   };
   win.on('move', onSidebarMove);
   win.on('resize', onSidebarMove);
-  // ドラッグ開始/終了で poll を一時停止/再開
   win.on('will-move', () => { if (!_dragging) { _dragging = true; } });
   win.on('moved', () => {
     _dragging = false;
-    // ドラッグ終了後に最終位置を確定 (await で正確に配置)
+    // ドラッグ終了後に最終位置+サイズを確定
     retileAll(ws);
     scheduleSaveWorkspaces();
+  });
+  // resize 終了時もサイズ確定 (will-resize/resized がないので debounce)
+  let _resizeEnd = null;
+  win.on('resize', () => {
+    if (_resizeEnd) clearTimeout(_resizeEnd);
+    _resizeEnd = setTimeout(() => {
+      _resizeEnd = null;
+      retileAll(ws);
+      scheduleSaveWorkspaces();
+    }, 150);
   });
   // sidebar 位置/サイズ変更も永続化対象
   win.on('moved', () => scheduleSaveWorkspaces());
@@ -1258,7 +1286,7 @@ function createWorkspace(name, savedState) {
     if (workspaces.size > 1) {
       for (const [, otherWs] of workspaces) {
         if (otherWs.id === ws.id) continue;
-        for (const [wn] of otherWs.snappedExternals) snappedByOther[wn] = otherWs.name;
+        for (const [wn] of otherWs.snappedExternals) snappedByOther[wn] = { name: otherWs.name, color: otherWs.color };
       }
     }
     const gridSlots = {};
@@ -1363,7 +1391,8 @@ ipcMain.on('resize-overlay', (event, { width, height }) => {
       // Use workspace position to calculate overlay position (not overlay.getBounds)
       const sb = ws.win.getBounds();
       ws.gridOverlay.setBounds({ x: sb.x + sb.width + 12, y: sb.y, width, height });
-      ws.gridWidth = width; // track for getGridArea
+      ws.gridWidth = width;
+      ws.gridHeight = height;
       scheduleSaveWorkspaces();
       return;
     }
@@ -1685,7 +1714,8 @@ function writeWorkspacesJsonSync() {
     payload.workspaces.push({
       name: ws.name,
       sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
-      grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800 },
+      grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800, height: ws.gridHeight || 0 },
+      colorIndex: ws.colorIndex,
       snappedExternals: snapped,
     });
   }
