@@ -318,6 +318,72 @@ async function restoreSnappedWindows(ws, persistedList) {
   console.log(`[tin] restored ${restored.length} snapped windows, ${missing.length} missing`);
 }
 
+// ── Display 移動: workspace + snapped ターミナルを丸ごと別ディスプレイへ ──
+async function moveWorkspaceToDisplay(direction) {
+  // フォーカス中の workspace を特定
+  const focused = BrowserWindow.getFocusedWindow();
+  let ws = null;
+  for (const [, w] of workspaces) {
+    if (w.win === focused || w.gridOverlay === focused) { ws = w; break; }
+    for (const [, gw] of w.gridWindows) {
+      if (gw.win === focused) { ws = w; break; }
+    }
+    if (ws) break;
+  }
+  if (!ws || !ws.win || ws.win.isDestroyed()) return;
+
+  const displays = screen.getAllDisplays();
+  if (displays.length <= 1) return;
+
+  // sidebar が今どのディスプレイにいるか
+  const sb = ws.win.getBounds();
+  const sbCenter = { x: sb.x + sb.width / 2, y: sb.y + sb.height / 2 };
+  let currentIdx = 0;
+  for (let i = 0; i < displays.length; i++) {
+    const wa = displays[i].workArea;
+    if (sbCenter.x >= wa.x && sbCenter.x < wa.x + wa.width &&
+        sbCenter.y >= wa.y && sbCenter.y < wa.y + wa.height) {
+      currentIdx = i; break;
+    }
+  }
+
+  // 次/前のディスプレイ
+  const nextIdx = (currentIdx + direction + displays.length) % displays.length;
+  const from = displays[currentIdx].workArea;
+  const to = displays[nextIdx].workArea;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+
+  // sidebar 移動
+  ws.win.setBounds({ x: sb.x + dx, y: sb.y + dy, width: sb.width, height: sb.height });
+
+  // overlay 移動
+  if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) {
+    const ob = ws.gridOverlay.getBounds();
+    ws.gridOverlay.setBounds({ x: ob.x + dx, y: ob.y + dy, width: ob.width, height: ob.height });
+  }
+
+  // grid windows 移動
+  for (const [, gw] of ws.gridWindows) {
+    if (gw.win && !gw.win.isDestroyed()) {
+      const gb = gw.win.getBounds();
+      gw.win.setBounds({ x: gb.x + dx, y: gb.y + dy, width: gb.width, height: gb.height });
+    }
+  }
+
+  // snapped externals 移動 (daemon fire-and-forget で高速)
+  const moveCmds = [];
+  for (const [, info] of ws.snappedExternals) {
+    const b = getSlotBounds(ws, info.slot);
+    if (b) moveCmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
+  }
+  if (moveCmds.length) await batchMove(moveCmds);
+
+  await raiseAllWorkspaceWindows(ws, true);
+  scheduleSaveWorkspaces();
+  console.log(`[tin] moved workspace "${ws.name}" to display ${nextIdx}`);
+}
+
 // ── Batch restore (全 workspace の復元を1回の daemon 呼び出しでまとめる) ──
 let _restoreTimer = null;
 function scheduleRestoreAll() {
@@ -1967,6 +2033,9 @@ app.whenReady().then(() => {
         const nextWs = wsList[(currentIdx + 1) % wsList.length];
         raiseAllWorkspaceWindows(nextWs, true);
       }},
+      { type: 'separator' },
+      { label: 'Move to Next Display', accelerator: 'CmdOrCtrl+Shift+Right', click: () => moveWorkspaceToDisplay(1) },
+      { label: 'Move to Prev Display', accelerator: 'CmdOrCtrl+Shift+Left', click: () => moveWorkspaceToDisplay(-1) },
       { type: 'separator' },
       { role: 'front' },
     ]},
