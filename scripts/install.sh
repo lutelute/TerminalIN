@@ -13,9 +13,16 @@ if [ ! -d "$APP_SRC" ]; then
   exit 1
 fi
 
-# TiN を停止
+# TiN を完全停止
 osascript -e 'tell application "TiN" to quit' 2>/dev/null || true
-sleep 2
+pkill -f "TiN.app/Contents/MacOS/TiN" 2>/dev/null || true
+pkill -f "electron.*--dev" 2>/dev/null || true
+sleep 1
+# port 9222 を使っているプロセスがあれば待つ
+for i in 1 2 3; do
+  lsof -ti:9222 >/dev/null 2>&1 || break
+  sleep 1
+done
 
 # daemon バイナリが同一なら保持
 PRESERVE_DAEMON=0
@@ -51,4 +58,14 @@ fi
 xattr -cr "$APP_DST"
 echo "[install] TiN.app installed to $APP_DST"
 echo "[install] Starting TiN..."
-open -a TiN
+# 直接実行でログを取得し、復元速度を自動確認
+"$APP_DST/Contents/MacOS/TiN" > /tmp/tin-install-check.log 2>&1 &
+TIN_PID=$!
+sleep 6
+RESTORE=$(grep "batch restore" /tmp/tin-install-check.log 2>/dev/null)
+if [ -n "$RESTORE" ]; then
+  echo "[install] $RESTORE"
+else
+  echo "[install] (復元ログなし — workspace が少ないか daemon 未 ready)"
+fi
+echo "[install] daemon: $(echo '{"cmd":"move","id":"1","windows":[]}' | "$APP_DST/$DAEMON_REL" 2>/dev/null | grep axTrusted | head -1)"
