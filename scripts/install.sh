@@ -33,7 +33,8 @@ if [ -f "$APP_DST/$DAEMON_REL" ] && [ -f "$APP_SRC/$DAEMON_REL" ]; then
     PRESERVE_DAEMON=1
     echo "[install] daemon unchanged — preserving Accessibility authorization"
   else
-    echo "[install] daemon changed — ⚠ re-add to Accessibility if needed"
+    echo "[install] daemon changed — TCC リセット中..."
+  tccutil reset Accessibility com.shigenoburyuto.tin 2>/dev/null || true
   fi
 fi
 
