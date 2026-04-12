@@ -92,8 +92,13 @@ function loadRecentHistory(maxEntries = 20) {
 function callClaude(prompt) {
   return new Promise((resolve, reject) => {
     const claudePath = process.env.HOME + '/.local/bin/claude';
-    const child = require('child_process').spawn(claudePath, ['-p', '--model', 'haiku'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
+    const os = require('os');
+    // プロンプトを一時ファイルに書き出して stdin からパイプ
+    const tmpFile = path.join(os.tmpdir(), `tin-prompt-${Date.now()}.txt`);
+    fs.writeFileSync(tmpFile, prompt, 'utf-8');
+    const child = require('child_process').spawn('sh', ['-c', `cat "${tmpFile}" | "${claudePath}" -p --model haiku`], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: os.tmpdir(),
       timeout: 30000,
       env: { ...process.env },
     });
@@ -101,13 +106,14 @@ function callClaude(prompt) {
     child.stdout.on('data', d => { stdout += d; });
     child.stderr.on('data', d => { stderr += d; });
     child.on('close', (code) => {
+      try { fs.unlinkSync(tmpFile); } catch {}
       if (code !== 0) return reject(new Error(stderr.trim() || `exit code ${code}`));
       resolve(stdout.trim());
     });
-    child.on('error', reject);
-    // プロンプトを stdin に書き込んで閉じる
-    child.stdin.write(prompt);
-    child.stdin.end();
+    child.on('error', (e) => {
+      try { fs.unlinkSync(tmpFile); } catch {}
+      reject(e);
+    });
   });
 }
 
@@ -160,10 +166,18 @@ ${windowList}
 
   try {
     const text = await callClaude(prompt);
-    const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return { error: 'AI の応答を解析できませんでした' };
+    console.log('[auto-snap] raw response:', text.substring(0, 500));
+    // JSON を抽出 (複数パターン対応)
+    let jsonStr = null;
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fenced) jsonStr = fenced[1].trim();
+    if (!jsonStr) {
+      const braces = text.match(/\{[\s\S]*"groups"[\s\S]*\}/);
+      if (braces) jsonStr = braces[0];
+    }
+    if (!jsonStr) return { error: 'AI の応答を解析できませんでした\n\n応答: ' + text.substring(0, 200) };
 
-    const parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+    const parsed = JSON.parse(jsonStr);
     if (!parsed.groups || !Array.isArray(parsed.groups)) return { error: '無効なグループ形式' };
 
     const result = parsed.groups.map(g => ({
