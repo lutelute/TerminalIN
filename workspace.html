@@ -113,12 +113,12 @@
   .section-title-clickable:hover { color: rgba(0,0,0,0.5); }
   .section-toggle { font-size: 9px; }
 
-  /* ── Console fixed to bottom ── */
+  /* ── Console fixed to bottom (常時表示) ── */
   .section-console {
-    border-top: 1px solid rgba(0,0,0,0.06);
+    border-top: 1px solid rgba(0,0,0,0.08);
     padding: 6px;
-    margin-top: auto;
     flex-shrink: 0;
+    background: #fff;
   }
 
   /* ── Grid size selector ── */
@@ -301,6 +301,7 @@
   <div id="collapse-btn" title="Collapse sidebar (Cmd+B)">‹</div>
 </div>
 <div id="content"></div>
+<div id="console-fixed"></div>
 <div id="status">Starting...</div>
 
 <script>
@@ -321,6 +322,8 @@ let wsColor = null; // { bg, fg, accent }
 const embeddedTerms = [];
 const snappedExternals = new Map();
 let externalWindows = [];
+let showTerminals = true;
+let showFinders = true;
 let snappedByOther = {};
 let gridSlots = {};
 let gridCols = 2, gridRows = 2;
@@ -672,17 +675,19 @@ function render() {
 
     if (availableTerminal.length > 0) {
       const subTitle = document.createElement('div');
-      subTitle.className = 'subsection-title term';
-      subTitle.innerHTML = `<span class="subsection-icon">\u2328\uFE0F</span>TERMINAL (${availableTerminal.length})`;
+      subTitle.className = 'subsection-title term section-title-clickable';
+      subTitle.innerHTML = `<span class="section-toggle">${showTerminals ? '\u25be' : '\u25b8'}</span><span class="subsection-icon">\u2328\uFE0F</span>TERMINAL (${availableTerminal.length})`;
+      subTitle.addEventListener('click', () => { showTerminals = !showTerminals; render(); });
       _availSection.appendChild(subTitle);
-      availableTerminal.forEach(w => _availSection.appendChild(renderAvailItem(w)));
+      if (showTerminals) availableTerminal.forEach(w => _availSection.appendChild(renderAvailItem(w)));
     }
     if (availableFinder.length > 0) {
       const subTitle = document.createElement('div');
-      subTitle.className = 'subsection-title finder';
-      subTitle.innerHTML = `<span class="subsection-icon">\uD83D\uDCC2</span>FINDER (${availableFinder.length})`;
+      subTitle.className = 'subsection-title finder section-title-clickable';
+      subTitle.innerHTML = `<span class="section-toggle">${showFinders ? '\u25be' : '\u25b8'}</span><span class="subsection-icon">\uD83D\uDCC2</span>FINDER (${availableFinder.length})`;
+      subTitle.addEventListener('click', () => { showFinders = !showFinders; render(); });
       _availSection.appendChild(subTitle);
-      availableFinder.forEach(w => _availSection.appendChild(renderAvailItem(w)));
+      if (showFinders) availableFinder.forEach(w => _availSection.appendChild(renderAvailItem(w)));
     }
   }
 
@@ -734,11 +739,11 @@ function render() {
     _sideSection.appendChild(addBtn);
   }
 
-  // Attach persistent sections to content (only reparent, no destroy/recreate)
+  // Attach persistent sections (console は content 外の固定領域)
   if (!_sectionsAttached) {
     content.appendChild(_gridSection);
     content.appendChild(_availSection);
-    content.appendChild(_sideSection);
+    document.getElementById('console-fixed').appendChild(_sideSection);
     _sectionsAttached = true;
   }
 
