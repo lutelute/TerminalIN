@@ -318,6 +318,76 @@ async function restoreSnappedWindows(ws, persistedList) {
   console.log(`[tin] restored ${restored.length} snapped windows, ${missing.length} missing`);
 }
 
+// ── Batch restore (全 workspace の復元を1回の daemon 呼び出しでまとめる) ──
+let _restoreTimer = null;
+function scheduleRestoreAll() {
+  if (_restoreTimer) return;
+  _restoreTimer = setTimeout(() => {
+    _restoreTimer = null;
+    restoreAllPending().catch(e => console.warn('[tin] batch restore failed:', e.message));
+  }, 1000);
+}
+
+async function restoreAllPending() {
+  // daemon が ready するまで待つ
+  for (let i = 0; i < 5 && !daemonReady; i++) await new Promise(r => setTimeout(r, 300));
+
+  // 1回だけ listWindows
+  let liveWindows = [];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    liveWindows = await listWindows();
+    if (liveWindows.length > 0) break;
+    await new Promise(r => setTimeout(r, 400));
+  }
+
+  // 全 workspace の pending を一括処理
+  const allMoveCmds = [];
+  for (const [, ws] of workspaces) {
+    if (!ws._pendingRestore || !ws.win || ws.win.isDestroyed()) continue;
+    const persistedList = ws._pendingRestore;
+    delete ws._pendingRestore;
+
+    const restored = [];
+    const missing = [];
+    for (const p of persistedList) {
+      const live = matchPersistedToLive(p, liveWindows);
+      if (!live) { missing.push({ app: p.app, title: p.title, slot: p.slot }); continue; }
+      if (ws.snappedExternals.has(live.windowNumber)) continue;
+      let slot = p.slot;
+      const total = ws.gridCols * ws.gridRows;
+      if (slot >= total) { slot = nextFreeSlot(ws); if (slot < 0) continue; }
+      let occupied = false;
+      for (const [, info] of ws.snappedExternals) { if (info.slot === slot) { occupied = true; break; } }
+      if (occupied) { slot = nextFreeSlot(ws); if (slot < 0) continue; }
+      ws.snappedExternals.set(live.windowNumber, {
+        app: live.app, pid: live.pid, title: live.title,
+        windowNumber: live.windowNumber, windowIndex: live.windowIndex || 0, slot,
+        origX: p.origX, origY: p.origY, origW: p.origW, origH: p.origH,
+        snappedAt: p.snappedAt || Date.now(),
+      });
+      snappedIndexAdd(live.windowNumber, ws);
+      const pos = getSlotBounds(ws, slot);
+      if (pos) allMoveCmds.push({ windowNumber: live.windowNumber, pid: live.pid, app: live.app, title: live.title, ...pos });
+      restored.push({ app: live.app, title: live.title, slot });
+    }
+    // renderer に通知
+    try {
+      ws.win.webContents.send('restore-report', { restored, missing });
+      const hydrate = [];
+      for (const [wn, info] of ws.snappedExternals) hydrate.push({ windowNumber: wn, title: info.title, app: info.app });
+      ws.win.webContents.send('hydrate-snapped', hydrate);
+    } catch {}
+    console.log(`[tin] restored ${restored.length} snapped, ${missing.length} missing in "${ws.name}"`);
+  }
+
+  // 全ウィンドウを1回の batchMove で移動
+  if (allMoveCmds.length > 0) {
+    await batchMove(allMoveCmds);
+    console.log(`[tin] batch restore: moved ${allMoveCmds.length} windows in 1 call`);
+  }
+  scheduleSyncSnapped();
+}
+
 // ── Workspace colors ──
 // workspace ごとに固有色を割り当て、snapped バッジの色に使う
 const WS_COLORS = [
@@ -1100,13 +1170,8 @@ function createWorkspace(name, savedState) {
   win.loadFile('workspace.html');
   win.webContents.on('did-finish-load', () => {
     win.webContents.send('workspace-info', { id: wsId, name: wsName, color: ws.color });
-    // 復元対象があればここで実行 (renderer が準備完了後に実ウィンドウを配置)
-    if (ws._pendingRestore) {
-      const pending = ws._pendingRestore;
-      delete ws._pendingRestore;
-      // daemon が ready するまで少し待ってから実行
-      setTimeout(() => { restoreSnappedWindows(ws, pending).catch(e => console.warn('[tin] restore failed:', e.message)); }, 800);
-    }
+    // 復元は restoreAllPending() で一括実行 (個別ではなく全 workspace まとめて)
+    if (ws._pendingRestore) scheduleRestoreAll();
   });
 
   if (process.argv.includes('--dev')) win.webContents.openDevTools({ mode: 'detach' });
