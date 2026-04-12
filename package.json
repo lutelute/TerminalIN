@@ -1,12 +1,14 @@
 {
   "name": "tin",
-  "version": "1.2.12",
+  "version": "1.2.14",
   "description": "Terminal workspace manager for macOS",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
     "build": "electron-builder --mac",
+    "predist": "bash scripts/build-daemon.sh",
+    "prebuild": "bash scripts/build-daemon.sh",
     "dist": "electron-builder --mac --publish never"
   },
   "keywords": [],
@@ -25,10 +27,10 @@
       ],
       "identity": null,
       "icon": "icon.icns",
-      "extraResources": [
+      "extraFiles": [
         {
           "from": "daemon",
-          "to": "daemon"
+          "to": "MacOS/daemon"
         }
       ],
       "protocols": [

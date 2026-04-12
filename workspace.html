@@ -10,9 +10,29 @@
     width: 100%; height: 100%;
     overflow: hidden;
     font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif;
-    color: #2c2c3a;
+    color: #1a1a2e;
     display: flex; flex-direction: column;
-    background: transparent;
+    background: #ffffff;
+    transition: opacity 0.15s;
+  }
+
+  /* ── Active / Inactive 状態 ── */
+  /* アクティブ: クリアで明るい (vibrancy: active で常時明るい背景)
+     非アクティブ: 灰色マスクで少し沈んだ見た目に */
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    background: rgba(120,120,130,0.18);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s;
+    z-index: 9999;
+  }
+  body.window-inactive::after {
+    opacity: 1;
+  }
+  body.window-inactive {
+    color: #6a6a7a;
   }
 
   /* ── Titlebar ── */
@@ -22,17 +42,18 @@
     display: flex; align-items: center;
     padding: 0 10px 0 72px;
     flex-shrink: 0;
-    border-bottom: 1px solid rgba(0,0,0,0.08);
+    border-bottom: 1px solid rgba(0,0,0,0.1);
   }
   #title {
-    font-size: 14px; font-weight: 700; color: rgba(40,40,70,0.75);
+    font-size: 14px; font-weight: 700; color: rgba(30,30,60,0.85);
     cursor: text; user-select: none;
     -webkit-app-region: no-drag;
     letter-spacing: -0.2px;
     padding: 2px 6px;
     border-radius: 4px;
-    transition: background 0.1s;
+    transition: background 0.1s, color 0.15s;
   }
+  body.window-inactive #title { color: rgba(80,80,100,0.5); }
   #title:hover { background: rgba(0,0,0,0.04); }
   #title-input {
     font-size: 14px; font-weight: 700; color: rgba(40,40,70,0.85);
@@ -80,13 +101,13 @@
 
   .section-title {
     font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px;
-    color: rgba(0,0,0,0.35); padding: 2px 0 3px;
+    color: rgba(0,0,0,0.45); padding: 2px 0 3px;
     display: flex; align-items: center; gap: 6px;
     font-family: 'SF Mono', 'Menlo', monospace;
   }
   .section-title .section-accent { font-weight: 700; }
-  .section-grid .section-accent { color: rgba(120,70,200,0.5); }
-  .section-available .section-accent { color: rgba(40,110,200,0.5); }
+  .section-grid .section-accent { color: rgba(120,70,200,0.65); }
+  .section-available .section-accent { color: rgba(40,110,200,0.65); }
 
   .section-title-clickable { cursor: pointer; user-select: none; }
   .section-title-clickable:hover { color: rgba(0,0,0,0.5); }
@@ -124,7 +145,7 @@
   .term-card.expanded .term-embed { display: block; }
   .term-card .term-embed { display: none; height: 200px; }
   .card-title {
-    flex: 1; font-size: 12px; font-weight: 500; color: rgba(30,30,50,0.8);
+    flex: 1; font-size: 12px; font-weight: 500; color: rgba(20,20,40,0.85);
     font-family: 'SF Mono', 'Menlo', monospace;
   }
 
@@ -169,7 +190,7 @@
   .ext-item:last-child { border-bottom: none; }
   .ext-item:hover { background: rgba(0,0,0,0.03); }
   .ext-item .ext-title {
-    flex: 1; font-size: 11px; font-weight: 500; color: rgba(0,0,0,0.55);
+    flex: 1; font-size: 11px; font-weight: 500; color: rgba(0,0,0,0.7);
     font-family: 'SF Mono', 'Menlo', monospace;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
@@ -301,7 +322,6 @@ const snappedExternals = new Map();
 let externalWindows = [];
 let snappedByOther = {};
 let gridSlots = {};
-let lastExtIdentity = '';
 let gridCols = 2, gridRows = 2;
 
 // ── Title renaming (click to edit) ──
@@ -338,7 +358,6 @@ ipcRenderer.on('hydrate-snapped', (_e, list) => {
   for (const entry of (list || [])) {
     snappedExternals.set(entry.windowNumber, { title: entry.title, app: entry.app });
   }
-  lastExtIdentity = ''; // force re-render on next poll
   render();
 });
 
@@ -407,6 +426,22 @@ ipcRenderer.on('restore-report', (_e, report) => {
   }
 });
 
+// ── Daemon AX permission banner ──
+ipcRenderer.on('daemon-ax-status', (_e, { trusted }) => {
+  const existing = document.getElementById('ax-banner');
+  if (trusted) {
+    if (existing) existing.remove();
+    return;
+  }
+  if (existing) return; // already showing
+  const banner = document.createElement('div');
+  banner.id = 'ax-banner';
+  banner.className = 'restore-banner has-missing';
+  banner.innerHTML = `<div class="rb-header"><span>\u26a0 Snap\u304c\u9045\u3044: daemon\u306b\u30a2\u30af\u30bb\u30b7\u30d3\u30ea\u30c6\u30a3\u6a29\u9650\u304c\u3042\u308a\u307e\u305b\u3093</span><span class="rb-close" title="Dismiss">\u00d7</span></div><div style="font-size:9px;margin-top:3px;opacity:0.85">\u30b7\u30b9\u30c6\u30e0\u8a2d\u5b9a \u2192 \u30d7\u30e9\u30a4\u30d0\u30b7\u30fc\u3068\u30bb\u30ad\u30e5\u30ea\u30c6\u30a3 \u2192 \u30a2\u30af\u30bb\u30b7\u30d3\u30ea\u30c6\u30a3 \u2192 daemon \u3092\u8ffd\u52a0</div>`;
+  banner.querySelector('.rb-close').addEventListener('click', () => banner.remove());
+  if (content && content.parentNode) content.parentNode.insertBefore(banner, content);
+});
+
 // ── Sidebar embedded terminals ──
 async function addEmbedded(title) {
   const name = title || `Shell ${embeddedTerms.length + 1}`;
@@ -440,6 +475,7 @@ function toggleExpand(idx) {
 function removeEmbedded(idx) {
   const s = embeddedTerms[idx];
   s.term.dispose();
+  _termContainers.delete(s.id);
   ipcRenderer.invoke('kill-terminal', { id: s.id });
   embeddedTerms.splice(idx, 1);
   render();
@@ -490,21 +526,27 @@ function appBadgeHtml(appName) {
   return '<span class="card-badge badge-term">TERM</span>';
 }
 
+// ── Persistent DOM sections (created once, updated in-place) ──
+const _gridSection = document.createElement('div');
+_gridSection.className = 'section section-grid';
+const _availSection = document.createElement('div');
+_availSection.className = 'section section-available';
+const _sideSection = document.createElement('div');
+_sideSection.className = 'section section-console';
+// xterm container cache: ptyId → DOM element (survives render, avoids re-mount)
+const _termContainers = new Map();
+let _sectionsAttached = false;
+
 function render() {
-  content.innerHTML = '';
-
-  // ━━ GRID section ━━
-  const gridSection = document.createElement('div');
-  gridSection.className = 'section section-grid';
-
+  // ━━ GRID section (rebuild children only) ━━
+  _gridSection.innerHTML = '';
+  const gridCount = Object.keys(gridSlots).length + snappedExternals.size;
   const gridTitle = document.createElement('div');
   gridTitle.className = 'section-title';
-  const gridCount = Object.keys(gridSlots).length + snappedExternals.size;
   gridTitle.innerHTML = `<span class="section-accent">GRID</span> (${gridCount}/${gridCols * gridRows})`;
-
   const selector = document.createElement('div');
   selector.className = 'grid-selector';
-  [['2×2', 2, 2], ['3×3', 3, 3], ['2×3', 2, 3]].forEach(([label, c, r]) => {
+  [['2\u00d72', 2, 2], ['3\u00d73', 3, 3], ['2\u00d73', 2, 3]].forEach(([label, c, r]) => {
     const btn = document.createElement('button');
     btn.className = 'grid-opt' + (c === gridCols && r === gridRows ? ' active' : '');
     btn.textContent = label;
@@ -512,9 +554,9 @@ function render() {
     selector.appendChild(btn);
   });
   gridTitle.appendChild(selector);
-  gridSection.appendChild(gridTitle);
+  _gridSection.appendChild(gridTitle);
 
-  for (const [slot, info] of Object.entries(gridSlots)) {
+  for (const [slot] of Object.entries(gridSlots)) {
     const card = document.createElement('div');
     card.className = 'ext-item';
     card.innerHTML = `<span class="card-badge badge-grid">GRID</span><span class="ext-title">Terminal #${Number(slot) + 1}</span>`;
@@ -523,7 +565,7 @@ function render() {
     closeBtn.textContent = '\u00d7';
     closeBtn.addEventListener('click', () => removeGridTerminal(slot));
     card.appendChild(closeBtn);
-    gridSection.appendChild(card);
+    _gridSection.appendChild(card);
   }
 
   for (const [wn, info] of snappedExternals) {
@@ -531,18 +573,13 @@ function render() {
     item.className = 'ext-item';
     let t = info.title || '';
     if (t.length > 35) t = t.substring(0, 32) + '...';
-    // snapped も外部ウィンドウの種別を判定してタイプバッジを出す
-    // externalWindows から生存している window の app 名を取得 (snapped info にも app は保存されているが、live の方が確実)
     const liveForBadge = externalWindows.find(w => w.windowNumber === wn);
     const appForBadge = liveForBadge ? liveForBadge.app : (info.app || '');
     item.innerHTML = `${appBadgeHtml(appForBadge)}<span class="ext-title">${t}</span>`;
     item.style.cursor = 'pointer';
     item.title = 'Click to locate & raise window';
-    // 相互機能: 個別 snapped window を wobble + 前面化
-    // (どのウィンドウか視覚的に示すための軽量アニメ)
     item.addEventListener('click', (e) => {
       if (e.target && e.target.classList && e.target.classList.contains('ext-btn')) return;
-      // externalWindows から最新情報 (pid/app/title) を取得
       const live = externalWindows.find(w => w.windowNumber === wn);
       ipcRenderer.invoke('wobble-window', {
         windowNumber: wn,
@@ -556,7 +593,7 @@ function render() {
     btn.textContent = 'Release';
     btn.addEventListener('click', (e) => { e.stopPropagation(); unsnapExternal(wn); });
     item.appendChild(btn);
-    gridSection.appendChild(item);
+    _gridSection.appendChild(item);
   }
 
   if (gridCount < gridCols * gridRows) {
@@ -564,7 +601,7 @@ function render() {
     addGrid.className = 'add-btn grid-add';
     addGrid.textContent = '+ Grid terminal';
     addGrid.addEventListener('click', addGridTerminal);
-    gridSection.appendChild(addGrid);
+    _gridSection.appendChild(addGrid);
   }
 
   if (snappedExternals.size > 1) {
@@ -574,23 +611,18 @@ function render() {
     releaseAll.addEventListener('click', async () => {
       for (const wn of [...snappedExternals.keys()]) await unsnapExternal(wn);
     });
-    gridSection.appendChild(releaseAll);
+    _gridSection.appendChild(releaseAll);
   }
 
-  content.appendChild(gridSection);
-
-  // ━━ AVAILABLE section (TERMINAL / FINDER サブセクションに分割) ━━
+  // ━━ AVAILABLE section ━━
   const available = externalWindows.filter(w => !snappedExternals.has(w.windowNumber));
+  _availSection.innerHTML = '';
   if (available.length > 0) {
-    const availSection = document.createElement('div');
-    availSection.className = 'section section-available';
-
     const extTitle = document.createElement('div');
     extTitle.className = 'section-title';
     extTitle.innerHTML = `<span class="section-accent">AVAILABLE</span> (${available.length})`;
-    availSection.appendChild(extTitle);
+    _availSection.appendChild(extTitle);
 
-    // アプリ種別で分割
     const availableTerminal = available.filter(w => !isFinderApp(w.app));
     const availableFinder = available.filter(w => isFinderApp(w.app));
 
@@ -606,8 +638,6 @@ function render() {
         item.innerHTML = `${appBadgeHtml(w.app)}<span class="ext-title">${t}</span>`;
         item.style.cursor = 'pointer';
         item.title = 'Click title to locate, Snap to dock';
-        // タイトル部分クリックで wobble (どのウィンドウか視覚確認)
-        // Snap ボタンクリックは従来通り snap 実行
         item.addEventListener('click', (e) => {
           if (e.target && e.target.classList && e.target.classList.contains('ext-btn')) return;
           ipcRenderer.invoke('wobble-window', {
@@ -627,29 +657,25 @@ function render() {
       const subTitle = document.createElement('div');
       subTitle.className = 'subsection-title term';
       subTitle.innerHTML = `<span class="subsection-icon">\u2328\uFE0F</span>TERMINAL (${availableTerminal.length})`;
-      availSection.appendChild(subTitle);
-      availableTerminal.forEach(w => availSection.appendChild(renderAvailItem(w)));
+      _availSection.appendChild(subTitle);
+      availableTerminal.forEach(w => _availSection.appendChild(renderAvailItem(w)));
     }
     if (availableFinder.length > 0) {
       const subTitle = document.createElement('div');
       subTitle.className = 'subsection-title finder';
       subTitle.innerHTML = `<span class="subsection-icon">\uD83D\uDCC2</span>FINDER (${availableFinder.length})`;
-      availSection.appendChild(subTitle);
-      availableFinder.forEach(w => availSection.appendChild(renderAvailItem(w)));
+      _availSection.appendChild(subTitle);
+      availableFinder.forEach(w => _availSection.appendChild(renderAvailItem(w)));
     }
-
-    content.appendChild(availSection);
   }
 
-  // ━━ SIDEBAR TERMINALS section (collapsible, compact) ━━
-  const sideSection = document.createElement('div');
-  sideSection.className = 'section section-console';
-
+  // ━━ SIDEBAR TERMINALS section (xterm containers are preserved across renders) ━━
+  _sideSection.innerHTML = '';
   const sideTitle = document.createElement('div');
   sideTitle.className = 'section-title section-title-clickable';
-  sideTitle.innerHTML = `<span class="section-toggle">${sidebarCollapsed ? '▸' : '▾'}</span> CONSOLE (${embeddedTerms.length})`;
+  sideTitle.innerHTML = `<span class="section-toggle">${sidebarCollapsed ? '\u25b8' : '\u25be'}</span> CONSOLE (${embeddedTerms.length})`;
   sideTitle.addEventListener('click', () => { sidebarCollapsed = !sidebarCollapsed; render(); });
-  sideSection.appendChild(sideTitle);
+  _sideSection.appendChild(sideTitle);
 
   if (!sidebarCollapsed) {
     embeddedTerms.forEach((s, i) => {
@@ -661,14 +687,25 @@ function render() {
       header.querySelector('.card-title').addEventListener('click', () => toggleExpand(i));
       header.querySelector('.card-close').addEventListener('click', (e) => { e.stopPropagation(); removeEmbedded(i); });
       card.appendChild(header);
-      const embed = document.createElement('div');
-      embed.className = 'term-embed';
+      // xterm container: reuse existing DOM element if available (avoids re-mount)
+      let embed = _termContainers.get(s.id);
+      if (!embed) {
+        embed = document.createElement('div');
+        embed.className = 'term-embed';
+        _termContainers.set(s.id, embed);
+      }
       card.appendChild(embed);
-      sideSection.appendChild(card);
-      if (s.expanded) {
+      _sideSection.appendChild(card);
+      if (s.expanded && !s._mounted) {
         s.term.open(embed);
+        s._mounted = true;
         requestAnimationFrame(() => {
           try { s.fitAddon.fit(); ipcRenderer.send('terminal-resize', { id: s.id, cols: s.term.cols, rows: s.term.rows }); } catch {}
+        });
+      } else if (s.expanded && s._mounted) {
+        // Already mounted — just re-fit after reattach
+        requestAnimationFrame(() => {
+          try { s.fitAddon.fit(); } catch {}
         });
       }
     });
@@ -677,10 +714,19 @@ function render() {
     addBtn.className = 'add-btn';
     addBtn.textContent = '+ Console';
     addBtn.addEventListener('click', () => addEmbedded());
-    sideSection.appendChild(addBtn);
+    _sideSection.appendChild(addBtn);
   }
 
-  content.appendChild(sideSection);
+  // Attach persistent sections to content (only reparent, no destroy/recreate)
+  if (!_sectionsAttached) {
+    content.appendChild(_gridSection);
+    content.appendChild(_availSection);
+    content.appendChild(_sideSection);
+    _sectionsAttached = true;
+  }
+
+  // Show/hide available section
+  _availSection.style.display = available.length > 0 ? '' : 'none';
 
   statusEl.textContent = `${Object.keys(gridSlots).length} grid \u00b7 ${snappedExternals.size} ext \u00b7 ${embeddedTerms.length} console`;
 }
@@ -692,7 +738,7 @@ ipcRenderer.on('terminal-data', (_e, { id, data }) => {
 });
 ipcRenderer.on('terminal-exit', (_e, { id }) => {
   const idx = embeddedTerms.findIndex(s => s.id === id);
-  if (idx >= 0) { embeddedTerms[idx].term.dispose(); embeddedTerms.splice(idx, 1); render(); }
+  if (idx >= 0) { embeddedTerms[idx].term.dispose(); _termContainers.delete(id); embeddedTerms.splice(idx, 1); render(); }
 });
 ipcRenderer.on('new-terminal', () => addGridTerminal());
 ipcRenderer.on('close-current', () => {
@@ -708,12 +754,17 @@ function scheduleRender() {
 ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo) => {
   snappedByOther = otherSnapped || {};
   gridSlots = gridInfo || {};
-  const id = JSON.stringify(windows.map(w => `${w.windowNumber}:${w.title}`)) + JSON.stringify(snappedByOther) + JSON.stringify(gridSlots);
-  if (id === lastExtIdentity) return;
-  lastExtIdentity = id;
   externalWindows = windows;
-  for (const k of snappedExternals.keys()) {
-    if (!windows.find(w => w.windowNumber === k)) snappedExternals.delete(k);
+  // live window のタイトル/app で snappedExternals を同期更新
+  // (復元時やパッケージ版で初期タイトルが空の場合にここで補完される)
+  for (const [k, info] of snappedExternals) {
+    const live = windows.find(w => w.windowNumber === k);
+    if (live) {
+      if (live.title) info.title = live.title;
+      if (live.app) info.app = live.app;
+    } else {
+      snappedExternals.delete(k);
+    }
   }
   scheduleRender();
 });
@@ -735,6 +786,10 @@ function toggleCollapse() {
 }
 collapseBtn.addEventListener('click', toggleCollapse);
 ipcRenderer.on('toggle-compact', toggleCollapse);
+
+// ── Window active/inactive state ──
+window.addEventListener('focus', () => document.body.classList.remove('window-inactive'));
+window.addEventListener('blur', () => document.body.classList.add('window-inactive'));
 
 // Start with one sidebar terminal
 addEmbedded('main');

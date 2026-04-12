@@ -39,20 +39,41 @@ const WORKSPACES_FORMAT_VERSION = 1;
 const WORKSPACES_STALE_MS = 24 * 60 * 60 * 1000;
 const TIN_START_TIME = Date.now();
 
-function atomicWriteJSON(filePath, obj) {
+// Integration dir は起動時に1回だけ確保 (毎回 existsSync しない)
+let _integrationDirReady = false;
+function ensureIntegrationDir() {
+  if (_integrationDirReady) return;
+  try { fs.mkdirSync(INTEGRATION_DIR, { recursive: true }); } catch {}
+  _integrationDirReady = true;
+}
+
+// 同期版: before-quit など非同期が使えない場面用
+function atomicWriteJSONSync(filePath, obj) {
   try {
-    if (!fs.existsSync(INTEGRATION_DIR)) fs.mkdirSync(INTEGRATION_DIR, { recursive: true });
+    ensureIntegrationDir();
     const tmp = filePath + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', 'utf-8');
     fs.renameSync(tmp, filePath);
   } catch (e) {
-    // 書き出し失敗は TiN 本体機能を妨げない (graceful)
     console.warn('[integration] write failed:', filePath, e.message);
   }
 }
 
-function writeInfoJson() {
-  atomicWriteJSON(INFO_JSON, {
+// 非同期版: 通常時はこちらを使い event loop をブロックしない
+const fsP = fs.promises;
+async function atomicWriteJSON(filePath, obj) {
+  try {
+    ensureIntegrationDir();
+    const tmp = filePath + '.tmp';
+    await fsP.writeFile(tmp, JSON.stringify(obj, null, 2) + '\n', 'utf-8');
+    await fsP.rename(tmp, filePath);
+  } catch (e) {
+    console.warn('[integration] write failed:', filePath, e.message);
+  }
+}
+
+async function writeInfoJson() {
+  await atomicWriteJSON(INFO_JSON, {
     protocol: PROTOCOL_VERSION,
     app: 'TiN',
     version: pkg.version,
@@ -66,10 +87,9 @@ function writeInfoJson() {
   });
 }
 
-function writeSnappedJson() {
+function buildSnappedPayload() {
   const snappedWindows = [];
   let activeWorkspaceId = null;
-  // フォーカス中 workspace を activeWorkspaceId として記録
   const focused = BrowserWindow.getFocusedWindow();
   for (const [, ws] of workspaces) {
     if (!ws || !ws.win || ws.win.isDestroyed()) continue;
@@ -89,12 +109,16 @@ function writeSnappedJson() {
       });
     }
   }
-  atomicWriteJSON(SNAPPED_JSON, {
-    protocol: PROTOCOL_VERSION,
-    updatedAt: Date.now(),
-    activeWorkspaceId,
-    snappedWindows,
-  });
+  return { protocol: PROTOCOL_VERSION, updatedAt: Date.now(), activeWorkspaceId, snappedWindows };
+}
+
+async function writeSnappedJson() {
+  await atomicWriteJSON(SNAPPED_JSON, buildSnappedPayload());
+}
+
+// snap-external で daemon.move の BEFORE に同期書き出しが必要な場面用
+function writeSnappedJsonSync() {
+  atomicWriteJSONSync(SNAPPED_JSON, buildSnappedPayload());
 }
 
 // 書き出しのデバウンス (rapid snap/unsnap/move で多重書き込みを避ける)
@@ -103,14 +127,14 @@ function scheduleSyncSnapped(delay = 80) {
   if (_syncTimer) return;
   _syncTimer = setTimeout(() => {
     _syncTimer = null;
-    try { writeSnappedJson(); } catch {}
+    writeSnappedJson().catch(() => {});
   }, delay);
 }
 
 // ── Workspace 永続化 ──
 // 再起動時に snap / grid config / sidebar 位置を復帰するために
 // `workspaces.json` に定期的に書き出す。
-function writeWorkspacesJson() {
+async function writeWorkspacesJson() {
   const payload = {
     version: WORKSPACES_FORMAT_VERSION,
     savedAt: Date.now(),
@@ -140,7 +164,7 @@ function writeWorkspacesJson() {
       snappedExternals: snapped,
     });
   }
-  atomicWriteJSON(WORKSPACES_JSON, payload);
+  await atomicWriteJSON(WORKSPACES_JSON, payload);
 }
 
 let _saveWsTimer = null;
@@ -152,7 +176,7 @@ function scheduleSaveWorkspaces(delay = 500) {
   _saveWsTimer = setTimeout(() => {
     _saveWsTimer = null;
     if (app.isQuitting) return;
-    try { writeWorkspacesJson(); } catch (e) { console.warn('[tin] save workspaces failed:', e.message); }
+    writeWorkspacesJson().catch(e => console.warn('[tin] save workspaces failed:', e.message));
   }, delay);
 }
 
@@ -252,6 +276,7 @@ async function restoreSnappedWindows(ws, persistedList) {
       origX: p.origX, origY: p.origY, origW: p.origW, origH: p.origH,
       snappedAt: p.snappedAt || Date.now(),
     });
+    snappedIndexAdd(live.windowNumber, ws);
     const pos = getSlotBounds(ws, slot);
     if (pos) {
       moveCmds.push({
@@ -295,8 +320,10 @@ let nextWsId = 1;
 let nextPtyId = 1;
 
 // ── Swift daemon (list + move only) ──
+// パッケージ版: Contents/MacOS/daemon (アプリバンドルの一部として TCC に認識される)
+// dev 版: プロジェクトルートの daemon
 const DAEMON_BIN = app.isPackaged
-  ? path.join(process.resourcesPath, 'daemon')
+  ? path.join(path.dirname(process.execPath), 'daemon')
   : path.join(__dirname, 'daemon');
 let daemon = null;
 let daemonReady = false;
@@ -341,6 +368,18 @@ function daemonRequest(cmd, extra = {}) {
 }
 
 function listWindows() { return daemonRequest('list'); }
+
+// Fire-and-forget: daemon に move を送るが応答を待たない。
+// sidebar ドラッグ中のリアルタイム retile 用。応答待ちで event loop を
+// ブロックしないので、次の move イベントをすぐ処理できる。
+function daemonMoveFireAndForget(windows) {
+  if (!daemon || !daemonReady || !windows.length) return;
+  try {
+    const id = String(nextReqId++);
+    daemon.stdin.write(JSON.stringify({ id, cmd: 'move', windows }) + '\n');
+    // 応答は pendingRequests に入れない → 自動的に無視される
+  } catch {}
+}
 
 // Verify windows still exist via AX (includes off-screen windows, unlike list)
 function verifyWindows(cmds) { return daemonRequest('verify', { windows: cmds }); }
@@ -430,24 +469,39 @@ function normalizeAppName(name) {
 // daemon の AX 状態を覚えておき、untrusted と確認できたら以降は daemon を呼ばず
 // 直接 osascript fallback に行く (パッケージ版の rebuild 直後に TCC の cdhash が
 // 変わって権限が外れるため)。
+// daemon AX: ラッチしない。毎回 daemon を試し、失敗分だけ osascript fallback。
+// _daemonAXUntrusted は UI バナー表示用のみ (動作制御には使わない)。
 let _daemonAXUntrusted = false;
 
 async function batchMove(cmds) {
   if (!cmds.length) return;
-  if (_daemonAXUntrusted) {
-    await osascriptMove(cmds);
-    return;
-  }
+  const t0 = Date.now();
   const result = await daemonRequest('move', { windows: cmds });
-  // daemon 応答がない → 全件 fallback
+  // daemon 応答がない (未 ready 等) → fallback
   if (!result || typeof result.moved !== 'number') {
     await osascriptMove(cmds);
     return;
   }
-  if (result.axTrusted === false) {
+  // 全件成功
+  const dt = Date.now() - t0;
+  if (dt > 30) console.log(`[tin] batchMove: ${dt}ms moved=${result.moved} failed=${JSON.stringify(result.failed)} axTrusted=${result.axTrusted}`);
+  if (result.moved === cmds.length && (!Array.isArray(result.failed) || result.failed.length === 0)) {
+    if (_daemonAXUntrusted) {
+      _daemonAXUntrusted = false;
+      for (const [, ws] of workspaces) {
+        if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('daemon-ax-status', { trusted: true });
+      }
+    }
+    return;
+  }
+  // 全件失敗 + AX untrusted → バナー表示 + fallback
+  if (result.axTrusted === false && result.moved === 0) {
     if (!_daemonAXUntrusted) {
       _daemonAXUntrusted = true;
-      console.warn('[tin] daemon reports AXIsProcessTrusted()=false — switching to System Events fallback for move/raise.');
+      console.warn('[tin] daemon AXIsProcessTrusted()=false — fallback to System Events.');
+      for (const [, ws] of workspaces) {
+        if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('daemon-ax-status', { trusted: false });
+      }
     }
     await osascriptMove(cmds);
     return;
@@ -480,7 +534,8 @@ async function osascriptMove(cmds) {
   const jobs = [];
   for (const [appName, wins] of byApp) {
     const lines = wins.map(w => {
-      const t = (w.title || '').substring(0, 40).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      // タイトルの先頭 20 文字でマッチ (40→20: 短い方が検索高速 + 一意性は十分)
+      const t = (w.title || '').substring(0, 20).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       if (!t) return '';
       const x = Math.round(w.x), y = Math.round(w.y);
       const ww = Math.round(w.width), wh = Math.round(w.height);
@@ -488,7 +543,8 @@ async function osascriptMove(cmds) {
     }).filter(Boolean).join('\n');
     if (!lines) continue;
     const script = `tell application "System Events" to tell process "${appName}"\n${lines}\nend tell`;
-    jobs.push(runOsascript(script, 3000));
+    // タイムアウト: 1.5s (3s だと体感が重い。タイムアウトしたら諦めて次へ)
+    jobs.push(runOsascript(script, 1500));
   }
   if (jobs.length) await Promise.all(jobs);
 }
@@ -502,12 +558,14 @@ async function osascriptMove(cmds) {
 async function raiseSpecificWindows(cmds) {
   if (!cmds.length) return;
   let retry = cmds;
-  if (!_daemonAXUntrusted) {
+  {
     const result = await daemonRequest('raise', { windows: cmds });
     if (result && typeof result.raised === 'number') {
-      if (result.axTrusted === false) {
-        _daemonAXUntrusted = true;
-        console.warn('[tin] daemon reports AXIsProcessTrusted()=false — switching to System Events fallback.');
+      if (result.raised === cmds.length && (!Array.isArray(result.failed) || result.failed.length === 0)) {
+        return;
+      }
+      if (result.axTrusted === false && result.raised === 0) {
+        // fall through to osascript
       } else if (Array.isArray(result.failed) && result.failed.length > 0) {
         const failedSet = new Set(result.failed);
         retry = cmds.filter(c => failedSet.has(c.windowNumber));
@@ -537,18 +595,21 @@ async function raiseSpecificWindows(cmds) {
 }
 
 // ── Helpers ──
+// O(1) workspace lookup by webContents (WeakMap — auto GC on window close)
+const _wsByContents = new WeakMap();
+function registerWorkspaceContents(ws) {
+  if (ws.win && !ws.win.isDestroyed()) _wsByContents.set(ws.win.webContents, ws);
+}
 function findWorkspace(webContents) {
-  for (const [, ws] of workspaces) {
-    if (ws.win && !ws.win.isDestroyed() && ws.win.webContents === webContents) return ws;
-  }
-  return null;
+  return _wsByContents.get(webContents) || null;
 }
 
+// O(1) global snapped index: windowNumber → ws
+const _globalSnappedIndex = new Map();
+function snappedIndexAdd(windowNumber, ws) { _globalSnappedIndex.set(windowNumber, ws); }
+function snappedIndexRemove(windowNumber) { _globalSnappedIndex.delete(windowNumber); }
 function isExternalSnapped(windowNumber) {
-  for (const [, ws] of workspaces) {
-    if (ws.snappedExternals.has(windowNumber)) return ws;
-  }
-  return null;
+  return _globalSnappedIndex.get(windowNumber) || null;
 }
 
 // ── Grid geometry ──
@@ -594,10 +655,19 @@ async function raiseAllWorkspaceWindows(ws, force = false) {
   const now = Date.now();
   if (!force && now - lastRaiseTime < 300) return;
   lastRaiseTime = now;
+  const t0 = Date.now();
 
-  // 1. Raise snapped external terminal windows first.
-  // MUST be awaited — otherwise the async daemon raise completes AFTER
-  // we raise TiN, clobbering the intended z-order.
+  // 1. Raise snapped externals + retile を1ステップで実行。
+  //    daemon に raise コマンドを送り、同時に grid windows を show する。
+  //    await しないと z-order が崩れるが、grid show は同期なので先に実行。
+
+  // Grid BrowserWindows を先に show (同期、即座)
+  for (const [, gw] of ws.gridWindows) {
+    if (gw.win && !gw.win.isDestroyed()) gw.win.show();
+  }
+  if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) ws.gridOverlay.show();
+
+  // Snapped externals を daemon で一括 raise (非同期だが高速)
   if (ws.snappedExternals.size > 0) {
     const cmds = [...ws.snappedExternals.values()].map(info => ({
       windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
@@ -605,32 +675,22 @@ async function raiseAllWorkspaceWindows(ws, force = false) {
     await raiseSpecificWindows(cmds);
   }
 
-  // 2. Raise grid BrowserWindows above the externals
-  for (const [, gw] of ws.gridWindows) {
-    if (gw.win && !gw.win.isDestroyed()) {
-      gw.win.show();
-    }
-  }
-
-  // 3. Bring overlay + workspace sidebar to the top.
-  // app.focus({steal:true}) is required to steal focus from another macOS app
-  // (e.g. Terminal.app). A plain win.focus() is a no-op when the frontmost
-  // app is not TiN itself due to macOS focus-stealing prevention.
-  if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) {
-    ws.gridOverlay.show();
-  }
+  // TiN sidebar を最前面に
   if (ws.win && !ws.win.isDestroyed()) {
     app.focus({ steal: true });
     ws.win.show();
     ws.win.focus();
   }
+  const dt = Date.now() - t0;
+  if (dt > 50) console.log(`[tin] raiseAll: ${dt}ms (${ws.snappedExternals.size} ext)`);
 }
 
 // ── Retile: reposition all grid items (embedded + external) ──
-async function retileAll(ws) {
+// fireAndForget=true: ドラッグ中のリアルタイム追従用。daemon 応答を待たない。
+async function retileAll(ws, fireAndForget = false) {
   const moveCmds = [];
 
-  // Reposition embedded grid windows
+  // Reposition embedded grid windows (Electron BrowserWindow — 同期、即座)
   for (const [slot, gw] of ws.gridWindows) {
     if (gw.win && !gw.win.isDestroyed()) {
       const b = getSlotBounds(ws, slot);
@@ -644,7 +704,13 @@ async function retileAll(ws) {
     if (b) moveCmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
   }
 
-  if (moveCmds.length) await batchMove(moveCmds);
+  if (moveCmds.length) {
+    if (fireAndForget) {
+      daemonMoveFireAndForget(moveCmds);
+    } else {
+      await batchMove(moveCmds);
+    }
+  }
 }
 
 function nextFreeSlot(ws) {
@@ -803,6 +869,7 @@ ipcMain.handle('remove-grid-terminal', (event, { slot }) => {
 
 // ── IPC: snap/unsnap external ──
 ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName, title, x, y, width, height, windowIndex }) => {
+  const t0 = Date.now();
   const ws = findWorkspace(event.sender);
   if (!ws) return { ok: false };
   const existing = isExternalSnapped(windowNumber);
@@ -814,37 +881,36 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
     origX: x, origY: y, origW: width, origH: height,
     snappedAt: Date.now(),
   });
-  // **snapped.json を daemon.move の BEFORE に即座書き出し** (v1.2.10)
-  // AtelierX の atelierx-plugin が fs.watch / poll で検知し setWindowExclusion を
-  // 呼ぶまでの競合ウィンドウを最小化する。daemon.move 後だと AtelierX が先に
-  // 同じウィンドウを auto-grid で動かしてしまう可能性がある。
-  try { writeSnappedJson(); } catch {}
+  snappedIndexAdd(windowNumber, ws);
+  // snapped.json: 非同期で書き出し (AtelierX 競合は許容)
+  scheduleSyncSnapped(0);
+  const t1 = Date.now();
   const pos = getSlotBounds(ws, slot);
   if (pos) await batchMove([{ windowNumber, pid, app: appName, title, ...pos }]);
-  await raiseAllWorkspaceWindows(ws, true);
+  const t2 = Date.now();
   scheduleSaveWorkspaces();
+  await raiseAllWorkspaceWindows(ws, true);
+  console.log(`[tin] snap: prep=${t1-t0}ms move=${t2-t1}ms total=${Date.now()-t0}ms`);
   return { ok: true, slot };
 });
 
 ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
+  const t0 = Date.now();
   const ws = findWorkspace(event.sender);
   if (!ws) return { ok: false };
   const info = ws.snappedExternals.get(windowNumber);
   if (!info) return { ok: false };
   ws.snappedExternals.delete(windowNumber);
+  snappedIndexRemove(windowNumber);
   compactSlots(ws);
-  // **unsnap は osascriptMove を直接呼ぶ** (v1.2.8)。
-  // Terminal.app の AX set size は「大きな拡大を silent fail する」実装バグ
-  // があり、daemon 経由だと snap 時のサイズから戻らない。osascript (System
-  // Events) 経由なら信頼できる。snap は daemon で高速 (縮小方向は問題無し)、
-  // unsnap だけ ~400ms かかるが頻度が低いので許容。
-  await osascriptMove([{ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
+  // 元の位置に戻す + 残りを retile + 全体を前面化
+  await batchMove([{ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
     x: info.origX, y: info.origY, width: info.origW, height: info.origH }]);
   await retileAll(ws);
-  // Same reason as snap: restore TiN to the top after external move.
   await raiseAllWorkspaceWindows(ws, true);
   scheduleSyncSnapped();
   scheduleSaveWorkspaces();
+  console.log(`[tin] unsnap: total=${Date.now()-t0}ms`);
   return { ok: true };
 });
 
@@ -944,8 +1010,8 @@ function createWorkspace(name, savedState) {
     y: winY,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 12, y: 10 },
-    vibrancy: 'sidebar',
-    visualEffectState: 'active',
+    transparent: false,
+    backgroundColor: '#ffffff',
     alwaysOnTop: false,
     acceptFirstMouse: true,
     webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false, backgroundThrottling: false },
@@ -967,6 +1033,7 @@ function createWorkspace(name, savedState) {
     gridWidth: savedGrid ? (savedGrid.width || 800) : 800,
   };
   workspaces.set(wsId, ws);
+  registerWorkspaceContents(ws);
   // 復元対象の snapped エントリを deferred に処理する (daemon + sidebar 準備後)
   if (savedState && Array.isArray(savedState.snappedExternals) && savedState.snappedExternals.length > 0) {
     ws._pendingRestore = savedState.snappedExternals;
@@ -1001,15 +1068,14 @@ function createWorkspace(name, savedState) {
     overlay.setIgnoreMouseEvents(true, { forward: true });
     ws.gridOverlay = overlay;
 
-    const scheduleOverlayRetile = () => {
+    // overlay resize のみ retile (move は sidebar が制御するので不要)
+    overlay.on('resize', () => {
       if (ws.overlayThrottle) return;
       ws.overlayThrottle = setTimeout(async () => {
         ws.overlayThrottle = null;
         await retileAll(ws);
       }, 16);
-    };
-    overlay.on('resize', scheduleOverlayRetile);
-    overlay.on('move', scheduleOverlayRetile);
+    });
     overlay.on('closed', () => { ws.gridOverlay = null; });
   }
 
@@ -1031,25 +1097,48 @@ function createWorkspace(name, savedState) {
   if (process.argv.includes('--dev')) win.webContents.openDevTools({ mode: 'detach' });
 
   // Move grid items + overlay when sidebar moves/resizes
-  // Sync overlay immediately (visual), but debounce retile (expensive)
-  const syncOverlay = () => {
+  // **リアルタイム追従**: ドラッグ中も snapped ウィンドウが一緒に動く。
+  // throttle (16ms ≈ 60fps) で daemon に move を送る。前の move が完了する前に
+  // 次の move を投げないようガードする。
+  // sidebar ドラッグ中: overlay 同期 + snapped windows をリアルタイム追従
+  // 16ms throttle で daemon にコマンド送信 (60fps 上限)。
+  // ドラッグ中は poll を一時停止して daemon 競合を防ぐ。
+  let _dragThrottle = null;
+  let _dragging = false;
+  const onSidebarMove = () => {
+    // overlay を即座に同期 (BrowserWindow — 同期、コストゼロ)
     if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.win && !ws.win.isDestroyed()) {
       const sb = ws.win.getBounds();
       ws.gridOverlay.setBounds({ x: sb.x + sb.width + 12, y: sb.y, width: ws.gridWidth, height: sb.height });
     }
+    // embedded grid windows も即座に同期 (BrowserWindow)
+    for (const [slot, gw] of ws.gridWindows) {
+      if (gw.win && !gw.win.isDestroyed()) {
+        const b = getSlotBounds(ws, slot);
+        if (b) gw.win.setBounds(b);
+      }
+    }
+    // snapped externals: 16ms throttle で daemon に fire-and-forget
+    if (_dragThrottle) return;
+    _dragThrottle = setTimeout(() => { _dragThrottle = null; }, 16);
+    // snapped ウィンドウの移動コマンドを構築して送信
+    const moveCmds = [];
+    for (const [, info] of ws.snappedExternals) {
+      const b = getSlotBounds(ws, info.slot);
+      if (b) moveCmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
+    }
+    if (moveCmds.length) daemonMoveFireAndForget(moveCmds);
   };
-  const scheduleRetile = () => {
-    syncOverlay();
-    // Debounce retile — only fire after drag stops (300ms)
-    if (ws.moveThrottle) clearTimeout(ws.moveThrottle);
-    ws.moveThrottle = setTimeout(async () => {
-      ws.moveThrottle = null;
-      syncOverlay();
-      await retileAll(ws);
-    }, 300);
-  };
-  win.on('move', scheduleRetile);
-  win.on('resize', scheduleRetile);
+  win.on('move', onSidebarMove);
+  win.on('resize', onSidebarMove);
+  // ドラッグ開始/終了で poll を一時停止/再開
+  win.on('will-move', () => { if (!_dragging) { _dragging = true; } });
+  win.on('moved', () => {
+    _dragging = false;
+    // ドラッグ終了後に最終位置を確定 (await で正確に配置)
+    retileAll(ws);
+    scheduleSaveWorkspaces();
+  });
   // sidebar 位置/サイズ変更も永続化対象
   win.on('moved', () => scheduleSaveWorkspaces());
   win.on('resize', () => scheduleSaveWorkspaces());
@@ -1061,99 +1150,117 @@ function createWorkspace(name, savedState) {
   // 新規 windowNumber 出現時だけ再フェッチする。
   ws._titleCache = new Map();
   ws._titleCacheRefreshAt = 0;
+  ws._lastPollIdentity = '';  // fast-path: skip IPC when nothing changed
   // Poll external windows
-  // pollTimer: 2000ms (以前は 800ms)。Available リスト更新は 2 秒遅延するが
+  // pollTimer: 2000ms。Available リスト更新は 2 秒遅延するが
   // snap/unsnap の即時操作には影響しない。snapped の grace period は 8 回 = ~16s。
   ws.pollTimer = setInterval(async () => {
     if (!ws.win || ws.win.isDestroyed()) return;
+    if (_dragging) return; // ドラッグ中は poll スキップ (daemon 競合防止)
     const windows = await listWindows();
     // Title fallback for packaged app: キャッシュヒットを先に適用
     if (windows.length > 0) {
+      let hasUnknown = false;
       for (const w of windows) {
-        if (!w.title && ws._titleCache.has(w.windowNumber)) {
-          w.title = ws._titleCache.get(w.windowNumber);
+        if (!w.title) {
+          const cached = ws._titleCache.get(w.windowNumber);
+          if (cached) { w.title = cached; }
+          else { hasUnknown = true; }
         }
       }
-      // キャッシュに存在しない未知 windowNumber がある場合のみ osascript で補完。
-      // 権限があって CGWindowList がタイトルを返している時は w.title が既に
-      // 埋まっているので hasUnknown=false となり osascript は呼ばれない。
-      // 新規ウィンドウが出現した時は hasUnknown=true となる。
-      // 連続する poll で暴発しないよう 5 秒のレート制限をかける。
-      const hasUnknown = windows.some(w => !w.title && !ws._titleCache.has(w.windowNumber));
-      const now = Date.now();
-      const shouldRefresh = hasUnknown && now - ws._titleCacheRefreshAt > 5000;
-      if (shouldRefresh) {
-        ws._titleCacheRefreshAt = now;
-        // 非同期で実行 — pollTimer ハンドラをブロックしない。
-        // 結果は次の poll 周期でキャッシュヒットする。
-        for (const appName of [...new Set(windows.map(w => w.app))]) {
-          (async () => {
-            try {
-              const [idsRes, namesRes] = await Promise.all([
-                runOsascript(`tell application "${appName}" to get id of every window`, 2000),
-                runOsascript(`tell application "${appName}" to get name of every window`, 2000),
-              ]);
-              if (idsRes.err || namesRes.err) return;
-              const ids = idsRes.stdout.trim().split(', ').map(Number);
-              const names = namesRes.stdout.trim().split(', ');
-              for (let i = 0; i < ids.length; i++) {
-                if (ids[i]) ws._titleCache.set(ids[i], names[i] || '');
-              }
-            } catch {}
-          })();
+      // 未知 windowNumber がある場合のみ osascript で補完 (5秒レート制限)
+      if (hasUnknown) {
+        const now = Date.now();
+        if (now - ws._titleCacheRefreshAt > 5000) {
+          ws._titleCacheRefreshAt = now;
+          const appSet = new Set();
+          for (const w of windows) appSet.add(w.app);
+          for (const appName of appSet) {
+            (async () => {
+              try {
+                const [idsRes, namesRes] = await Promise.all([
+                  runOsascript(`tell application "${appName}" to get id of every window`, 2000),
+                  runOsascript(`tell application "${appName}" to get name of every window`, 2000),
+                ]);
+                if (idsRes.err || namesRes.err) return;
+                const ids = idsRes.stdout.trim().split(', ').map(Number);
+                const names = namesRes.stdout.trim().split(', ');
+                for (let i = 0; i < ids.length; i++) {
+                  if (ids[i]) ws._titleCache.set(ids[i], names[i] || '');
+                }
+              } catch {}
+            })();
+          }
         }
       }
-      // 古いエントリを消す (現存 windowNumber に含まれないものは遅延削除)
+      // 古いエントリ削除 (256超過時のみ)
       if (ws._titleCache.size > 256) {
-        const liveNums = new Set(windows.map(w => w.windowNumber));
+        const liveNums = new Set();
+        for (const w of windows) liveNums.add(w.windowNumber);
         for (const k of ws._titleCache.keys()) {
           if (!liveNums.has(k)) ws._titleCache.delete(k);
         }
       }
     }
-    const liveMap = new Map(windows.map(w => [w.windowNumber, w]));
-    // Collect snapped externals that are missing from the on-screen list.
-    // These MIGHT be truly gone, or they might be off-screen on a disconnected
-    // display — use AX verify to distinguish.
+    // liveMap 構築: windowNumber → window (Set ではなく Map で O(1) lookup)
+    const liveMap = new Map();
+    for (const w of windows) liveMap.set(w.windowNumber, w);
+
+    // snapped externals の生死チェック (missing があるときだけ verify IPC)
     const missingList = [];
     for (const [k, info] of ws.snappedExternals) {
       if (!liveMap.has(k)) missingList.push({ key: k, info });
     }
-    let axAlive = new Set();
+    let axAlive;
     if (missingList.length > 0) {
       const verifyCmds = missingList.map(({ key, info }) => ({
         windowNumber: key, pid: info.pid, app: info.app, title: info.title,
       }));
       const vr = await verifyWindows(verifyCmds);
-      if (vr && Array.isArray(vr.alive)) axAlive = new Set(vr.alive);
+      axAlive = (vr && Array.isArray(vr.alive)) ? new Set(vr.alive) : new Set();
     }
+    let snappedChanged = false;
     for (const [k, info] of ws.snappedExternals) {
       const live = liveMap.get(k);
       if (!live) {
-        // Missing from on-screen list. If AX says it's still alive (e.g. on a
-        // disconnected display) or we're stabilizing after a system event,
-        // keep it and reset the counter. Otherwise apply the grace period.
-        if (axAlive.has(k) || isStabilizing()) {
+        if ((axAlive && axAlive.has(k)) || isStabilizing()) {
           info._missCount = 0;
           continue;
         }
         info._missCount = (info._missCount || 0) + 1;
-        if (info._missCount >= 8) {  // ~6.4s at 800ms poll interval
+        if (info._missCount >= 8) {
           ws.snappedExternals.delete(k);
+          snappedIndexRemove(k);
+          snappedChanged = true;
         }
         continue;
       }
-      info._missCount = 0;  // reset on sight
-      // Keep title fresh for AppleScript set index
-      info.title = live.title;
-      info.pid = live.pid;
+      info._missCount = 0;
+      if (info.title !== live.title || info.pid !== live.pid) {
+        info.title = live.title;
+        info.pid = live.pid;
+      }
     }
+
+    // Fast-path: build identity string and skip IPC if nothing changed
+    // 軽量な identity: windowNumber:title の連結 + snapped keys + grid keys
+    let identity = '';
+    for (const w of windows) { identity += w.windowNumber; identity += ':'; identity += w.title; identity += ','; }
+    identity += '|';
+    for (const k of ws.snappedExternals.keys()) { identity += k; identity += ','; }
+    identity += '|';
+    for (const k of ws.gridWindows.keys()) { identity += k; identity += ','; }
+    if (identity === ws._lastPollIdentity && !snappedChanged) return;
+    ws._lastPollIdentity = identity;
+
+    // snappedByOther: 複数 workspace がある場合のみ構築
     const snappedByOther = {};
-    for (const [, otherWs] of workspaces) {
-      if (otherWs.id === ws.id) continue;
-      for (const [wn] of otherWs.snappedExternals) snappedByOther[wn] = otherWs.name;
+    if (workspaces.size > 1) {
+      for (const [, otherWs] of workspaces) {
+        if (otherWs.id === ws.id) continue;
+        for (const [wn] of otherWs.snappedExternals) snappedByOther[wn] = otherWs.name;
+      }
     }
-    // Include grid window info
     const gridSlots = {};
     for (const [slot, gw] of ws.gridWindows) gridSlots[slot] = { ptyId: gw.ptyId };
     ws.win.webContents.send('external-windows', windows, snappedByOther, gridSlots);
@@ -1184,6 +1291,7 @@ function createWorkspace(name, savedState) {
       }
       if (cmds.length) await osascriptMove(cmds);
     }
+    for (const k of ws.snappedExternals.keys()) snappedIndexRemove(k);
     ws.snappedExternals.clear();
     // Kill sidebar PTYs
     for (const [, p] of ws.sidebarPtys) { try { p.kill(); } catch {} }
@@ -1196,7 +1304,8 @@ function createWorkspace(name, savedState) {
   return ws;
 }
 
-// ── RAISE: on workspace focus + explicit button ──
+// ── RAISE: workspace フォーカスで全 snapped ウィンドウを前面化 ──
+// workspace をクリックすると snapped ターミナルが全部まとまって前面に来る。
 app.on('browser-window-focus', (_event, focusedWin) => {
   let ws = null;
   for (const [, w] of workspaces) {
@@ -1208,7 +1317,6 @@ app.on('browser-window-focus', (_event, focusedWin) => {
   }
   if (ws) {
     raiseAllWorkspaceWindows(ws);
-    // activeWorkspaceId が変わった可能性 → snapped.json 更新
     scheduleSyncSnapped(200);
   }
 });
@@ -1398,6 +1506,7 @@ function handleTinUrl(rawUrl) {
           const match = findInfoByKey(params);
           if (match) {
             match.ws.snappedExternals.delete(match.info.windowNumber);
+            snappedIndexRemove(match.info.windowNumber);
             compactSlots(match.ws);
             try {
               await batchMove([{
@@ -1558,10 +1667,35 @@ app.whenReady().then(() => {
   }
 });
 
+// 同期版: before-quit 用 (async 使えない)
+function writeWorkspacesJsonSync() {
+  const payload = { version: WORKSPACES_FORMAT_VERSION, savedAt: Date.now(), workspaces: [] };
+  for (const [, ws] of workspaces) {
+    if (!ws || !ws.win || ws.win.isDestroyed()) continue;
+    const b = ws.win.getBounds();
+    const snapped = [];
+    for (const [, info] of ws.snappedExternals) {
+      snapped.push({
+        windowNumber: info.windowNumber, app: info.app, pid: info.pid,
+        title: info.title, windowIndex: info.windowIndex || 0, slot: info.slot,
+        origX: info.origX, origY: info.origY, origW: info.origW, origH: info.origH,
+        snappedAt: info.snappedAt || 0,
+      });
+    }
+    payload.workspaces.push({
+      name: ws.name,
+      sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
+      grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800 },
+      snappedExternals: snapped,
+    });
+  }
+  atomicWriteJSONSync(WORKSPACES_JSON, payload);
+}
+
 app.on('before-quit', () => {
   app.isQuitting = true;
   // quit 前に workspace 状態を確実に書き出す (debounce timer を待たない)
-  try { writeWorkspacesJson(); } catch (e) { console.warn('[tin] final save failed:', e.message); }
+  try { writeWorkspacesJsonSync(); } catch (e) { console.warn('[tin] final save failed:', e.message); }
   if (daemon) { try { daemon.kill(); } catch {} daemon = null; }
   // 統合ステートファイルのクリーンアップ (クライアントが "TiN 未起動" と判定できるように)
   // workspaces.json は残す (次回起動で復元するため)

@@ -4,3 +4,4 @@ out/
 *.dmg
 .DS_Store
 /tmp/
+.daemon-src-hash

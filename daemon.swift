@@ -87,23 +87,6 @@ func handleList() -> Any {
     return results
 }
 
-// CGWindowList で特定 windowNumber の現在位置を取得 (compositor 視点)
-// AX read はキャッシュされていたりウィンドウが別 Space にいる場合に正確ではないので
-// こちらを使って移動の成否を検証する。
-func readCompositorPosition(windowNumber: Int) -> CGRect? {
-    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .optionIncludingWindow], CGWindowID(windowNumber)) as? [[String: Any]] else {
-        return nil
-    }
-    for w in list {
-        if let wn = w[kCGWindowNumber as String] as? Int, wn == windowNumber,
-           let bounds = w[kCGWindowBounds as String] as? [String: CGFloat],
-           let x = bounds["X"], let y = bounds["Y"],
-           let width = bounds["Width"], let height = bounds["Height"] {
-            return CGRect(x: x, y: y, width: width, height: height)
-        }
-    }
-    return nil
-}
 
 func handleMove(_ windows: [[String: Any]]) -> Any {
     clearCache()
