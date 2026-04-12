@@ -129,14 +129,10 @@ func handleMove(_ windows: [[String: Any]]) -> Any {
         // macOS AX は size 適用時に window を親 display の端に吸着する挙動があるため
         // 位置を後で再設定して最終位置を強制する
         //
-        // **verify 方針 (v1.2.6)**: AXUIElementSetAttributeValue の AXError 戻り値
-        // のみで成否を判断する。以前は CGWindowList の compositor 座標と照合して
-        // 誤差を判定していたが、Terminal.app では AX 座標と compositor 座標の間に
-        // 100px オーダーのオフセットがあるため、正しく移動したウィンドウが
-        // false-fail され、重い osascript fallback に毎回フォールスルーしていた。
-        // AX set の戻り値は権限エラーや存在しないウィンドウを捉えるのに十分で、
-        // 「別 Space / full-screen window で AX set が嘘をつく」ケースのみ
-        // 検出漏れするが、それは稀かつ fallback 経路より優先度が低い。
+        // **verify 方針**: AXError 戻り値のみで判定 (v1.2.6 方針維持)。
+        // 座標系オフセットによる false-fail を避ける。
+        // Terminal.app の「AX set size が大きな拡大で silent fail する」問題は
+        // unsnap 側で osascriptMove を直接呼ぶことで回避 (v1.2.8)。
         var point = CGPoint(x: x, y: y)
         var size = CGSize(width: w, height: h)
         var lastErr: AXError = .success

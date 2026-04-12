@@ -274,13 +274,17 @@ async function batchMove(cmds) {
 // title の先頭 40 文字でマッチングする (旧 raise fallback と同じ戦略)。
 // **非同期実行必須** — execSync は main thread をブロックして sidebar drag を
 // 凍らせる。runOsascript 経由で event loop を譲る。
+// **アプリ名正規化必須** — CGWindowList は "ターミナル" を返すが System Events の
+// `tell process` は英語名 "Terminal" を期待する場面がある (ローカライズ名で指定
+// すると別プロセスにヒットする/位置が正しく適用されないケースあり)。
 async function osascriptMove(cmds) {
   if (!cmds.length) return;
   const byApp = new Map();
   for (const cmd of cmds) {
     if (!cmd.app || !cmd.title) continue;
-    if (!byApp.has(cmd.app)) byApp.set(cmd.app, []);
-    byApp.get(cmd.app).push(cmd);
+    const normalizedApp = normalizeAppName(cmd.app);
+    if (!byApp.has(normalizedApp)) byApp.set(normalizedApp, []);
+    byApp.get(normalizedApp).push(cmd);
   }
   const jobs = [];
   for (const [appName, wins] of byApp) {
@@ -325,8 +329,9 @@ async function raiseSpecificWindows(cmds) {
   const byApp = new Map();
   for (const cmd of retry) {
     if (!cmd.app) continue;
-    if (!byApp.has(cmd.app)) byApp.set(cmd.app, []);
-    byApp.get(cmd.app).push(cmd);
+    const normalizedApp = normalizeAppName(cmd.app);
+    if (!byApp.has(normalizedApp)) byApp.set(normalizedApp, []);
+    byApp.get(normalizedApp).push(cmd);
   }
   const jobs = [];
   for (const [appName, wins] of byApp) {
@@ -635,7 +640,12 @@ ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
   if (!info) return { ok: false };
   ws.snappedExternals.delete(windowNumber);
   compactSlots(ws);
-  await batchMove([{ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
+  // **unsnap は osascriptMove を直接呼ぶ** (v1.2.8)。
+  // Terminal.app の AX set size は「大きな拡大を silent fail する」実装バグ
+  // があり、daemon 経由だと snap 時のサイズから戻らない。osascript (System
+  // Events) 経由なら信頼できる。snap は daemon で高速 (縮小方向は問題無し)、
+  // unsnap だけ ~400ms かかるが頻度が低いので許容。
+  await osascriptMove([{ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
     x: info.origX, y: info.origY, width: info.origW, height: info.origH }]);
   await retileAll(ws);
   // Same reason as snap: restore TiN to the top after external move.
