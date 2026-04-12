@@ -38,6 +38,8 @@ const WORKSPACES_JSON = path.join(INTEGRATION_DIR, 'workspaces.json');
 const WORKSPACES_FORMAT_VERSION = 1;
 // 保存済みセッションが古すぎる場合は復元しない閾値 (24時間)
 const WORKSPACES_STALE_MS = 24 * 60 * 60 * 1000;
+// workspace プリセット (メモリ機能)
+const PRESETS_DIR = path.join(INTEGRATION_DIR, 'presets');
 const TIN_START_TIME = Date.now();
 
 // Integration dir は起動時に1回だけ確保 (毎回 existsSync しない)
@@ -500,23 +502,10 @@ async function batchMove(cmds) {
   const dt = Date.now() - t0;
   if (dt > 30) console.log(`[tin] batchMove: ${dt}ms moved=${result.moved} failed=${JSON.stringify(result.failed)} axTrusted=${result.axTrusted}`);
   if (result.moved === cmds.length && (!Array.isArray(result.failed) || result.failed.length === 0)) {
-    if (_daemonAXUntrusted) {
-      _daemonAXUntrusted = false;
-      for (const [, ws] of workspaces) {
-        if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('daemon-ax-status', { trusted: true });
-      }
-    }
     return;
   }
-  // 全件失敗 + AX untrusted → バナー表示 + fallback
-  if (result.axTrusted === false && result.moved === 0) {
-    if (!_daemonAXUntrusted) {
-      _daemonAXUntrusted = true;
-      console.warn('[tin] daemon AXIsProcessTrusted()=false — fallback to System Events.');
-      for (const [, ws] of workspaces) {
-        if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('daemon-ax-status', { trusted: false });
-      }
-    }
+  // 全件失敗 → fallback
+  if (result.moved === 0) {
     await osascriptMove(cmds);
     return;
   }
@@ -689,9 +678,10 @@ async function raiseAllWorkspaceWindows(ws, force = false) {
     await raiseSpecificWindows(cmds);
   }
 
-  // TiN sidebar を最前面に
+  // TiN sidebar を最前面に (既にフォーカス中なら steal 不要)
   if (ws.win && !ws.win.isDestroyed()) {
-    app.focus({ steal: true });
+    const focused = BrowserWindow.getFocusedWindow();
+    if (!focused) app.focus({ steal: true });
     ws.win.show();
     ws.win.focus();
   }
@@ -1601,6 +1591,78 @@ if (!gotLock) {
   });
 }
 
+// ── Workspace Presets (メモリ機能) ──
+function savePreset(name) {
+  try {
+    if (!fs.existsSync(PRESETS_DIR)) fs.mkdirSync(PRESETS_DIR, { recursive: true });
+    const data = { name, savedAt: Date.now(), version: WORKSPACES_FORMAT_VERSION, workspaces: [] };
+    for (const [, ws] of workspaces) {
+      if (!ws || !ws.win || ws.win.isDestroyed()) continue;
+      const b = ws.win.getBounds();
+      const snapped = [];
+      for (const [, info] of ws.snappedExternals) {
+        snapped.push({
+          windowNumber: info.windowNumber, app: info.app, pid: info.pid,
+          title: info.title, windowIndex: info.windowIndex || 0, slot: info.slot,
+          origX: info.origX, origY: info.origY, origW: info.origW, origH: info.origH,
+        });
+      }
+      data.workspaces.push({
+        name: ws.name, colorIndex: ws.colorIndex,
+        sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
+        grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800, height: ws.gridHeight || 0 },
+        snappedExternals: snapped,
+      });
+    }
+    const filename = name.replace(/[^a-zA-Z0-9\u3000-\u9fff_-]/g, '_') + '.json';
+    fs.writeFileSync(path.join(PRESETS_DIR, filename), JSON.stringify(data, null, 2), 'utf-8');
+    console.log(`[tin] preset saved: ${name} (${data.workspaces.length} workspaces)`);
+    return { ok: true, name };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+function listPresets() {
+  try {
+    if (!fs.existsSync(PRESETS_DIR)) return [];
+    return fs.readdirSync(PRESETS_DIR)
+      .filter(f => f.endsWith('.json'))
+      .map(f => {
+        try {
+          const d = JSON.parse(fs.readFileSync(path.join(PRESETS_DIR, f), 'utf-8'));
+          return { filename: f, name: d.name, savedAt: d.savedAt, wsCount: (d.workspaces || []).length };
+        } catch { return null; }
+      }).filter(Boolean)
+      .sort((a, b) => b.savedAt - a.savedAt);
+  } catch { return []; }
+}
+
+async function loadPreset(filename) {
+  try {
+    const raw = fs.readFileSync(path.join(PRESETS_DIR, filename), 'utf-8');
+    const data = JSON.parse(raw);
+    if (!data.workspaces || !data.workspaces.length) return { error: '空のプリセット' };
+    // 既存 workspace を閉じる
+    for (const [, ws] of workspaces) {
+      if (ws.win && !ws.win.isDestroyed()) ws.win.close();
+    }
+    // 少し待ってから復元
+    await new Promise(r => setTimeout(r, 300));
+    for (const wsData of data.workspaces) {
+      createWorkspace(wsData.name, wsData);
+    }
+    console.log(`[tin] preset loaded: ${data.name} (${data.workspaces.length} workspaces)`);
+    return { ok: true, name: data.name, count: data.workspaces.length };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+ipcMain.handle('save-preset', async (_event, { name }) => savePreset(name));
+ipcMain.handle('list-presets', async () => listPresets());
+ipcMain.handle('load-preset', async (_event, { filename }) => loadPreset(filename));
+
 // ── Auto Snap (AI クラスタリング) ──
 // バッジクリックで対象 workspace 全体を前面化
 ipcMain.on('switch-to-workspace-of', (_event, { windowNumber }) => {
@@ -1734,6 +1796,36 @@ app.whenReady().then(() => {
       { label: 'Edit Auto-Snap Config...', click: () => {
         autoSnap.ensureConfig();
         require('child_process').exec(`open "${autoSnap.CONFIG_FILE}"`);
+      }},
+      { type: 'separator' },
+      { label: 'Save Workspace Preset...', accelerator: 'CmdOrCtrl+Shift+S', click: async () => {
+        const { response, returnValue } = await dialog.showMessageBox({
+          type: 'question', title: 'Save Preset', message: 'プリセット名を入力',
+          buttons: ['保存', 'キャンセル'], defaultId: 0,
+          inputText: `Preset ${new Date().toLocaleDateString('ja')}`,
+        });
+        // Electron の showMessageBox は inputText をサポートしないので簡易名で保存
+        if (response === 0) {
+          const name = `Preset ${new Date().toLocaleString('ja').replace(/[\/: ]/g, '-')}`;
+          const r = savePreset(name);
+          if (r.ok) dialog.showMessageBox({ type: 'info', title: 'Preset Saved', message: `"${name}" を保存しました` });
+        }
+      }},
+      { label: 'Load Workspace Preset...', click: async () => {
+        const presets = listPresets();
+        if (presets.length === 0) {
+          dialog.showMessageBox({ type: 'info', title: 'Presets', message: '保存済みプリセットがありません' });
+          return;
+        }
+        const { response } = await dialog.showMessageBox({
+          type: 'question', title: 'Load Preset',
+          message: 'どのプリセットを復元しますか？',
+          detail: presets.map((p, i) => `${i + 1}. ${p.name} (${p.wsCount} ws)`).join('\n'),
+          buttons: [...presets.map((p, i) => `${i + 1}. ${p.name}`), 'キャンセル'],
+        });
+        if (response < presets.length) {
+          await loadPreset(presets[response].filename);
+        }
       }},
     ]},
     { label: 'Edit', submenu: [{ role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },

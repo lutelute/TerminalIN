@@ -435,21 +435,7 @@ ipcRenderer.on('restore-report', (_e, report) => {
   }
 });
 
-// ── Daemon AX permission banner ──
-ipcRenderer.on('daemon-ax-status', (_e, { trusted }) => {
-  const existing = document.getElementById('ax-banner');
-  if (trusted) {
-    if (existing) existing.remove();
-    return;
-  }
-  if (existing) return; // already showing
-  const banner = document.createElement('div');
-  banner.id = 'ax-banner';
-  banner.className = 'restore-banner has-missing';
-  banner.innerHTML = `<div class="rb-header"><span>\u26a0 Snap\u304c\u9045\u3044: daemon\u306b\u30a2\u30af\u30bb\u30b7\u30d3\u30ea\u30c6\u30a3\u6a29\u9650\u304c\u3042\u308a\u307e\u305b\u3093</span><span class="rb-close" title="Dismiss">\u00d7</span></div><div style="font-size:9px;margin-top:3px;opacity:0.85">\u30b7\u30b9\u30c6\u30e0\u8a2d\u5b9a \u2192 \u30d7\u30e9\u30a4\u30d0\u30b7\u30fc\u3068\u30bb\u30ad\u30e5\u30ea\u30c6\u30a3 \u2192 \u30a2\u30af\u30bb\u30b7\u30d3\u30ea\u30c6\u30a3 \u2192 daemon \u3092\u8ffd\u52a0</div>`;
-  banner.querySelector('.rb-close').addEventListener('click', () => banner.remove());
-  if (content && content.parentNode) content.parentNode.insertBefore(banner, content);
-});
+// (daemon AX バナー削除済み — Contents/MacOS/ 配置で解決)
 
 // ── Sidebar embedded terminals ──
 async function addEmbedded(title) {
@@ -642,21 +628,14 @@ function render() {
     const extTitle = document.createElement('div');
     extTitle.className = 'section-title';
     extTitle.innerHTML = `<span class="section-accent">AVAILABLE</span> (${available.length})`;
-    // Auto Snap ボタン群
-    const snapBtns = document.createElement('div');
-    snapBtns.style.cssText = 'display:flex;gap:2px;margin-left:auto;';
-    const makeAutoBtn = (label, filter) => {
-      const b = document.createElement('button');
-      b.className = 'grid-opt';
-      b.textContent = label;
-      b.title = `AI Auto Snap: ${label}`;
-      b.addEventListener('click', () => ipcRenderer.send('trigger-auto-snap', { filter }));
-      return b;
-    };
-    snapBtns.appendChild(makeAutoBtn('AI', 'all'));
-    if (availableTerminal.length > 0) snapBtns.appendChild(makeAutoBtn('T', 'terminal'));
-    if (availableFinder.length > 0) snapBtns.appendChild(makeAutoBtn('F', 'finder'));
-    extTitle.appendChild(snapBtns);
+    // AI Auto Snap ボタン
+    const aiBtn = document.createElement('button');
+    aiBtn.className = 'grid-opt';
+    aiBtn.textContent = 'AI';
+    aiBtn.title = 'AI Auto Snap';
+    aiBtn.style.marginLeft = 'auto';
+    aiBtn.addEventListener('click', () => ipcRenderer.send('trigger-auto-snap', { filter: 'all' }));
+    extTitle.appendChild(aiBtn);
     _availSection.appendChild(extTitle);
 
     const renderAvailItem = (w) => {
