@@ -5,3 +5,4 @@ out/
 .DS_Store
 /tmp/
 .daemon-src-hash
+.env
