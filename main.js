@@ -1062,6 +1062,8 @@ function createWorkspace(name, savedState) {
   ws._titleCache = new Map();
   ws._titleCacheRefreshAt = 0;
   // Poll external windows
+  // pollTimer: 2000ms (以前は 800ms)。Available リスト更新は 2 秒遅延するが
+  // snap/unsnap の即時操作には影響しない。snapped の grace period は 8 回 = ~16s。
   ws.pollTimer = setInterval(async () => {
     if (!ws.win || ws.win.isDestroyed()) return;
     const windows = await listWindows();
@@ -1155,7 +1157,7 @@ function createWorkspace(name, savedState) {
     const gridSlots = {};
     for (const [slot, gw] of ws.gridWindows) gridSlots[slot] = { ptyId: gw.ptyId };
     ws.win.webContents.send('external-windows', windows, snappedByOther, gridSlots);
-  }, 800);
+  }, 2000);
 
   win.on('closed', async () => {
     if (ws.pollTimer) clearInterval(ws.pollTimer);

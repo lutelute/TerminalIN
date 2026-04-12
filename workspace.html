@@ -698,6 +698,13 @@ ipcRenderer.on('new-terminal', () => addGridTerminal());
 ipcRenderer.on('close-current', () => {
   if (embeddedTerms.length > 0) removeEmbedded(embeddedTerms.length - 1);
 });
+// render を debounce して DOM 再構築頻度を制限 (100ms)
+let _renderTimer = null;
+function scheduleRender() {
+  if (_renderTimer) return;
+  _renderTimer = setTimeout(() => { _renderTimer = null; render(); }, 100);
+}
+
 ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo) => {
   snappedByOther = otherSnapped || {};
   gridSlots = gridInfo || {};
@@ -708,11 +715,13 @@ ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo) => {
   for (const k of snappedExternals.keys()) {
     if (!windows.find(w => w.windowNumber === k)) snappedExternals.delete(k);
   }
-  render();
+  scheduleRender();
 });
 
-// ── Raise on any click on workspace ──
-document.addEventListener('mousedown', () => {
+// ── Raise on titlebar click only (軽量化: 全 mousedown での raise-all を廃止) ──
+// 以前は document 全体の mousedown で raise-all を送っていたが、毎クリック
+// daemon.raise が走り体感ラグの原因になっていた。タイトルバークリックのみに限定。
+document.getElementById('titlebar').addEventListener('mousedown', () => {
   ipcRenderer.send('raise-all');
 });
 
