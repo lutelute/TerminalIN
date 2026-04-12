@@ -410,11 +410,19 @@ function render() {
     if (t.length > 35) t = t.substring(0, 32) + '...';
     item.innerHTML = `<span class="card-badge badge-ext">EXT</span><span class="ext-title">${t}</span>`;
     item.style.cursor = 'pointer';
-    item.title = 'Click to raise window';
-    // 相互機能: 個別 snapped window を前面化 (解釈A)
+    item.title = 'Click to locate & raise window';
+    // 相互機能: 個別 snapped window を wobble + 前面化
+    // (どのウィンドウか視覚的に示すための軽量アニメ)
     item.addEventListener('click', (e) => {
       if (e.target && e.target.classList && e.target.classList.contains('ext-btn')) return;
-      ipcRenderer.invoke('raise-snapped', { windowNumber: wn });
+      // externalWindows から最新情報 (pid/app/title) を取得
+      const live = externalWindows.find(w => w.windowNumber === wn);
+      ipcRenderer.invoke('wobble-window', {
+        windowNumber: wn,
+        pid: live ? live.pid : undefined,
+        app: live ? live.app : undefined,
+        title: live ? live.title : (info.title || ''),
+      });
     });
     const btn = document.createElement('button');
     btn.className = 'ext-btn release';
@@ -465,10 +473,20 @@ function render() {
         item.innerHTML = `<span class="ext-title">${t}</span><span class="ws-badge">\u2192 ${otherWs}</span>`;
       } else {
         item.innerHTML = `<span class="ext-title">${t}</span>`;
+        item.style.cursor = 'pointer';
+        item.title = 'Click title to locate, Snap to dock';
+        // タイトル部分クリックで wobble (どのウィンドウか視覚確認)
+        // Snap ボタンクリックは従来通り snap 実行
+        item.addEventListener('click', (e) => {
+          if (e.target && e.target.classList && e.target.classList.contains('ext-btn')) return;
+          ipcRenderer.invoke('wobble-window', {
+            windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title,
+          });
+        });
         const btn = document.createElement('button');
         btn.className = 'ext-btn snap';
         btn.textContent = 'Snap';
-        btn.addEventListener('click', () => snapExternal(w));
+        btn.addEventListener('click', (e) => { e.stopPropagation(); snapExternal(w); });
         item.appendChild(btn);
       }
       availSection.appendChild(item);

@@ -2,7 +2,19 @@ const { app, BrowserWindow, ipcMain, screen, Menu, powerMonitor } = require('ele
 const path = require('path');
 const fs = require('fs');
 const pty = require('node-pty');
-const { spawn, exec } = require('child_process');
+const { spawn, exec, execFile } = require('child_process');
+
+// 非同期 osascript 実行。execSync だと main process が完全にブロックされ
+// sidebar のドラッグ/クリックが最大数秒フリーズする (macOS Automation 権限
+// チェック中に osascript がブロックするため特に顕著)。execFile はコマンドを
+// そのまま渡せるのでシェル escape も不要。
+function runOsascript(script, timeoutMs = 2500) {
+  return new Promise((resolve) => {
+    execFile('osascript', ['-e', script], { timeout: timeoutMs, encoding: 'utf8' }, (err, stdout) => {
+      resolve({ err, stdout });
+    });
+  });
+}
 const pkg = require('./package.json');
 
 // Always enable remote debugging for MCP integration
@@ -210,54 +222,122 @@ function normalizeAppName(name) {
   return map[name] || name;
 }
 
-// Move windows: daemon (AX set, global coords) のみ使用
+// Move windows: daemon (AX set, global coords) を第一経路、System Events
+// (osascript) を fallback として使う。
 //
-// 以前は osascript `tell application "Terminal" set bounds` fallback を
-// 使っていたが、これは **display-local 座標**で解釈されるバグがあった
-// (ウィンドウが現在置かれているディスプレイの左上基準)。そのため、
-// display 3 (Y=[-1440,0]) 上の window を (369, 101) へ移動しようとすると
-// (369, -1440+101=-1339) と解釈されて cross-display snap が壊れていた。
+// **注意**: 以前 `tell application "Terminal" set bounds` fallback が
+// display-local 座標で解釈されるバグを起こしていたため完全廃止していたが、
+// パッケージ版 TiN.app では daemon バイナリが親アプリとは別 cdhash で adhoc
+// 署名されており、macOS の TCC がアクセシビリティ権限を daemon に継承しない
+// ケースがあることが判明した (v1.2.5 以降)。結果 daemon の AX set は silent
+// に失敗し snap が効かない。
 //
-// daemon の AXUIElementSetAttributeValue は一貫してグローバル座標を使うため
-// fallback を廃止し、daemon のみに委ねる。AX permission が無い場合は何も
-// しない (正常動作を保証できないため)。
+// 復活させる fallback は **System Events の `set position`/`set size`** を
+// 使う。これは `set bounds` と違ってグローバル座標で動作するので旧バグを
+// 再発させない。System Events 自体は常にアクセシビリティ権限を保持している
+// ので、daemon が権限不足で失敗しても動かせる。
+// daemon の AX 状態を覚えておき、untrusted と確認できたら以降は daemon を呼ばず
+// 直接 osascript fallback に行く (パッケージ版の rebuild 直後に TCC の cdhash が
+// 変わって権限が外れるため)。
+let _daemonAXUntrusted = false;
+
 async function batchMove(cmds) {
   if (!cmds.length) return;
-  await daemonRequest('move', { windows: cmds });
-  // daemon の結果値は返さない (verify は daemon 側で完結)
+  if (_daemonAXUntrusted) {
+    await osascriptMove(cmds);
+    return;
+  }
+  const result = await daemonRequest('move', { windows: cmds });
+  // daemon 応答がない → 全件 fallback
+  if (!result || typeof result.moved !== 'number') {
+    await osascriptMove(cmds);
+    return;
+  }
+  if (result.axTrusted === false) {
+    if (!_daemonAXUntrusted) {
+      _daemonAXUntrusted = true;
+      console.warn('[tin] daemon reports AXIsProcessTrusted()=false — switching to System Events fallback for move/raise.');
+    }
+    await osascriptMove(cmds);
+    return;
+  }
+  // 一部失敗 → 失敗分だけ fallback
+  if (Array.isArray(result.failed) && result.failed.length > 0) {
+    const failedSet = new Set(result.failed);
+    const retry = cmds.filter(c => failedSet.has(c.windowNumber));
+    if (retry.length) await osascriptMove(retry);
+  }
+}
+
+// System Events を使ったウィンドウ移動 fallback。
+// AXPosition/AXSize は global 座標で動作する (set bounds とは異なる)。
+// title の先頭 40 文字でマッチングする (旧 raise fallback と同じ戦略)。
+// **非同期実行必須** — execSync は main thread をブロックして sidebar drag を
+// 凍らせる。runOsascript 経由で event loop を譲る。
+async function osascriptMove(cmds) {
+  if (!cmds.length) return;
+  const byApp = new Map();
+  for (const cmd of cmds) {
+    if (!cmd.app || !cmd.title) continue;
+    if (!byApp.has(cmd.app)) byApp.set(cmd.app, []);
+    byApp.get(cmd.app).push(cmd);
+  }
+  const jobs = [];
+  for (const [appName, wins] of byApp) {
+    const lines = wins.map(w => {
+      const t = (w.title || '').substring(0, 40).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      if (!t) return '';
+      const x = Math.round(w.x), y = Math.round(w.y);
+      const ww = Math.round(w.width), wh = Math.round(w.height);
+      return `    try\n      set _w to first window whose name contains "${t}"\n      set position of _w to {${x}, ${y}}\n      set size of _w to {${ww}, ${wh}}\n      set position of _w to {${x}, ${y}}\n    end try`;
+    }).filter(Boolean).join('\n');
+    if (!lines) continue;
+    const script = `tell application "System Events" to tell process "${appName}"\n${lines}\nend tell`;
+    jobs.push(runOsascript(script, 3000));
+  }
+  if (jobs.length) await Promise.all(jobs);
 }
 
 // Raise: daemon (fast) with osascript fallback.
-// The daemon uses AXRaise directly which reorders the window WITHIN its app
-// without activating the app (so other-app windows stay where they are).
-// Partial failure (stale windows) is trusted — we must NOT run the fallback
-// in that case because the fallback's "set frontmost to true" would activate
-// the entire target app, hiding TiN behind all of its windows.
+// daemon が AXRaise を使ってアプリをアクティブ化せず z-order だけ上げる。
+// パッケージ版で daemon の AX 権限が継承されない場合、silent fail するので
+// daemon が返す failed[] を元に System Events で再試行する。
+// 注: fallback は `set frontmost to true` を **使わない** — 対象アプリ全体を
+// アクティブ化すると TiN がその後ろに隠れてしまうため。
 async function raiseSpecificWindows(cmds) {
   if (!cmds.length) return;
-  const result = await daemonRequest('raise', { windows: cmds });
-  // Trust partial success: daemon uses AXRaise which is the correct primitive.
-  // Stale entries just get skipped (grace-period polling will clean them up).
-  if (typeof result.raised === 'number') return;
-  // Daemon unavailable (no AX permission or crashed). Fall back to osascript,
-  // but WITHOUT `set frontmost to true` — we only want to reorder windows
-  // within the target app, not activate it.
+  let retry = cmds;
+  if (!_daemonAXUntrusted) {
+    const result = await daemonRequest('raise', { windows: cmds });
+    if (result && typeof result.raised === 'number') {
+      if (result.axTrusted === false) {
+        _daemonAXUntrusted = true;
+        console.warn('[tin] daemon reports AXIsProcessTrusted()=false — switching to System Events fallback.');
+      } else if (Array.isArray(result.failed) && result.failed.length > 0) {
+        const failedSet = new Set(result.failed);
+        retry = cmds.filter(c => failedSet.has(c.windowNumber));
+      } else {
+        return;
+      }
+    }
+  }
+  // daemon 応答なし or 一部失敗 → System Events fallback (非同期)
   const byApp = new Map();
-  for (const cmd of cmds) {
+  for (const cmd of retry) {
     if (!cmd.app) continue;
     if (!byApp.has(cmd.app)) byApp.set(cmd.app, []);
     byApp.get(cmd.app).push(cmd);
   }
-  const { execSync } = require('child_process');
+  const jobs = [];
   for (const [appName, wins] of byApp) {
     const raiseLines = wins.map(w => {
       const t = (w.title || '').substring(0, 20).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       return `    try\n      perform action "AXRaise" of (first window whose name contains "${t}")\n    end try`;
     }).join('\n');
     const script = `tell application "System Events" to tell process "${appName}"\n${raiseLines}\nend tell`;
-    // execSync so we complete before the caller proceeds to focus TiN
-    try { execSync(`osascript -e '${script.replace(/'/g, "'\\''")}'`, { timeout: 2000 }); } catch {}
+    jobs.push(runOsascript(script, 2000));
   }
+  if (jobs.length) await Promise.all(jobs);
 }
 
 // ── Helpers ──
@@ -540,9 +620,9 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
   });
   const pos = getSlotBounds(ws, slot);
   if (pos) await batchMove([{ windowNumber, pid, app: appName, title, ...pos }]);
-  // Restore z-order: the move (especially via osascript fallback) may have
-  // activated the target app, pushing ALL its windows — including ones not
-  // snapped — in front of TiN. Raise only the snapped window + TiN sidebar.
+  // Restore z-order: the move may have activated the target app, pushing
+  // ALL its windows — including ones not snapped — in front of TiN.
+  // Raise only the snapped window + TiN sidebar.
   await raiseAllWorkspaceWindows(ws, true);
   scheduleSyncSnapped();
   return { ok: true, slot };
@@ -578,6 +658,19 @@ ipcMain.handle('raise-snapped', async (event, { windowNumber }) => {
     return { ok: true };
   }
   return { ok: false };
+});
+
+// ── IPC: wobble (縦方向に 8px ゆすって戻す) + raise ──
+// 「クリックしたカードがどのウィンドウか視覚的に示す」ための軽量アニメ。
+// daemon が AX 直叩きで実装しているので osascript より高速かつ name マッチ
+// 不要 (windowNumber で一意にヒット、Finder ghost 問題も回避)。
+// snapped / available どちらからも呼べる汎用 IPC。
+ipcMain.handle('wobble-window', async (_event, { windowNumber, pid, app: appName, title, windowIndex }) => {
+  if (!windowNumber && !appName) return { ok: false };
+  await daemonRequest('wobble', {
+    windows: [{ windowNumber, pid, app: appName, title, windowIndex: windowIndex || 0 }],
+  });
+  return { ok: true };
 });
 
 ipcMain.handle('get-snapped-externals', (event) => {
@@ -727,20 +820,59 @@ function createWorkspace(name) {
   win.on('move', scheduleRetile);
   win.on('resize', scheduleRetile);
 
+  // Title cache: windowNumber -> title
+  // パッケージ版では daemon binary が Screen Recording 権限を持たないため
+  // CGWindowList がタイトルを空で返す。osascript fallback は高コスト
+  // (~200ms × アプリ数) なので、**既知の windowNumber はキャッシュヒット**させ
+  // 新規 windowNumber 出現時だけ再フェッチする。
+  ws._titleCache = new Map();
+  ws._titleCacheRefreshAt = 0;
   // Poll external windows
   ws.pollTimer = setInterval(async () => {
     if (!ws.win || ws.win.isDestroyed()) return;
     const windows = await listWindows();
-    // Title fallback for packaged app
-    if (windows.length > 0 && windows.every(w => !w.title)) {
-      const { execSync } = require('child_process');
-      for (const appName of [...new Set(windows.map(w => w.app))]) {
-        try {
-          const ids = execSync(`osascript -e 'tell application "${appName}" to get id of every window'`, { timeout: 2000, encoding: 'utf8' }).trim().split(', ').map(Number);
-          const names = execSync(`osascript -e 'tell application "${appName}" to get name of every window'`, { timeout: 2000, encoding: 'utf8' }).trim().split(', ');
-          const m = new Map(); for (let i = 0; i < ids.length; i++) if (ids[i]) m.set(ids[i], names[i] || '');
-          for (const w of windows) if (w.app === appName && m.has(w.windowNumber)) w.title = m.get(w.windowNumber);
-        } catch {}
+    // Title fallback for packaged app: キャッシュヒットを先に適用
+    if (windows.length > 0) {
+      for (const w of windows) {
+        if (!w.title && ws._titleCache.has(w.windowNumber)) {
+          w.title = ws._titleCache.get(w.windowNumber);
+        }
+      }
+      // キャッシュに存在しない未知 windowNumber がある場合のみ osascript で補完。
+      // 権限があって CGWindowList がタイトルを返している時は w.title が既に
+      // 埋まっているので hasUnknown=false となり osascript は呼ばれない。
+      // 新規ウィンドウが出現した時は hasUnknown=true となる。
+      // 連続する poll で暴発しないよう 5 秒のレート制限をかける。
+      const hasUnknown = windows.some(w => !w.title && !ws._titleCache.has(w.windowNumber));
+      const now = Date.now();
+      const shouldRefresh = hasUnknown && now - ws._titleCacheRefreshAt > 5000;
+      if (shouldRefresh) {
+        ws._titleCacheRefreshAt = now;
+        // 非同期で実行 — pollTimer ハンドラをブロックしない。
+        // 結果は次の poll 周期でキャッシュヒットする。
+        for (const appName of [...new Set(windows.map(w => w.app))]) {
+          (async () => {
+            try {
+              const [idsRes, namesRes] = await Promise.all([
+                runOsascript(`tell application "${appName}" to get id of every window`, 2000),
+                runOsascript(`tell application "${appName}" to get name of every window`, 2000),
+              ]);
+              if (idsRes.err || namesRes.err) return;
+              const ids = idsRes.stdout.trim().split(', ').map(Number);
+              const names = namesRes.stdout.trim().split(', ');
+              for (let i = 0; i < ids.length; i++) {
+                if (ids[i]) ws._titleCache.set(ids[i], names[i] || '');
+              }
+            } catch {}
+          })();
+        }
+      }
+      // 古いエントリを消す (現存 windowNumber に含まれないものは遅延削除)
+      if (ws._titleCache.size > 256) {
+        const liveNums = new Set(windows.map(w => w.windowNumber));
+        for (const k of ws._titleCache.keys()) {
+          if (!liveNums.has(k)) ws._titleCache.delete(k);
+        }
       }
     }
     const liveMap = new Map(windows.map(w => [w.windowNumber, w]));

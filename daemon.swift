@@ -11,7 +11,10 @@ import CoreGraphics
 @_silgen_name("_AXUIElementGetWindow")
 func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: UnsafeMutablePointer<CGWindowID>) -> AXError
 
-let terminalApps = Set(["Terminal", "ターミナル", "iTerm2", "Alacritty", "Warp", "kitty", "Hyper", "WezTerm"])
+// TiN が認識する外部ウィンドウのアプリ名 (ローカライズされた名前も含む)。
+// Finder を含めることで Finder window も Available リストに出現させ
+// grid への snap 対象にできる。
+let terminalApps = Set(["Terminal", "ターミナル", "iTerm2", "Alacritty", "Warp", "kitty", "Hyper", "WezTerm", "Finder", "ファインダー"])
 
 var appCache: [pid_t: (ref: AXUIElement, windows: [AXUIElement])] = [:]
 func clearCache() { appCache.removeAll() }
@@ -105,70 +108,119 @@ func readCompositorPosition(windowNumber: Int) -> CGRect? {
 func handleMove(_ windows: [[String: Any]]) -> Any {
     clearCache()
     var moved = 0
+    var failed: [Int] = []
+    let axTrusted = AXIsProcessTrusted()
     for cmd in windows {
         guard let x = cmd["x"] as? Double, let y = cmd["y"] as? Double,
               let w = cmd["width"] as? Double, let h = cmd["height"] as? Double else { continue }
         let appName = cmd["app"] as? String
         let pid = (cmd["pid"] as? Int).map { pid_t($0) }
         let windowNumber = cmd["windowNumber"] as? Int
-        guard let appInfo = getApp(pid: pid, name: appName) else { continue }
-        guard let win = findWindow(in: appInfo.windows, windowNumber: windowNumber, title: cmd["title"] as? String, windowIndex: cmd["windowIndex"] as? Int) else { continue }
+        guard let appInfo = getApp(pid: pid, name: appName) else {
+            if let wn = windowNumber { failed.append(wn) }
+            continue
+        }
+        guard let win = findWindow(in: appInfo.windows, windowNumber: windowNumber, title: cmd["title"] as? String, windowIndex: cmd["windowIndex"] as? Int) else {
+            if let wn = windowNumber { failed.append(wn) }
+            continue
+        }
 
         // 位置 → サイズ → 位置 の順で 2 回適用
         // macOS AX は size 適用時に window を親 display の端に吸着する挙動があるため
         // 位置を後で再設定して最終位置を強制する
+        //
+        // **verify 方針 (v1.2.6)**: AXUIElementSetAttributeValue の AXError 戻り値
+        // のみで成否を判断する。以前は CGWindowList の compositor 座標と照合して
+        // 誤差を判定していたが、Terminal.app では AX 座標と compositor 座標の間に
+        // 100px オーダーのオフセットがあるため、正しく移動したウィンドウが
+        // false-fail され、重い osascript fallback に毎回フォールスルーしていた。
+        // AX set の戻り値は権限エラーや存在しないウィンドウを捉えるのに十分で、
+        // 「別 Space / full-screen window で AX set が嘘をつく」ケースのみ
+        // 検出漏れするが、それは稀かつ fallback 経路より優先度が低い。
         var point = CGPoint(x: x, y: y)
         var size = CGSize(width: w, height: h)
+        var lastErr: AXError = .success
         if let val = AXValueCreate(.cgPoint, &point) {
-            AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
+            let err = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
+            if err != .success { lastErr = err }
         }
         if let val = AXValueCreate(.cgSize, &size) {
-            AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, val)
+            let err = AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, val)
+            if err != .success { lastErr = err }
         }
         if let val = AXValueCreate(.cgPoint, &point) {
-            AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
+            let err = AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
+            if err != .success { lastErr = err }
         }
-
-        // compositor (CGWindowList) で実位置を検証
-        // AX read は信用できない (別Space/フルスクリーンの window は AX set が成功しても
-        // compositor には反映されない)
-        // 注: compositor は AX set からの反映に最大 ~100ms かかるため、20ms 間隔で
-        //     最大 5 回リトライする
-        var appliedOk = false
-        if let wn = windowNumber {
-            for _ in 0..<5 {
-                if let actual = readCompositorPosition(windowNumber: wn) {
-                    let dx = abs(actual.origin.x - x), dy = abs(actual.origin.y - y)
-                    if dx < 3 && dy < 3 {
-                        appliedOk = true
-                        break
-                    }
-                }
-                usleep(20_000) // 20ms
-            }
-        } else {
-            // windowNumber がない場合は AX set の成功を信じる
-            appliedOk = true
-        }
-        if appliedOk {
+        if lastErr == .success {
             moved += 1
+        } else if let wn = windowNumber {
+            failed.append(wn)
         }
     }
-    return ["moved": moved]
+    return ["moved": moved, "failed": failed, "axTrusted": axTrusted]
 }
 
 func handleRaise(_ windows: [[String: Any]]) -> Any {
     clearCache()
     var raised = 0
+    var failed: [Int] = []
+    for cmd in windows {
+        let appName = cmd["app"] as? String
+        let pid = (cmd["pid"] as? Int).map { pid_t($0) }
+        let windowNumber = cmd["windowNumber"] as? Int
+        guard let appInfo = getApp(pid: pid, name: appName) else {
+            if let wn = windowNumber { failed.append(wn) }
+            continue
+        }
+        guard let win = findWindow(in: appInfo.windows, windowNumber: windowNumber, title: cmd["title"] as? String, windowIndex: cmd["windowIndex"] as? Int) else {
+            if let wn = windowNumber { failed.append(wn) }
+            continue
+        }
+        let err = AXUIElementPerformAction(win, kAXRaiseAction as CFString)
+        if err == .success {
+            raised += 1
+        } else if let wn = windowNumber {
+            failed.append(wn)
+        }
+    }
+    return ["raised": raised, "failed": failed, "axTrusted": AXIsProcessTrusted()]
+}
+
+// Wobble + raise: ウィンドウを一瞬 y-8px ずらして戻し、前面化する。
+// 「クリックしたカードがどのウィンドウか」を視覚的に示すため。
+// 全アプリ共通で position のみ操作する (Terminal.app は set size で AX 参照
+// が無効化するため)。Finder も System Events 経由ではなく daemon の AX を
+// 直接使うので ghost entry 問題を回避できる (findWindow が windowNumber で
+// 一意にマッチするため)。
+func handleWobble(_ windows: [[String: Any]]) -> Any {
+    clearCache()
+    var done = 0
     for cmd in windows {
         let appName = cmd["app"] as? String
         let pid = (cmd["pid"] as? Int).map { pid_t($0) }
         guard let appInfo = getApp(pid: pid, name: appName) else { continue }
         guard let win = findWindow(in: appInfo.windows, windowNumber: cmd["windowNumber"] as? Int, title: cmd["title"] as? String, windowIndex: cmd["windowIndex"] as? Int) else { continue }
+        // 現在の AX 位置を読む
+        var posRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(win, kAXPositionAttribute as CFString, &posRef) == .success,
+              let axValue = posRef else { continue }
+        var currentPoint = CGPoint.zero
+        if !AXValueGetValue(axValue as! AXValue, .cgPoint, &currentPoint) { continue }
+        // y - 8 に移動 → 60ms 待機 → 元の位置に戻す
+        var upPoint = CGPoint(x: currentPoint.x, y: currentPoint.y - 8)
+        if let val = AXValueCreate(.cgPoint, &upPoint) {
+            AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
+        }
+        usleep(60_000)
+        if let val = AXValueCreate(.cgPoint, &currentPoint) {
+            AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
+        }
+        // AXRaise で z-order を上げる (アプリ全体を activate しない)
         AXUIElementPerformAction(win, kAXRaiseAction as CFString)
-        raised += 1
+        done += 1
     }
-    return ["raised": raised]
+    return ["done": done]
 }
 
 // Verify whether windows still exist via AXUIElement.
@@ -206,6 +258,7 @@ while let line = readLine() {
     case "list": result = handleList()
     case "move": result = handleMove(json["windows"] as? [[String: Any]] ?? [])
     case "raise": result = handleRaise(json["windows"] as? [[String: Any]] ?? [])
+    case "wobble": result = handleWobble(json["windows"] as? [[String: Any]] ?? [])
     case "verify": result = handleVerify(json["windows"] as? [[String: Any]] ?? [])
     default: result = ["error": "unknown command"]
     }
