@@ -1086,12 +1086,18 @@ function createWorkspace(name, savedState) {
     overlay.setIgnoreMouseEvents(true, { forward: true });
     ws.gridOverlay = overlay;
 
-    // overlay resize のみ retile (move は sidebar が制御するので不要)
+    // overlay resize: gridWidth/gridHeight を更新 + retile
     overlay.on('resize', () => {
       if (ws.overlayThrottle) return;
       ws.overlayThrottle = setTimeout(async () => {
         ws.overlayThrottle = null;
+        if (!overlay.isDestroyed()) {
+          const ob = overlay.getBounds();
+          ws.gridWidth = ob.width;
+          ws.gridHeight = ob.height;
+        }
         await retileAll(ws);
+        scheduleSaveWorkspaces();
       }, 16);
     });
     overlay.on('closed', () => { ws.gridOverlay = null; });
@@ -1123,13 +1129,25 @@ function createWorkspace(name, savedState) {
   // ドラッグ中は poll を一時停止して daemon 競合を防ぐ。
   let _dragThrottle = null;
   let _dragging = false;
-  const onSidebarMove = () => {
-    // overlay を即座に同期 (BrowserWindow — 同期、コストゼロ)
-    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.win && !ws.win.isDestroyed()) {
-      const sb = ws.win.getBounds();
-      ws.gridOverlay.setBounds({ x: sb.x + sb.width + 12, y: sb.y, width: ws.gridWidth, height: ws.gridHeight || sb.height });
+  let _lastSidebarHeight = winH;
+  const syncOverlayPosition = () => {
+    if (!ws.gridOverlay || ws.gridOverlay.isDestroyed() || !ws.win || ws.win.isDestroyed()) return;
+    const sb = ws.win.getBounds();
+    const ob = ws.gridOverlay.getBounds();
+    // 位置だけ追従。サイズは overlay 独自管理。
+    // ただし sidebar の高さが変わり、gridHeight が未設定 (0) なら sidebar に連動。
+    let h = ob.height;
+    if (!ws.gridHeight) {
+      h = sb.height;
+    } else if (sb.height !== _lastSidebarHeight && !ws.gridHeight) {
+      h = sb.height;
     }
-    // embedded grid windows も即座に同期 (BrowserWindow)
+    _lastSidebarHeight = sb.height;
+    ws.gridOverlay.setBounds({ x: sb.x + sb.width + 12, y: sb.y, width: ws.gridWidth || ob.width, height: h });
+  };
+  const onSidebarMove = () => {
+    syncOverlayPosition();
+    // embedded grid windows を即座に同期
     for (const [slot, gw] of ws.gridWindows) {
       if (gw.win && !gw.win.isDestroyed()) {
         const b = getSlotBounds(ws, slot);
@@ -1139,13 +1157,11 @@ function createWorkspace(name, savedState) {
     // snapped externals: 16ms throttle で daemon に fire-and-forget
     if (_dragThrottle) return;
     _dragThrottle = setTimeout(() => { _dragThrottle = null; }, 16);
-    // snapped ウィンドウの移動コマンドを構築して送信
     const moveCmds = [];
     for (const [, info] of ws.snappedExternals) {
       const b = getSlotBounds(ws, info.slot);
       if (b) moveCmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
     }
-    // ドラッグ中は positionOnly で高速化 (AX 呼び出し 1/3)
     if (moveCmds.length) daemonMoveFireAndForget(moveCmds, true);
   };
   win.on('move', onSidebarMove);
@@ -1153,11 +1169,10 @@ function createWorkspace(name, savedState) {
   win.on('will-move', () => { if (!_dragging) { _dragging = true; } });
   win.on('moved', () => {
     _dragging = false;
-    // ドラッグ終了後に最終位置+サイズを確定
     retileAll(ws);
     scheduleSaveWorkspaces();
   });
-  // resize 終了時もサイズ確定 (will-resize/resized がないので debounce)
+  // sidebar resize 終了時にサイズ確定
   let _resizeEnd = null;
   win.on('resize', () => {
     if (_resizeEnd) clearTimeout(_resizeEnd);
@@ -1167,9 +1182,6 @@ function createWorkspace(name, savedState) {
       scheduleSaveWorkspaces();
     }, 150);
   });
-  // sidebar 位置/サイズ変更も永続化対象
-  win.on('moved', () => scheduleSaveWorkspaces());
-  win.on('resize', () => scheduleSaveWorkspaces());
 
   // Title cache: windowNumber -> title
   // パッケージ版では daemon binary が Screen Recording 権限を持たないため
@@ -1393,6 +1405,8 @@ ipcMain.on('resize-overlay', (event, { width, height }) => {
       ws.gridOverlay.setBounds({ x: sb.x + sb.width + 12, y: sb.y, width, height });
       ws.gridWidth = width;
       ws.gridHeight = height;
+      // overlay リサイズ後に snapped ターミナルのサイズも即座に反映
+      retileAll(ws);
       scheduleSaveWorkspaces();
       return;
     }
