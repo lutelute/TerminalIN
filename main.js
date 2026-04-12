@@ -811,13 +811,14 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
     origX: x, origY: y, origW: width, origH: height,
     snappedAt: Date.now(),
   });
+  // **snapped.json を daemon.move の BEFORE に即座書き出し** (v1.2.10)
+  // AtelierX の atelierx-plugin が fs.watch / poll で検知し setWindowExclusion を
+  // 呼ぶまでの競合ウィンドウを最小化する。daemon.move 後だと AtelierX が先に
+  // 同じウィンドウを auto-grid で動かしてしまう可能性がある。
+  try { writeSnappedJson(); } catch {}
   const pos = getSlotBounds(ws, slot);
   if (pos) await batchMove([{ windowNumber, pid, app: appName, title, ...pos }]);
-  // Restore z-order: the move may have activated the target app, pushing
-  // ALL its windows — including ones not snapped — in front of TiN.
-  // Raise only the snapped window + TiN sidebar.
   await raiseAllWorkspaceWindows(ws, true);
-  scheduleSyncSnapped();
   scheduleSaveWorkspaces();
   return { ok: true, slot };
 });

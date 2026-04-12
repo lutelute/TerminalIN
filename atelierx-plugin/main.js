@@ -18,7 +18,7 @@ const { shell } = require('electron');
 const TIN_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'TiN');
 const INFO_FILE = path.join(TIN_DIR, 'info.json');
 const SNAPPED_FILE = path.join(TIN_DIR, 'snapped.json');
-const POLL_INTERVAL = 2000;
+const POLL_INTERVAL = 500;
 const INFO_STALE_MS = 15 * 60 * 1000; // 15分以上更新がない info.json は stale とみなす
 const SUPPORTED_PROTOCOLS = new Set(['1.0']);
 
