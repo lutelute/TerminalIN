@@ -319,7 +319,7 @@ async function restoreSnappedWindows(ws, persistedList) {
 }
 
 // ── Space / Display 移動: workspace + snapped ターミナルを丸ごと移動 ──
-async function moveWorkspaceToDisplay(direction) {
+async function moveWorkspaceToSpace(direction) {
   // フォーカス中の workspace を特定
   const focused = BrowserWindow.getFocusedWindow();
   let ws = null;
@@ -332,10 +332,18 @@ async function moveWorkspaceToDisplay(direction) {
   }
   if (!ws || !ws.win || ws.win.isDestroyed()) return;
 
-  // stabilize guard を発動して、移動中に snapped が外れないようにする
+  // 1. stabilize guard — 移動中に poll が snap を外さないようにする
   beginStabilize('space-move');
 
-  // snapped external windows を daemon 経由で Space 移動
+  // 2. sidebar + overlay を全 Space で表示 (移動先でも見えるように)
+  const allElectronWins = [ws.win];
+  if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) allElectronWins.push(ws.gridOverlay);
+  for (const [, gw] of ws.gridWindows) {
+    if (gw.win && !gw.win.isDestroyed()) allElectronWins.push(gw.win);
+  }
+  for (const w of allElectronWins) w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+
+  // 3. snapped external windows を daemon 経由で別 Space に移動
   const windowCmds = [...ws.snappedExternals.values()].map(info => ({
     windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
   }));
@@ -343,7 +351,19 @@ async function moveWorkspaceToDisplay(direction) {
     await daemonRequest('move-to-space', { windows: windowCmds, direction });
   }
 
-  console.log(`[tin] moved workspace "${ws.name}" to space (direction=${direction}, ${windowCmds.length} windows)`);
+  // 4. Ctrl+→/← でユーザーの Space を切り替え
+  const keyCode = direction > 0 ? 124 : 123; // 124=Right, 123=Left
+  await runOsascript(`tell application "System Events" to key code ${keyCode} using control down`, 2000);
+
+  // 5. 少し待ってから sidebar を現在の Space に固定
+  setTimeout(() => {
+    for (const w of allElectronWins) {
+      try { w.setVisibleOnAllWorkspaces(false); } catch {}
+    }
+    // retile で位置を確定
+    retileAll(ws);
+    console.log(`[tin] space-move complete: "${ws.name}" (${windowCmds.length} windows)`);
+  }, 800);
 }
 
 // ── Batch restore (全 workspace の復元を1回の daemon 呼び出しでまとめる) ──
@@ -1996,8 +2016,8 @@ app.whenReady().then(() => {
         raiseAllWorkspaceWindows(nextWs, true);
       }},
       { type: 'separator' },
-      { label: 'Move to Next Space', accelerator: 'CmdOrCtrl+Shift+Right', click: () => moveWorkspaceToDisplay(1) },
-      { label: 'Move to Prev Space', accelerator: 'CmdOrCtrl+Shift+Left', click: () => moveWorkspaceToDisplay(-1) },
+      { label: 'Move to Next Space', accelerator: 'CmdOrCtrl+Shift+Right', click: () => moveWorkspaceToSpace(1) },
+      { label: 'Move to Prev Space', accelerator: 'CmdOrCtrl+Shift+Left', click: () => moveWorkspaceToSpace(-1) },
       { type: 'separator' },
       { role: 'front' },
     ]},
