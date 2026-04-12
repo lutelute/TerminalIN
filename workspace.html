@@ -242,6 +242,33 @@
   body.compact #status { padding: 4px 8px; font-size: 9px; }
   body.compact .term-embed { height: 150px; }
 
+  /* 復元バナー (再起動直後に表示) */
+  .restore-banner {
+    margin: 6px 8px 0; padding: 6px 8px;
+    font-size: 10px; line-height: 1.4;
+    border-radius: 5px;
+    background: rgba(60, 160, 90, 0.08);
+    border: 1px solid rgba(60, 160, 90, 0.25);
+    color: rgba(40, 120, 70, 0.9);
+  }
+  .restore-banner.has-missing {
+    background: rgba(210, 150, 40, 0.09);
+    border-color: rgba(210, 150, 40, 0.3);
+    color: rgba(170, 110, 30, 0.95);
+  }
+  .restore-banner .rb-header {
+    font-weight: 700; font-size: 10px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .restore-banner .rb-close {
+    cursor: pointer; padding: 0 4px; font-size: 12px;
+    color: rgba(0,0,0,0.3);
+  }
+  .restore-banner .rb-close:hover { color: rgba(0,0,0,0.7); }
+  .restore-banner ul { list-style: none; padding: 0; margin: 3px 0 0; }
+  .restore-banner li { font-size: 9px; padding: 1px 0; color: inherit; opacity: 0.85; }
+  body.compact .restore-banner { display: none; }
+
 </style>
 </head>
 <body>
@@ -304,6 +331,80 @@ ipcRenderer.on('workspace-info', (_e, info) => {
   wsId = info.id;
   wsName = info.name;
   titleEl.textContent = wsName;
+});
+
+// 復元時の snapped Map 初期化 (main 側で既に配置済みの窓を renderer に知らせる)
+ipcRenderer.on('hydrate-snapped', (_e, list) => {
+  for (const entry of (list || [])) {
+    snappedExternals.set(entry.windowNumber, { title: entry.title, app: entry.app });
+  }
+  lastExtIdentity = ''; // force re-render on next poll
+  render();
+});
+
+// 復元結果バナー (再起動時のみ)
+let restoreBanner = null;
+let lastRestoreReport = null;  // 最新のレポートを保持 (render 後の再描画に使う)
+
+function renderRestoreBanner() {
+  if (!lastRestoreReport) return;
+  // 既存バナーを削除
+  const existing = document.querySelector('.restore-banner');
+  if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+  const { restored = [], missing = [] } = lastRestoreReport;
+  const total = restored.length + missing.length;
+  if (total === 0) return;
+  try {
+    const banner = document.createElement('div');
+    banner.className = 'restore-banner' + (missing.length > 0 ? ' has-missing' : '');
+    const title = missing.length > 0
+      ? `\u26a0 復元: ${restored.length} 件 / ${missing.length} 件スキップ`
+      : `\u2713 復元完了: ${restored.length} 件`;
+    const header = document.createElement('div');
+    header.className = 'rb-header';
+    header.innerHTML = `<span>${title}</span><span class="rb-close" title="Dismiss">\u00d7</span>`;
+    banner.appendChild(header);
+    if (missing.length > 0) {
+      const ul = document.createElement('ul');
+      for (const m of missing.slice(0, 5)) {
+        const li = document.createElement('li');
+        const t = (m.title || 'untitled').substring(0, 35);
+        li.textContent = `\u2022 ${m.app}: ${t}`;
+        ul.appendChild(li);
+      }
+      if (missing.length > 5) {
+        const li = document.createElement('li');
+        li.textContent = `... \u4ed6 ${missing.length - 5} 件`;
+        ul.appendChild(li);
+      }
+      banner.appendChild(ul);
+    }
+    header.querySelector('.rb-close').addEventListener('click', () => {
+      if (banner.parentNode) banner.parentNode.removeChild(banner);
+      lastRestoreReport = null;
+    });
+    // content の直前 (body 内の titlebar と content の間) に挿入
+    if (content && content.parentNode) {
+      content.parentNode.insertBefore(banner, content);
+    }
+    restoreBanner = banner;
+  } catch (e) {
+    console.warn('[tin] renderRestoreBanner failed:', e.message);
+  }
+}
+
+ipcRenderer.on('restore-report', (_e, report) => {
+  lastRestoreReport = report;
+  renderRestoreBanner();
+  // 自動消去 (missing が無ければ 8 秒後)
+  const { missing = [] } = report || {};
+  if (missing.length === 0) {
+    setTimeout(() => {
+      const b = document.querySelector('.restore-banner');
+      if (b && b.parentNode) b.parentNode.removeChild(b);
+      lastRestoreReport = null;
+    }, 8000);
+  }
 });
 
 // ── Sidebar embedded terminals ──

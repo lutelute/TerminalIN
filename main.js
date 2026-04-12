@@ -28,6 +28,12 @@ const TIN_CAPABILITIES = ['snap', 'raise', 'workspace', 'grid-terminal', 'window
 const INTEGRATION_DIR = path.join(app.getPath('userData'));
 const INFO_JSON = path.join(INTEGRATION_DIR, 'info.json');
 const SNAPPED_JSON = path.join(INTEGRATION_DIR, 'snapped.json');
+// workspace 永続化ファイル (再起動時に復帰するため)。
+// info.json / snapped.json は外部ツール連携用、これは TiN 内部用。
+const WORKSPACES_JSON = path.join(INTEGRATION_DIR, 'workspaces.json');
+const WORKSPACES_FORMAT_VERSION = 1;
+// 保存済みセッションが古すぎる場合は復元しない閾値 (24時間)
+const WORKSPACES_STALE_MS = 24 * 60 * 60 * 1000;
 const TIN_START_TIME = Date.now();
 
 function atomicWriteJSON(filePath, obj) {
@@ -96,6 +102,188 @@ function scheduleSyncSnapped(delay = 80) {
     _syncTimer = null;
     try { writeSnappedJson(); } catch {}
   }, delay);
+}
+
+// ── Workspace 永続化 ──
+// 再起動時に snap / grid config / sidebar 位置を復帰するために
+// `workspaces.json` に定期的に書き出す。
+function writeWorkspacesJson() {
+  const payload = {
+    version: WORKSPACES_FORMAT_VERSION,
+    savedAt: Date.now(),
+    workspaces: [],
+  };
+  for (const [, ws] of workspaces) {
+    if (!ws || !ws.win || ws.win.isDestroyed()) continue;
+    const b = ws.win.getBounds();
+    const snapped = [];
+    for (const [, info] of ws.snappedExternals) {
+      snapped.push({
+        windowNumber: info.windowNumber,
+        app: info.app,
+        pid: info.pid,
+        title: info.title,
+        windowIndex: info.windowIndex || 0,
+        slot: info.slot,
+        origX: info.origX, origY: info.origY,
+        origW: info.origW, origH: info.origH,
+        snappedAt: info.snappedAt || 0,
+      });
+    }
+    payload.workspaces.push({
+      name: ws.name,
+      sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
+      grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800 },
+      snappedExternals: snapped,
+    });
+  }
+  atomicWriteJSON(WORKSPACES_JSON, payload);
+}
+
+let _saveWsTimer = null;
+function scheduleSaveWorkspaces(delay = 500) {
+  // quit 進行中は空の状態で上書きしないよう保存をスキップ
+  // (before-quit で同期的に writeWorkspacesJson を呼ぶので最終状態は保存済み)
+  if (app.isQuitting) return;
+  if (_saveWsTimer) clearTimeout(_saveWsTimer);
+  _saveWsTimer = setTimeout(() => {
+    _saveWsTimer = null;
+    if (app.isQuitting) return;
+    try { writeWorkspacesJson(); } catch (e) { console.warn('[tin] save workspaces failed:', e.message); }
+  }, delay);
+}
+
+function loadPersistedWorkspaces() {
+  try {
+    if (!fs.existsSync(WORKSPACES_JSON)) return null;
+    const raw = fs.readFileSync(WORKSPACES_JSON, 'utf-8');
+    const data = JSON.parse(raw);
+    if (!data || data.version !== WORKSPACES_FORMAT_VERSION) return null;
+    if (typeof data.savedAt !== 'number') return null;
+    // 古すぎるセッションは復元しない (24h 経過)
+    const ageMs = Date.now() - data.savedAt;
+    if (ageMs > WORKSPACES_STALE_MS) {
+      console.log(`[tin] persisted workspaces are stale (${Math.round(ageMs/3600000)}h old), skipping restore`);
+      return null;
+    }
+    if (!Array.isArray(data.workspaces) || data.workspaces.length === 0) return null;
+    return data;
+  } catch (e) {
+    console.warn('[tin] loadPersistedWorkspaces failed:', e.message);
+    return null;
+  }
+}
+
+// 復元対象のウィンドウを現在の live list に match させる。
+// 優先度: windowNumber → (app + title 完全一致) → (app + title 前方 40 文字一致)
+function matchPersistedToLive(persisted, liveWindows) {
+  // 1. windowNumber で厳密一致
+  const byNum = liveWindows.find(w => w.windowNumber === persisted.windowNumber);
+  if (byNum) return byNum;
+  // 2. app + title 完全一致
+  const byFull = liveWindows.find(w => w.app === persisted.app && w.title === persisted.title);
+  if (byFull) return byFull;
+  // 3. app + title 前方 40 文字一致
+  if (persisted.title && persisted.title.length > 0) {
+    const prefix = persisted.title.slice(0, Math.min(40, persisted.title.length));
+    const byPrefix = liveWindows.find(w =>
+      w.app === persisted.app &&
+      w.title && w.title.startsWith(prefix)
+    );
+    if (byPrefix) return byPrefix;
+  }
+  return null;
+}
+
+// 永続化された snapped エントリを現在のウィンドウにマッチさせ、grid に配置する。
+// 結果 (復元成功/失敗) を renderer に送って通知バナーを表示させる。
+async function restoreSnappedWindows(ws, persistedList) {
+  if (!ws || !ws.win || ws.win.isDestroyed()) return;
+  if (!persistedList || persistedList.length === 0) return;
+
+  // daemon.list を取得 (最大 2 回リトライ: daemon 起動遅延対策)
+  let liveWindows = [];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    liveWindows = await listWindows();
+    if (liveWindows.length > 0) break;
+    await new Promise(r => setTimeout(r, 400));
+  }
+
+  const restored = [];
+  const missing = [];
+  const moveCmds = [];
+
+  for (const p of persistedList) {
+    const live = matchPersistedToLive(p, liveWindows);
+    if (!live) {
+      missing.push({ app: p.app, title: p.title, slot: p.slot });
+      continue;
+    }
+    // slot は保存時のもの — 競合しないかチェック
+    if (ws.snappedExternals.has(live.windowNumber)) continue;
+    const total = ws.gridCols * ws.gridRows;
+    let slot = p.slot;
+    if (slot >= total) {
+      // grid サイズが縮んでる可能性 → 空きスロットに割当
+      slot = nextFreeSlot(ws);
+      if (slot < 0) {
+        missing.push({ app: p.app, title: p.title, slot: p.slot, reason: 'no-slot' });
+        continue;
+      }
+    }
+    // 既にそのスロットを使っている window があればスキップ (保守的)
+    let slotOccupied = false;
+    for (const [, info] of ws.snappedExternals) {
+      if (info.slot === slot) { slotOccupied = true; break; }
+    }
+    if (slotOccupied) {
+      slot = nextFreeSlot(ws);
+      if (slot < 0) {
+        missing.push({ app: p.app, title: p.title, slot: p.slot, reason: 'no-slot' });
+        continue;
+      }
+    }
+    ws.snappedExternals.set(live.windowNumber, {
+      app: live.app, pid: live.pid, title: live.title,
+      windowNumber: live.windowNumber, windowIndex: live.windowIndex || 0, slot,
+      origX: p.origX, origY: p.origY, origW: p.origW, origH: p.origH,
+      snappedAt: p.snappedAt || Date.now(),
+    });
+    const pos = getSlotBounds(ws, slot);
+    if (pos) {
+      moveCmds.push({
+        windowNumber: live.windowNumber, pid: live.pid,
+        app: live.app, title: live.title, ...pos,
+      });
+    }
+    restored.push({ app: live.app, title: live.title, slot });
+  }
+
+  // まとめて move (daemon 経由、1 回の呼び出しで全件)
+  if (moveCmds.length > 0) {
+    await batchMove(moveCmds);
+  }
+
+  // renderer にレポート送信 (サイドバー上部にバナー表示)
+  // restored にはマッチした windowNumber/app/title を入れて renderer の
+  // snappedExternals Map を初期化させる
+  try {
+    ws.win.webContents.send('restore-report', {
+      restored, missing,
+      savedAgoMinutes: Math.round((Date.now() - (ws._savedAt || Date.now())) / 60000),
+    });
+    // renderer の snappedExternals Map を初期化するための別 IPC
+    const hydrate = [];
+    for (const [wn, info] of ws.snappedExternals) {
+      hydrate.push({ windowNumber: wn, title: info.title, app: info.app });
+    }
+    ws.win.webContents.send('hydrate-snapped', hydrate);
+  } catch {}
+
+  // サイドバー側の snappedExternals Map も同期するため
+  // external-windows 更新を即座に trigger (pollTimer を待たずに)
+  scheduleSyncSnapped();
+  console.log(`[tin] restored ${restored.length} snapped windows, ${missing.length} missing`);
 }
 
 // ── Workspace registry ──
@@ -630,6 +818,7 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
   // Raise only the snapped window + TiN sidebar.
   await raiseAllWorkspaceWindows(ws, true);
   scheduleSyncSnapped();
+  scheduleSaveWorkspaces();
   return { ok: true, slot };
 });
 
@@ -651,6 +840,7 @@ ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
   // Same reason as snap: restore TiN to the top after external move.
   await raiseAllWorkspaceWindows(ws, true);
   scheduleSyncSnapped();
+  scheduleSaveWorkspaces();
   return { ok: true };
 });
 
@@ -699,11 +889,15 @@ ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
     ws.gridOverlay.webContents.send('update-grid', { cols, rows });
   }
   retileAll(ws);
+  scheduleSaveWorkspaces();
 });
 
 ipcMain.on('rename-workspace', (event, { name }) => {
   const ws = findWorkspace(event.sender);
-  if (ws) ws.name = name;
+  if (ws) {
+    ws.name = name;
+    scheduleSaveWorkspaces();
+  }
 });
 
 ipcMain.on('toggle-collapse', (event, { collapsed }) => {
@@ -723,17 +917,27 @@ ipcMain.on('toggle-collapse', (event, { collapsed }) => {
 });
 
 // ── Create workspace ──
-function createWorkspace(name) {
+// savedState: { sidebar:{x,y,w,h}, grid:{cols,rows,width}, snappedExternals:[...] }
+// 再起動時の復帰用。渡されれば sidebar 位置 / grid 構成 / snappedExternals が
+// 保存済みの値で初期化される。
+function createWorkspace(name, savedState) {
   const wsId = nextWsId++;
   const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
   const ww = 300, wh = 650;
   const offset = (wsId - 1) * 30;
 
+  // sidebar 位置: saved state があればそれを、なければデフォルト
+  const savedSidebar = savedState && savedState.sidebar;
+  const winX = savedSidebar ? savedSidebar.x : 50 + offset;
+  const winY = savedSidebar ? savedSidebar.y : Math.round((sh - wh) / 2) + offset;
+  const winW = savedSidebar && savedSidebar.width ? savedSidebar.width : ww;
+  const winH = savedSidebar && savedSidebar.height ? savedSidebar.height : wh;
+
   const win = new BrowserWindow({
-    width: ww, height: wh,
+    width: winW, height: winH,
     minWidth: 200, maxWidth: 500, minHeight: 300,
-    x: 50 + offset,
-    y: Math.round((sh - wh) / 2) + offset,
+    x: winX,
+    y: winY,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 12, y: 10 },
     vibrancy: 'sidebar',
@@ -743,7 +947,8 @@ function createWorkspace(name) {
     webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
   });
 
-  const wsName = name || `Workspace ${wsId}`;
+  const wsName = name || (savedState && savedState.name) || `Workspace ${wsId}`;
+  const savedGrid = savedState && savedState.grid;
   const ws = {
     id: wsId, win, name: wsName,
     snappedExternals: new Map(),
@@ -753,10 +958,15 @@ function createWorkspace(name) {
     pollTimer: null,
     moveThrottle: null,
     overlayThrottle: null,
-    gridCols: 2, gridRows: 2, // default 2x2
-    gridWidth: 800, // tracked separately — overlay getBounds is unreliable
+    gridCols: savedGrid ? (savedGrid.cols || 2) : 2,
+    gridRows: savedGrid ? (savedGrid.rows || 2) : 2,
+    gridWidth: savedGrid ? (savedGrid.width || 800) : 800,
   };
   workspaces.set(wsId, ws);
+  // 復元対象の snapped エントリを deferred に処理する (daemon + sidebar 準備後)
+  if (savedState && Array.isArray(savedState.snappedExternals) && savedState.snappedExternals.length > 0) {
+    ws._pendingRestore = savedState.snappedExternals;
+  }
 
 
   // ── Grid overlay (semi-transparent resizable area) ──
@@ -805,6 +1015,13 @@ function createWorkspace(name) {
   win.loadFile('workspace.html');
   win.webContents.on('did-finish-load', () => {
     win.webContents.send('workspace-info', { id: wsId, name: wsName });
+    // 復元対象があればここで実行 (renderer が準備完了後に実ウィンドウを配置)
+    if (ws._pendingRestore) {
+      const pending = ws._pendingRestore;
+      delete ws._pendingRestore;
+      // daemon が ready するまで少し待ってから実行
+      setTimeout(() => { restoreSnappedWindows(ws, pending).catch(e => console.warn('[tin] restore failed:', e.message)); }, 800);
+    }
   });
 
   if (process.argv.includes('--dev')) win.webContents.openDevTools({ mode: 'detach' });
@@ -829,6 +1046,9 @@ function createWorkspace(name) {
   };
   win.on('move', scheduleRetile);
   win.on('resize', scheduleRetile);
+  // sidebar 位置/サイズ変更も永続化対象
+  win.on('moved', () => scheduleSaveWorkspaces());
+  win.on('resize', () => scheduleSaveWorkspaces());
 
   // Title cache: windowNumber -> title
   // パッケージ版では daemon binary が Screen Recording 権限を持たないため
@@ -946,19 +1166,25 @@ function createWorkspace(name) {
       if (gw.win && !gw.win.isDestroyed()) gw.win.close();
     }
     ws.gridWindows.clear();
-    // Release externals
-    const cmds = [];
-    for (const [, info] of ws.snappedExternals) {
-      cmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
-        x: info.origX, y: info.origY, width: info.origW, height: info.origH });
+    // **重要**: アプリ全体の quit 時は外部ウィンドウを元位置に戻さない。
+    // workspaces.json に保存されているので次回起動で復元される。
+    // ユーザーが個別にワークスペースを閉じた場合 (Cmd+Shift+W etc.) のみ
+    // 元位置に戻す (ユーザー意図として release 扱い)。
+    if (!app.isQuitting) {
+      const cmds = [];
+      for (const [, info] of ws.snappedExternals) {
+        cmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
+          x: info.origX, y: info.origY, width: info.origW, height: info.origH });
+      }
+      if (cmds.length) await osascriptMove(cmds);
     }
-    if (cmds.length) await batchMove(cmds);
     ws.snappedExternals.clear();
     // Kill sidebar PTYs
     for (const [, p] of ws.sidebarPtys) { try { p.kill(); } catch {} }
     ws.sidebarPtys.clear();
     ws.win = null;
     workspaces.delete(wsId);
+    scheduleSaveWorkspaces();
   });
 
   return ws;
@@ -1024,6 +1250,7 @@ ipcMain.on('resize-overlay', (event, { width, height }) => {
       const sb = ws.win.getBounds();
       ws.gridOverlay.setBounds({ x: sb.x + sb.width + 12, y: sb.y, width, height });
       ws.gridWidth = width; // track for getGridArea
+      scheduleSaveWorkspaces();
       return;
     }
   }
@@ -1312,13 +1539,26 @@ app.whenReady().then(() => {
     ]},
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-  createWorkspace();
+
+  // 永続化された workspace 状態があれば復元、なければデフォルトを作成
+  const persisted = loadPersistedWorkspaces();
+  if (persisted && persisted.workspaces.length > 0) {
+    console.log(`[tin] restoring ${persisted.workspaces.length} workspace(s) from workspaces.json`);
+    for (const wsData of persisted.workspaces) {
+      createWorkspace(wsData.name, wsData);
+    }
+  } else {
+    createWorkspace();
+  }
 });
 
 app.on('before-quit', () => {
   app.isQuitting = true;
+  // quit 前に workspace 状態を確実に書き出す (debounce timer を待たない)
+  try { writeWorkspacesJson(); } catch (e) { console.warn('[tin] final save failed:', e.message); }
   if (daemon) { try { daemon.kill(); } catch {} daemon = null; }
   // 統合ステートファイルのクリーンアップ (クライアントが "TiN 未起動" と判定できるように)
+  // workspaces.json は残す (次回起動で復元するため)
   try { if (fs.existsSync(INFO_JSON)) fs.unlinkSync(INFO_JSON); } catch {}
   try { if (fs.existsSync(SNAPPED_JSON)) fs.unlinkSync(SNAPPED_JSON); } catch {}
 });
