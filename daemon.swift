@@ -49,15 +49,47 @@ func getCGWindowID(_ win: AXUIElement) -> CGWindowID? {
 }
 
 func findWindow(in windows: [AXUIElement], windowNumber: Int?, title: String?, windowIndex: Int?) -> AXUIElement? {
+    // 1. CGWindowID (最も確実だが Screen Recording 権限が必要)
     if let wn = windowNumber {
         for win in windows { if let wid = getCGWindowID(win), wid == CGWindowID(wn) { return win } }
     }
+    // 2. タイトル完全一致 → 前方一致
     if let title = title, !title.isEmpty {
         for win in windows { if getWindowTitle(win) == title { return win } }
         let prefix = String(title.prefix(min(40, title.count)))
         for win in windows { if let t = getWindowTitle(win), t.hasPrefix(prefix) { return win } }
     }
+    // 3. CGWindowList の position と AX の position を照合 (Screen Recording 不要)
+    if let wn = windowNumber {
+        if let cgPos = getCGWindowPosition(windowNumber: wn) {
+            for win in windows {
+                var posRef: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(win, kAXPositionAttribute as CFString, &posRef) == .success,
+                      let axValue = posRef else { continue }
+                var axPoint = CGPoint.zero
+                if AXValueGetValue(axValue as! AXValue, .cgPoint, &axPoint) {
+                    if abs(axPoint.x - cgPos.x) < 5 && abs(axPoint.y - cgPos.y) < 5 {
+                        return win
+                    }
+                }
+            }
+        }
+    }
+    // 4. windowIndex フォールバック
     if let idx = windowIndex, idx < windows.count { return windows[idx] }
+    return nil
+}
+
+// CGWindowList から特定 windowNumber の position を取得
+func getCGWindowPosition(windowNumber: Int) -> CGPoint? {
+    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+    for w in list {
+        if let wn = w[kCGWindowNumber as String] as? Int, wn == windowNumber,
+           let bounds = w[kCGWindowBounds as String] as? [String: CGFloat],
+           let x = bounds["X"], let y = bounds["Y"] {
+            return CGPoint(x: x, y: y)
+        }
+    }
     return nil
 }
 
@@ -100,10 +132,12 @@ func handleMove(_ windows: [[String: Any]], positionOnly: Bool = false) -> Any {
         let windowNumber = cmd["windowNumber"] as? Int
         guard let appInfo = getApp(pid: pid, name: appName) else {
             if let wn = windowNumber { failed.append(wn) }
+            // getApp failed
             continue
         }
         guard let win = findWindow(in: appInfo.windows, windowNumber: windowNumber, title: cmd["title"] as? String, windowIndex: cmd["windowIndex"] as? Int) else {
             if let wn = windowNumber { failed.append(wn) }
+            // findWindow failed
             continue
         }
 
