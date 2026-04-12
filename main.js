@@ -1724,6 +1724,42 @@ async function loadPreset(filename) {
   }
 }
 
+// テキスト入力ダイアログ (IME 対応)
+function promptTextInput(title, label, defaultValue = '') {
+  return new Promise((resolve) => {
+    const w = new BrowserWindow({
+      width: 400, height: 160, resizable: false,
+      titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 12, y: 12 },
+      webPreferences: { nodeIntegration: true, contextIsolation: false },
+    });
+    const html = `<!DOCTYPE html><html><head><style>
+      body{font-family:-apple-system,sans-serif;padding:38px 20px 16px;background:#fff}
+      label{font-size:13px;font-weight:600;color:#333;display:block;margin-bottom:8px}
+      input{width:100%;padding:7px 10px;font-size:13px;border:1px solid #ccc;border-radius:6px;outline:none}
+      input:focus{border-color:#4a90d9}
+      .btns{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
+      button{padding:5px 16px;border-radius:6px;font-size:13px;cursor:pointer;border:1px solid #ccc;background:#f5f5f5}
+      button.ok{background:#2563eb;color:#fff;border-color:#2563eb}
+    </style></head><body>
+      <label>${label}</label>
+      <input id="v" value="${defaultValue.replace(/"/g, '&quot;')}" />
+      <div class="btns">
+        <button onclick="require('electron').ipcRenderer.send('_prompt_result','')">キャンセル</button>
+        <button class="ok" onclick="require('electron').ipcRenderer.send('_prompt_result',document.getElementById('v').value.trim())">OK</button>
+      </div>
+      <script>
+        const inp=document.getElementById('v');inp.focus();inp.select();
+        inp.addEventListener('keydown',e=>{if(e.isComposing||e.keyCode===229)return;if(e.key==='Enter')require('electron').ipcRenderer.send('_prompt_result',inp.value.trim());if(e.key==='Escape')require('electron').ipcRenderer.send('_prompt_result','')});
+      </script>
+    </body></html>`;
+    w.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    w.setTitle(title);
+    const handler = (_e, val) => { ipcMain.removeListener('_prompt_result', handler); w.close(); resolve(val || null); };
+    ipcMain.on('_prompt_result', handler);
+    w.on('closed', () => { ipcMain.removeListener('_prompt_result', handler); resolve(null); });
+  });
+}
+
 ipcMain.handle('save-preset', async (_event, { name }) => savePreset(name));
 ipcMain.handle('list-presets', async () => listPresets());
 ipcMain.handle('load-preset', async (_event, { filename }) => loadPreset(filename));
@@ -1863,18 +1899,12 @@ app.whenReady().then(() => {
         require('child_process').exec(`open "${autoSnap.CONFIG_FILE}"`);
       }},
       { type: 'separator' },
-      { label: 'Save Workspace Preset...', accelerator: 'CmdOrCtrl+Shift+S', click: async () => {
-        const { response, returnValue } = await dialog.showMessageBox({
-          type: 'question', title: 'Save Preset', message: 'プリセット名を入力',
-          buttons: ['保存', 'キャンセル'], defaultId: 0,
-          inputText: `Preset ${new Date().toLocaleDateString('ja')}`,
-        });
-        // Electron の showMessageBox は inputText をサポートしないので簡易名で保存
-        if (response === 0) {
-          const name = `Preset ${new Date().toLocaleString('ja').replace(/[\/: ]/g, '-')}`;
+      { label: 'Save Workspace Preset...', accelerator: 'CmdOrCtrl+Shift+S', click: () => {
+        promptTextInput('Save Preset', 'プリセット名', `Preset ${new Date().toLocaleDateString('ja')}`).then(name => {
+          if (!name) return;
           const r = savePreset(name);
-          if (r.ok) dialog.showMessageBox({ type: 'info', title: 'Preset Saved', message: `"${name}" を保存しました` });
-        }
+          if (r.ok) dialog.showMessageBox({ type: 'info', title: 'Saved', message: `"${name}" を保存しました` });
+        });
       }},
       { label: 'Load Workspace Preset...', click: async () => {
         const presets = listPresets();
