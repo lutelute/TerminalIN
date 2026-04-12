@@ -347,6 +347,7 @@ function commitRename() {
 }
 titleInput.addEventListener('blur', commitRename);
 titleInput.addEventListener('keydown', (e) => {
+  if (e.isComposing || e.keyCode === 229) return; // IME 変換中はスキップ
   if (e.key === 'Enter') commitRename();
   if (e.key === 'Escape') { titleInput.value = wsName; commitRename(); }
 });
