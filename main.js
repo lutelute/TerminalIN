@@ -19,6 +19,9 @@ const pkg = require('./package.json');
 
 // Always enable remote debugging for MCP integration
 app.commandLine.appendSwitch('remote-debugging-port', '9222');
+// 低消費電力モード / App Nap で daemon 通信や pollTimer が throttle されるのを防止
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
 
 // ── Integration protocol (docs/PROTOCOL.md) ──
 // 外部ツール (AtelierX plugin 等) と連携するための状態ファイル書き出し。
@@ -945,7 +948,7 @@ function createWorkspace(name, savedState) {
     visualEffectState: 'active',
     alwaysOnTop: false,
     acceptFirstMouse: true,
-    webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
+    webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false, backgroundThrottling: false },
   });
 
   const wsName = name || (savedState && savedState.name) || `Workspace ${wsId}`;

@@ -1,6 +1,6 @@
 {
   "name": "tin",
-  "version": "1.2.10",
+  "version": "1.2.11",
   "description": "Terminal workspace manager for macOS",
   "main": "main.js",
   "scripts": {
@@ -36,7 +36,9 @@
       ],
       "extendInfo": {
         "NSAppleEventsUsageDescription": "TiN は Terminal / Finder など外部ウィンドウを snap / wobble / raise するために System Events を使用します。",
-        "NSAccessibilityUsageDescription": "TiN は外部ウィンドウの位置とサイズを制御するためにアクセシビリティが必要です。"
+        "NSAccessibilityUsageDescription": "TiN は外部ウィンドウの位置とサイズを制御するためにアクセシビリティが必要です。",
+        "NSSupportsAutomaticTermination": false,
+        "NSSupportsSuddenTermination": false
       }
     },
     "files": [
