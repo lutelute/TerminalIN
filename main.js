@@ -1889,7 +1889,19 @@ app.whenReady().then(() => {
         if (!targets.length) targets = [...workspaces.values()].filter(ws => ws.win && !ws.win.isDestroyed());
         for (const ws of targets) {
           ensureOnScreen(ws);
-          try { await retileAll(ws); } catch {}
+          // 強制 retile: osascript 経由で Terminal.app のサイズ制約を突破
+          const moveCmds = [];
+          for (const [slot, gw] of ws.gridWindows) {
+            if (gw.win && !gw.win.isDestroyed()) {
+              const b = getSlotBounds(ws, slot);
+              if (b) gw.win.setBounds(b);
+            }
+          }
+          for (const [, info] of ws.snappedExternals) {
+            const b = getSlotBounds(ws, info.slot);
+            if (b) moveCmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
+          }
+          if (moveCmds.length) await osascriptMove(moveCmds);
         }
       }},
       { type: 'separator' },
