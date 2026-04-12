@@ -223,6 +223,58 @@ func handleVerify(_ windows: [[String: Any]]) -> Any {
     return ["alive": alive]
 }
 
+// ── Spaces (仮想デスクトップ) 移動 — macOS プライベート API ──
+// CGSMainConnectionID / CGSCopyManagedDisplaySpaces / CGSMoveWindowsToManagedSpace
+@_silgen_name("CGSMainConnectionID")
+func CGSMainConnectionID() -> Int32
+
+@_silgen_name("CGSCopyManagedDisplaySpaces")
+func CGSCopyManagedDisplaySpaces(_ cid: Int32) -> CFArray
+
+@_silgen_name("CGSMoveWindowsToManagedSpace")
+func CGSMoveWindowsToManagedSpace(_ cid: Int32, _ windows: CFArray, _ space: Int64)
+
+@_silgen_name("CGSGetActiveSpace")
+func CGSGetActiveSpace(_ cid: Int32) -> Int64
+
+func getAllSpaces() -> [Int64] {
+    let cid = CGSMainConnectionID()
+    guard let displays = CGSCopyManagedDisplaySpaces(cid) as? [[String: Any]] else { return [] }
+    var spaces: [Int64] = []
+    for display in displays {
+        if let spaceList = display["Spaces"] as? [[String: Any]] {
+            for space in spaceList {
+                if let id = space["id64"] as? Int64 {
+                    spaces.append(id)
+                } else if let id = space["ManagedSpaceID"] as? Int64 {
+                    spaces.append(id)
+                }
+            }
+        }
+    }
+    return spaces
+}
+
+func handleMoveToSpace(_ windows: [[String: Any]], direction: Int) -> Any {
+    let cid = CGSMainConnectionID()
+    let currentSpace = CGSGetActiveSpace(cid)
+    let allSpaces = getAllSpaces()
+    guard allSpaces.count > 1 else { return ["error": "only 1 space"] }
+    guard let currentIdx = allSpaces.firstIndex(of: currentSpace) else { return ["error": "current space not found"] }
+    let nextIdx = (currentIdx + direction + allSpaces.count) % allSpaces.count
+    let targetSpace = allSpaces[nextIdx]
+
+    // windowNumber → CGWindowID で移動
+    var moved = 0
+    for cmd in windows {
+        guard let wn = cmd["windowNumber"] as? Int else { continue }
+        let arr = [CGWindowID(wn)] as CFArray
+        CGSMoveWindowsToManagedSpace(cid, arr, targetSpace)
+        moved += 1
+    }
+    return ["moved": moved, "targetSpace": targetSpace, "direction": direction]
+}
+
 // ── Main loop ──
 setbuf(stdout, nil)
 let readyData = try! JSONSerialization.data(withJSONObject: ["ready": true], options: [])
@@ -241,6 +293,7 @@ while let line = readLine() {
     case "raise": result = handleRaise(json["windows"] as? [[String: Any]] ?? [])
     case "wobble": result = handleWobble(json["windows"] as? [[String: Any]] ?? [])
     case "verify": result = handleVerify(json["windows"] as? [[String: Any]] ?? [])
+    case "move-to-space": result = handleMoveToSpace(json["windows"] as? [[String: Any]] ?? [], direction: json["direction"] as? Int ?? 1)
     default: result = ["error": "unknown command"]
     }
     let response: [String: Any] = ["id": reqId, "result": result]
