@@ -1,8 +1,9 @@
-const { app, BrowserWindow, ipcMain, screen, Menu, powerMonitor } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Menu, powerMonitor, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const pty = require('node-pty');
 const { spawn, exec, execFile } = require('child_process');
+const autoSnap = require('./auto-snap');
 
 // 非同期 osascript 実行。execSync だと main process が完全にブロックされ
 // sidebar のドラッグ/クリックが最大数秒フリーズする (macOS Automation 権限
@@ -1600,6 +1601,60 @@ if (!gotLock) {
   });
 }
 
+// ── Auto Snap (AI クラスタリング) ──
+async function triggerAutoSnap() {
+  // 全 workspace から snapped 済みの windowNumber を収集
+  const snappedSet = new Set();
+  for (const [, ws] of workspaces) {
+    for (const k of ws.snappedExternals.keys()) snappedSet.add(k);
+  }
+  // available (未 snap) ウィンドウを取得
+  const allWindows = await listWindows();
+  const available = allWindows.filter(w => !snappedSet.has(w.windowNumber));
+  if (available.length === 0) {
+    dialog.showMessageBox({ type: 'info', title: 'Auto Snap', message: 'スナップ可能なウィンドウがありません。' });
+    return;
+  }
+  // 進行中通知を全 workspace に送信
+  for (const [, ws] of workspaces) {
+    if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('auto-snap-status', { status: 'working', count: available.length });
+  }
+  const result = await autoSnap.executeAutoSnap(
+    available,
+    (name) => createWorkspace(name),
+    async (ws, w) => {
+      const slot = nextFreeSlot(ws);
+      if (slot < 0) return;
+      ws.snappedExternals.set(w.windowNumber, {
+        app: w.app, pid: w.pid, title: w.title, windowNumber: w.windowNumber,
+        windowIndex: w.windowIndex || 0, slot,
+        origX: w.x, origY: w.y, origW: w.width, origH: w.height,
+        snappedAt: Date.now(),
+      });
+      snappedIndexAdd(w.windowNumber, ws);
+      const pos = getSlotBounds(ws, slot);
+      if (pos) await batchMove([{ windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title, ...pos }]);
+    }
+  );
+  // 結果通知
+  for (const [, ws] of workspaces) {
+    if (ws.win && !ws.win.isDestroyed()) {
+      ws.win.webContents.send('auto-snap-status', {
+        status: result.error ? 'error' : 'done',
+        error: result.error,
+        created: result.created,
+      });
+    }
+  }
+  if (result.error) {
+    dialog.showMessageBox({ type: 'error', title: 'Auto Snap', message: result.error });
+  } else {
+    scheduleSyncSnapped();
+    scheduleSaveWorkspaces();
+    console.log(`[tin] auto-snap: created ${result.created.length} groups`);
+  }
+}
+
 // ── App ──
 app.isQuitting = false;
 
@@ -1658,6 +1713,12 @@ app.whenReady().then(() => {
           ensureOnScreen(ws);
           try { await retileAll(ws); } catch {}
         }
+      }},
+      { type: 'separator' },
+      { label: 'Auto Snap (AI)', accelerator: 'CmdOrCtrl+Shift+G', click: () => triggerAutoSnap() },
+      { label: 'Edit Auto-Snap Config...', click: () => {
+        autoSnap.ensureConfig();
+        require('child_process').exec(`open "${autoSnap.CONFIG_FILE}"`);
       }},
     ]},
     { label: 'Edit', submenu: [{ role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },

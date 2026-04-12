@@ -22,8 +22,14 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [
-        { "target": "dir", "arch": "arm64" },
-        { "target": "zip", "arch": "arm64" }
+        {
+          "target": "dir",
+          "arch": "arm64"
+        },
+        {
+          "target": "zip",
+          "arch": "arm64"
+        }
       ],
       "identity": null,
       "icon": "icon.icns",
@@ -34,7 +40,12 @@
         }
       ],
       "protocols": [
-        { "name": "TiN URL", "schemes": ["tin"] }
+        {
+          "name": "TiN URL",
+          "schemes": [
+            "tin"
+          ]
+        }
       ],
       "extendInfo": {
         "NSAppleEventsUsageDescription": "TiN は Terminal / Finder など外部ウィンドウを snap / wobble / raise するために System Events を使用します。",
@@ -45,10 +56,12 @@
     },
     "files": [
       "main.js",
+      "auto-snap.js",
       "workspace.html",
       "grid-terminal.html",
       "grid-overlay.html",
       "package.json",
+      "node_modules/@anthropic-ai/**",
       "node_modules/@xterm/**",
       "node_modules/node-pty/**",
       "!atelierx-plugin/**",
@@ -65,6 +78,7 @@
     "electron-builder": "^26.8.1"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.88.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "node-pty": "^1.1.0"
