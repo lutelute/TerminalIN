@@ -1933,7 +1933,7 @@ app.whenReady().then(() => {
         }
       }},
       { type: 'separator' },
-      { label: 'Auto Snap (AI) — All', accelerator: 'CmdOrCtrl+Shift+G', click: () => triggerAutoSnap({ filter: 'all' }) },
+      { label: 'Auto Snap (AI)', accelerator: 'CmdOrCtrl+Shift+G', click: () => triggerAutoSnap({ filter: 'terminal' }) },
       { label: 'Edit Auto-Snap Config...', click: () => {
         autoSnap.ensureConfig();
         require('child_process').exec(`open "${autoSnap.CONFIG_FILE}"`);
