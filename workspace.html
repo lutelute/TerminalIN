@@ -635,7 +635,7 @@ function render() {
     aiBtn.textContent = 'AI';
     aiBtn.title = 'AI Auto Snap';
     aiBtn.style.marginLeft = 'auto';
-    aiBtn.addEventListener('click', () => ipcRenderer.send('trigger-auto-snap', { filter: 'all' }));
+    aiBtn.addEventListener('click', () => ipcRenderer.send('trigger-auto-snap', { filter: 'terminal' }));
     extTitle.appendChild(aiBtn);
     _availSection.appendChild(extTitle);
 
