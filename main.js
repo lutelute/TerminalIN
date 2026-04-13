@@ -1831,6 +1831,17 @@ async function triggerAutoSnap(opts = {}) {
       if (pos) await batchMove([{ windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title, ...pos }]);
     }
   );
+  // renderer に snapped 情報を送信 (GRID 欄に反映させる)
+  if (!result.error) {
+    for (const [, ws] of workspaces) {
+      if (!ws.win || ws.win.isDestroyed()) continue;
+      const hydrate = [];
+      for (const [wn, info] of ws.snappedExternals) {
+        hydrate.push({ windowNumber: wn, title: info.title, app: info.app });
+      }
+      ws.win.webContents.send('hydrate-snapped', hydrate);
+    }
+  }
   // 結果通知
   for (const [, ws] of workspaces) {
     if (ws.win && !ws.win.isDestroyed()) {
