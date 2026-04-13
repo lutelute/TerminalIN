@@ -977,7 +977,11 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
   scheduleSyncSnapped(0);
   const t1 = Date.now();
   const pos = getSlotBounds(ws, slot);
-  if (pos) await batchMove([{ windowNumber, pid, app: appName, title, ...pos }]);
+  if (pos) {
+    await batchMove([{ windowNumber, pid, app: appName, title, ...pos }]);
+    // Terminal.app のサイズ制約対策: osascript で size を非同期補完
+    osascriptMove([{ windowNumber, pid, app: appName, title, ...pos }]).catch(() => {});
+  }
   const t2 = Date.now();
   scheduleSaveWorkspaces();
   await raiseAllWorkspaceWindows(ws, true);
