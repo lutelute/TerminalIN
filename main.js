@@ -329,55 +329,7 @@ async function restoreSnappedWindows(ws, persistedList) {
 }
 
 // ── Space / Display 移動: workspace + snapped ターミナルを丸ごと移動 ──
-async function moveWorkspaceToSpace(direction) {
-  // フォーカス中の workspace を特定
-  const focused = BrowserWindow.getFocusedWindow();
-  let ws = null;
-  for (const [, w] of workspaces) {
-    if (w.win === focused || w.gridOverlay === focused) { ws = w; break; }
-    for (const [, gw] of w.gridWindows) {
-      if (gw.win === focused) { ws = w; break; }
-    }
-    if (ws) break;
-  }
-  if (!ws || !ws.win || ws.win.isDestroyed()) return;
-
-  // 1. stabilize guard — 移動中に poll が snap を外さないようにする
-  beginStabilize('space-move');
-
-  // 2. sidebar + overlay を全 Space で表示 (移動先でも見えるように)
-  const allElectronWins = [ws.win];
-  if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) allElectronWins.push(ws.gridOverlay);
-  for (const [, gw] of ws.gridWindows) {
-    if (gw.win && !gw.win.isDestroyed()) allElectronWins.push(gw.win);
-  }
-  for (const w of allElectronWins) w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-
-  // 3. snapped external windows を native addon で別 Space に移動
-  const windowNumbers = [...ws.snappedExternals.values()].map(info => info.windowNumber);
-  if (windowNumbers.length > 0 && axHelper) {
-    try {
-      const moved = axHelper.moveToSpace(windowNumbers, direction);
-      console.log(`[tin] moveToSpace: ${moved} windows moved`);
-    } catch (e) {
-      console.warn('[tin] moveToSpace failed:', e.message);
-    }
-  }
-
-  // 4. Ctrl+→/← でユーザーの Space を切り替え
-  const keyCode = direction > 0 ? 124 : 123; // 124=Right, 123=Left
-  await runOsascript(`tell application "System Events" to key code ${keyCode} using control down`, 2000);
-
-  // 5. 少し待ってから sidebar を現在の Space に固定
-  setTimeout(() => {
-    for (const w of allElectronWins) {
-      try { w.setVisibleOnAllWorkspaces(false); } catch {}
-    }
-    // retile で位置を確定
-    retileAll(ws);
-    console.log(`[tin] space-move complete: "${ws.name}" (${windowCmds.length} windows)`);
-  }, 800);
-}
+// Spaces 移動は #5 で別途対応 (プライベート API で不安定のため一旦削除)
 
 // ── Batch restore (全 workspace の復元を1回の daemon 呼び出しでまとめる) ──
 let _restoreTimer = null;
@@ -2033,8 +1985,6 @@ app.whenReady().then(() => {
         raiseAllWorkspaceWindows(nextWs, true);
       }},
       { type: 'separator' },
-      { label: 'Move to Next Space', accelerator: 'CmdOrCtrl+Shift+Right', click: () => moveWorkspaceToSpace(1) },
-      { label: 'Move to Prev Space', accelerator: 'CmdOrCtrl+Shift+Left', click: () => moveWorkspaceToSpace(-1) },
       { type: 'separator' },
       { role: 'front' },
     ]},
