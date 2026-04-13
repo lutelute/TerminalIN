@@ -353,19 +353,15 @@ async function moveWorkspaceToSpace(direction) {
   }
   for (const w of allElectronWins) w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
-  // 3. snapped external windows を daemon 経由で別 Space に移動
-  const windowCmds = [...ws.snappedExternals.values()].map(info => ({
-    windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
-  }));
-  // Spaces 移動: osascript で CGS プライベート API を呼ぶ (daemon に組み込まない)
-  if (windowCmds.length > 0) {
-    const wnList = windowCmds.map(c => c.windowNumber).join(',');
-    await runOsascript(`
-      use framework "Foundation"
-      use scripting additions
-      -- This is a JXA placeholder; actual CGS calls require ObjC bridge
-      -- For now, rely on the Space switch below
-    `, 1000);
+  // 3. snapped external windows を native addon で別 Space に移動
+  const windowNumbers = [...ws.snappedExternals.values()].map(info => info.windowNumber);
+  if (windowNumbers.length > 0 && axHelper) {
+    try {
+      const moved = axHelper.moveToSpace(windowNumbers, direction);
+      console.log(`[tin] moveToSpace: ${moved} windows moved`);
+    } catch (e) {
+      console.warn('[tin] moveToSpace failed:', e.message);
+    }
   }
 
   // 4. Ctrl+→/← でユーザーの Space を切り替え
