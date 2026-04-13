@@ -5,6 +5,16 @@ const pty = require('node-pty');
 const { spawn, exec, execFile } = require('child_process');
 const autoSnap = require('./auto-snap');
 
+// N-API native addon: AXUIElement 操作を Electron main process 内で直接実行。
+// TiN.app の TCC 権限をそのまま使用 — daemon バイナリ不要。
+let axHelper = null;
+try {
+  axHelper = require('./build/Release/ax_helper.node');
+  console.log('[tin] ax_helper loaded — native AX mode');
+} catch (e) {
+  console.warn('[tin] ax_helper not available, using daemon/osascript fallback:', e.message);
+}
+
 // 非同期 osascript 実行。execSync だと main process が完全にブロックされ
 // sidebar のドラッグ/クリックが最大数秒フリーズする (macOS Automation 権限
 // チェック中に osascript がブロックするため特に顕著)。execFile はコマンドを
@@ -507,14 +517,22 @@ function daemonRequest(cmd, extra = {}) {
   });
 }
 
-function listWindows() { return daemonRequest('list'); }
+function listWindows() {
+  if (axHelper) {
+    try { return Promise.resolve(axHelper.listWindows()); } catch {}
+  }
+  return daemonRequest('list');
+}
 
 // Fire-and-forget: daemon に move を送るが応答を待たない。
 // sidebar ドラッグ中のリアルタイム retile 用。応答待ちで event loop を
 // ブロックしないので、次の move イベントをすぐ処理できる。
-// ドラッグ中の fire-and-forget move (daemon 優先)
+// ドラッグ中の fire-and-forget move (native addon 優先)
 function fireAndForgetMove(windows, positionOnly = false) {
   if (!windows.length) return;
+  if (axHelper) {
+    try { axHelper.moveWindows(windows, positionOnly); return; } catch {}
+  }
   if (daemon && daemonReady) {
     try {
       const id = String(nextReqId++);
@@ -615,21 +633,29 @@ function normalizeAppName(name) {
 // daemon の AX 状態を覚えておき、untrusted と確認できたら以降は daemon を呼ばず
 // 直接 osascript fallback に行く (パッケージ版の rebuild 直後に TCC の cdhash が
 // 変わって権限が外れるため)。
-// move: daemon を第一経路、osascript を fallback。
-// daemon の AX 権限が必要 — install.sh で自動付与。
 async function batchMove(cmds) {
   if (!cmds.length) return;
   const t0 = Date.now();
+  // 1. N-API addon (最速、TiN.app の TCC を直接使用)
+  if (axHelper) {
+    try {
+      const moved = axHelper.moveWindows(cmds, false);
+      const dt = Date.now() - t0;
+      if (dt > 30) console.log(`[tin] batchMove(native): ${dt}ms ${cmds.length}win moved=${moved}`);
+      if (moved === cmds.length) return;
+    } catch {}
+  }
+  // 2. daemon fallback
   const result = await daemonRequest('move', { windows: cmds });
   if (result && typeof result.moved === 'number' && result.moved === cmds.length) {
     const dt = Date.now() - t0;
     if (dt > 30) console.log(`[tin] batchMove(daemon): ${dt}ms ${cmds.length}win`);
     return;
   }
-  // daemon 失敗 → osascript fallback
+  // 3. osascript fallback
   await osascriptMove(cmds);
   const dt = Date.now() - t0;
-  if (dt > 50) console.log(`[tin] batchMove(fallback): ${dt}ms ${cmds.length}win`);
+  if (dt > 50) console.log(`[tin] batchMove(osascript): ${dt}ms ${cmds.length}win`);
 }
 
 // System Events を使ったウィンドウ移動 fallback。
