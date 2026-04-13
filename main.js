@@ -512,14 +512,19 @@ function listWindows() { return daemonRequest('list'); }
 // Fire-and-forget: daemon に move を送るが応答を待たない。
 // sidebar ドラッグ中のリアルタイム retile 用。応答待ちで event loop を
 // ブロックしないので、次の move イベントをすぐ処理できる。
-function daemonMoveFireAndForget(windows, positionOnly = false) {
-  if (!daemon || !daemonReady || !windows.length) return;
-  try {
-    const id = String(nextReqId++);
-    const msg = { id, cmd: 'move', windows };
-    if (positionOnly) msg.positionOnly = true;
-    daemon.stdin.write(JSON.stringify(msg) + '\n');
-  } catch {}
+// ドラッグ中の fire-and-forget move (daemon 優先)
+function fireAndForgetMove(windows, positionOnly = false) {
+  if (!windows.length) return;
+  if (daemon && daemonReady) {
+    try {
+      const id = String(nextReqId++);
+      const msg = { id, cmd: 'move', windows };
+      if (positionOnly) msg.positionOnly = true;
+      daemon.stdin.write(JSON.stringify(msg) + '\n');
+    } catch {}
+  } else {
+    osascriptMove(windows).catch(() => {});
+  }
 }
 
 // Verify windows still exist via AX (includes off-screen windows, unlike list)
@@ -610,36 +615,21 @@ function normalizeAppName(name) {
 // daemon の AX 状態を覚えておき、untrusted と確認できたら以降は daemon を呼ばず
 // 直接 osascript fallback に行く (パッケージ版の rebuild 直後に TCC の cdhash が
 // 変わって権限が外れるため)。
-// daemon AX: ラッチしない。毎回 daemon を試し、失敗分だけ osascript fallback。
-// _daemonAXUntrusted は UI バナー表示用のみ (動作制御には使わない)。
-let _daemonAXUntrusted = false;
-
+// move: daemon を第一経路、osascript を fallback。
+// daemon の AX 権限が必要 — install.sh で自動付与。
 async function batchMove(cmds) {
   if (!cmds.length) return;
   const t0 = Date.now();
   const result = await daemonRequest('move', { windows: cmds });
-  // daemon 応答がない (未 ready 等) → fallback
-  if (!result || typeof result.moved !== 'number') {
-    await osascriptMove(cmds);
+  if (result && typeof result.moved === 'number' && result.moved === cmds.length) {
+    const dt = Date.now() - t0;
+    if (dt > 30) console.log(`[tin] batchMove(daemon): ${dt}ms ${cmds.length}win`);
     return;
   }
-  // 全件成功
+  // daemon 失敗 → osascript fallback
+  await osascriptMove(cmds);
   const dt = Date.now() - t0;
-  if (dt > 30) console.log(`[tin] batchMove: ${dt}ms moved=${result.moved} failed=${JSON.stringify(result.failed)} axTrusted=${result.axTrusted}`);
-  if (result.moved === cmds.length && (!Array.isArray(result.failed) || result.failed.length === 0)) {
-    return;
-  }
-  // 全件失敗 → fallback
-  if (result.moved === 0) {
-    await osascriptMove(cmds);
-    return;
-  }
-  // 一部失敗 → 失敗分だけ fallback
-  if (Array.isArray(result.failed) && result.failed.length > 0) {
-    const failedSet = new Set(result.failed);
-    const retry = cmds.filter(c => failedSet.has(c.windowNumber));
-    if (retry.length) await osascriptMove(retry);
-  }
+  if (dt > 50) console.log(`[tin] batchMove(fallback): ${dt}ms ${cmds.length}win`);
 }
 
 // System Events を使ったウィンドウ移動 fallback。
@@ -671,8 +661,7 @@ async function osascriptMove(cmds) {
     }).filter(Boolean).join('\n');
     if (!lines) continue;
     const script = `tell application "System Events" to tell process "${appName}"\n${lines}\nend tell`;
-    // タイムアウト: 1.5s (3s だと体感が重い。タイムアウトしたら諦めて次へ)
-    jobs.push(runOsascript(script, 1500));
+    jobs.push(runOsascript(script, 3000));
   }
   if (jobs.length) await Promise.all(jobs);
 }
@@ -685,6 +674,7 @@ async function osascriptMove(cmds) {
 // アクティブ化すると TiN がその後ろに隠れてしまうため。
 async function raiseSpecificWindows(cmds) {
   if (!cmds.length) return;
+  // daemon raise を試み、失敗時は osascript fallback
   let retry = cmds;
   {
     const result = await daemonRequest('raise', { windows: cmds });
@@ -692,9 +682,7 @@ async function raiseSpecificWindows(cmds) {
       if (result.raised === cmds.length && (!Array.isArray(result.failed) || result.failed.length === 0)) {
         return;
       }
-      if (result.axTrusted === false && result.raised === 0) {
-        // fall through to osascript
-      } else if (Array.isArray(result.failed) && result.failed.length > 0) {
+      if (Array.isArray(result.failed) && result.failed.length > 0) {
         const failedSet = new Set(result.failed);
         retry = cmds.filter(c => failedSet.has(c.windowNumber));
       } else {
@@ -835,7 +823,7 @@ async function retileAll(ws, fireAndForget = false) {
 
   if (moveCmds.length) {
     if (fireAndForget) {
-      daemonMoveFireAndForget(moveCmds);
+      fireAndForgetMove(moveCmds);
     } else {
       await batchMove(moveCmds);
     }
@@ -1273,7 +1261,7 @@ function createWorkspace(name, savedState) {
       const b = getSlotBounds(ws, info.slot);
       if (b) moveCmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
     }
-    if (moveCmds.length) daemonMoveFireAndForget(moveCmds, true);
+    if (moveCmds.length) fireAndForgetMove(moveCmds, true);
   };
   win.on('move', onSidebarMove);
   win.on('resize', onSidebarMove);

@@ -33,8 +33,9 @@ if [ -f "$APP_DST/$DAEMON_REL" ] && [ -f "$APP_SRC/$DAEMON_REL" ]; then
     PRESERVE_DAEMON=1
     echo "[install] daemon unchanged — preserving Accessibility authorization"
   else
-    echo "[install] daemon changed — TCC リセット中..."
-  tccutil reset Accessibility com.shigenoburyuto.tin 2>/dev/null || true
+    echo "[install] daemon changed — TCC リセット + Accessibility 設定画面を開きます"
+    tccutil reset Accessibility com.shigenoburyuto.tin 2>/dev/null || true
+    NEED_AX=1
   fi
 fi
 
@@ -70,3 +71,13 @@ else
   echo "[install] (復元ログなし — workspace が少ないか daemon 未 ready)"
 fi
 echo "[install] daemon: $(echo '{"cmd":"move","id":"1","windows":[]}' | "$APP_DST/$DAEMON_REL" 2>/dev/null | grep axTrusted | head -1)"
+
+if [ "${NEED_AX:-0}" = "1" ]; then
+  echo ""
+  echo "⚠  daemon が変更されました。高速 snap のために以下を実行してください:"
+  echo "   1. TiN の Accessibility 許可プロンプトが出たら許可"
+  echo "   2. システム設定 > アクセシビリティ に daemon を追加"
+  echo "   → Finder で daemon を表示します..."
+  open -R "$APP_DST/$DAEMON_REL"
+  open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+fi
