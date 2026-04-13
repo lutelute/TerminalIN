@@ -629,14 +629,7 @@ function render() {
     const extTitle = document.createElement('div');
     extTitle.className = 'section-title';
     extTitle.innerHTML = `<span class="section-accent">AVAILABLE</span> (${available.length})`;
-    // AI Auto Snap ボタン
-    const aiBtn = document.createElement('button');
-    aiBtn.className = 'grid-opt';
-    aiBtn.textContent = 'AI';
-    aiBtn.title = 'AI Auto Snap';
-    aiBtn.style.marginLeft = 'auto';
-    aiBtn.addEventListener('click', () => ipcRenderer.send('trigger-auto-snap', { filter: 'terminal' }));
-    extTitle.appendChild(aiBtn);
+    // (AI ボタンは TERMINAL / FINDER サブセクションに個別配置)
     _availSection.appendChild(extTitle);
 
     const renderAvailItem = (w) => {
@@ -677,7 +670,10 @@ function render() {
       const subTitle = document.createElement('div');
       subTitle.className = 'subsection-title term section-title-clickable';
       subTitle.innerHTML = `<span class="section-toggle">${showTerminals ? '\u25be' : '\u25b8'}</span><span class="subsection-icon">\u2328\uFE0F</span>TERMINAL (${availableTerminal.length})`;
-      subTitle.addEventListener('click', () => { showTerminals = !showTerminals; render(); });
+      subTitle.addEventListener('click', (e) => { if (e.target.classList.contains('grid-opt')) return; showTerminals = !showTerminals; render(); });
+      const tAi = document.createElement('button'); tAi.className = 'grid-opt'; tAi.textContent = 'AI'; tAi.style.marginLeft = 'auto';
+      tAi.addEventListener('click', (e) => { e.stopPropagation(); ipcRenderer.send('trigger-auto-snap', { filter: 'terminal' }); });
+      subTitle.appendChild(tAi);
       _availSection.appendChild(subTitle);
       if (showTerminals) availableTerminal.forEach(w => _availSection.appendChild(renderAvailItem(w)));
     }
@@ -685,7 +681,10 @@ function render() {
       const subTitle = document.createElement('div');
       subTitle.className = 'subsection-title finder section-title-clickable';
       subTitle.innerHTML = `<span class="section-toggle">${showFinders ? '\u25be' : '\u25b8'}</span><span class="subsection-icon">\uD83D\uDCC2</span>FINDER (${availableFinder.length})`;
-      subTitle.addEventListener('click', () => { showFinders = !showFinders; render(); });
+      subTitle.addEventListener('click', (e) => { if (e.target.classList.contains('grid-opt')) return; showFinders = !showFinders; render(); });
+      const fAi = document.createElement('button'); fAi.className = 'grid-opt'; fAi.textContent = 'AI'; fAi.style.marginLeft = 'auto';
+      fAi.addEventListener('click', (e) => { e.stopPropagation(); ipcRenderer.send('trigger-auto-snap', { filter: 'finder' }); });
+      subTitle.appendChild(fAi);
       _availSection.appendChild(subTitle);
       if (showFinders) availableFinder.forEach(w => _availSection.appendChild(renderAvailItem(w)));
     }
