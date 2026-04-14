@@ -173,7 +173,7 @@ async function writeWorkspacesJson() {
     payload.workspaces.push({
       name: ws.name,
       sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
-      grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800, height: ws.gridHeight || 0 },
+      grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800, height: ws.gridHeight || 0, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
       colorIndex: ws.colorIndex,
       snappedExternals: snapped,
     });
@@ -727,13 +727,24 @@ function getSlotBounds(ws, slot) {
   if (!area) return null;
   const cols = ws.gridCols, rows = ws.gridRows;
   const gap = 4;
-  const cw = Math.floor((area.width - gap * (cols - 1)) / cols);
-  const ch = Math.floor((area.height - gap * (rows - 1)) / rows);
   const col = slot % cols, row = Math.floor(slot / cols);
+
+  // ratio ベースの計算 (未設定なら均等分割)
+  const colRatios = (ws.colRatios && ws.colRatios.length === cols) ? ws.colRatios : Array(cols).fill(1/cols);
+  const rowRatios = (ws.rowRatios && ws.rowRatios.length === rows) ? ws.rowRatios : Array(rows).fill(1/rows);
+
+  const totalW = area.width - gap * (cols - 1);
+  const totalH = area.height - gap * (rows - 1);
+
+  let xOff = 0, yOff = 0;
+  for (let i = 0; i < col; i++) xOff += totalW * colRatios[i] + gap;
+  for (let i = 0; i < row; i++) yOff += totalH * rowRatios[i] + gap;
+
   return {
-    x: area.x + col * (cw + gap),
-    y: area.y + row * (ch + gap),
-    width: cw, height: ch,
+    x: Math.round(area.x + xOff),
+    y: Math.round(area.y + yOff),
+    width: Math.round(totalW * colRatios[col]),
+    height: Math.round(totalH * rowRatios[row]),
   };
 }
 
@@ -1050,8 +1061,11 @@ ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
   if (!ws) return;
   ws.gridCols = cols;
   ws.gridRows = rows;
+  // grid サイズ変更時は ratio リセット
+  ws.colRatios = null;
+  ws.rowRatios = null;
   if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) {
-    ws.gridOverlay.webContents.send('update-grid', { cols, rows });
+    ws.gridOverlay.webContents.send('update-grid', { cols, rows, colRatios: null, rowRatios: null });
   }
   retileAll(ws);
   scheduleSaveWorkspaces();
@@ -1127,6 +1141,8 @@ function createWorkspace(name, savedState) {
     gridRows: savedGrid ? (savedGrid.rows || 2) : 2,
     gridWidth: savedGrid ? (savedGrid.width || 800) : 800,
     gridHeight: savedGrid ? (savedGrid.height || 0) : 0,
+    colRatios: savedGrid && savedGrid.colRatios ? savedGrid.colRatios : null,
+    rowRatios: savedGrid && savedGrid.rowRatios ? savedGrid.rowRatios : null,
     color: (savedState && savedState.colorIndex != null) ? WS_COLORS[savedState.colorIndex % WS_COLORS.length] : WS_COLORS[(wsId - 1) % WS_COLORS.length],
     colorIndex: (savedState && savedState.colorIndex != null) ? savedState.colorIndex : (wsId - 1) % WS_COLORS.length,
   };
@@ -1162,6 +1178,9 @@ function createWorkspace(name, savedState) {
     // Hide from macOS native Window menu listing (must be set via property, not constructor)
     overlay.excludedFromShownWindowsMenu = true;
     overlay.loadFile('grid-overlay.html');
+    overlay.webContents.on('did-finish-load', () => {
+      overlay.webContents.send('update-grid', { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios });
+    });
     // Force position after creation (transparent windows can drift)
     overlay.setBounds({ x: overlayX, y: overlayY, width: overlayW, height: overlayH });
     // Click-through by default — only handles are interactive
@@ -1502,6 +1521,52 @@ ipcMain.handle('get-overlay-bounds', (event) => {
   return null;
 });
 
+// Grid edit モード: ratio 更新 (ドラッグ中 fire-and-forget)
+ipcMain.on('update-grid-ratios', (event, { colRatios, rowRatios }) => {
+  for (const [, ws] of workspaces) {
+    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
+      ws.colRatios = colRatios;
+      ws.rowRatios = rowRatios;
+      // snapped windows を fire-and-forget で追従
+      const moveCmds = [];
+      for (const [, info] of ws.snappedExternals) {
+        const b = getSlotBounds(ws, info.slot);
+        if (b) moveCmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
+      }
+      // embedded grid 即座
+      for (const [slot, gw] of ws.gridWindows) {
+        if (gw.win && !gw.win.isDestroyed()) {
+          const b = getSlotBounds(ws, slot);
+          if (b) gw.win.setBounds(b);
+        }
+      }
+      if (moveCmds.length) fireAndForgetMove(moveCmds, true);
+      return;
+    }
+  }
+});
+
+// Grid edit 確定
+ipcMain.on('commit-grid-ratios', async (event, { colRatios, rowRatios }) => {
+  for (const [, ws] of workspaces) {
+    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
+      ws.colRatios = colRatios;
+      ws.rowRatios = rowRatios;
+      await retileAll(ws);
+      scheduleSaveWorkspaces();
+      return;
+    }
+  }
+});
+
+// Edit モード開始 (renderer からのリクエスト)
+ipcMain.on('enter-grid-edit', (event) => {
+  const ws = findWorkspace(event.sender);
+  if (ws && ws.gridOverlay && !ws.gridOverlay.isDestroyed()) {
+    ws.gridOverlay.webContents.send('enter-grid-edit-mode');
+  }
+});
+
 ipcMain.on('resize-overlay', (event, { width, height }) => {
   for (const [, ws] of workspaces) {
     if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
@@ -1724,7 +1789,7 @@ function savePreset(name) {
       data.workspaces.push({
         name: ws.name, colorIndex: ws.colorIndex,
         sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
-        grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800, height: ws.gridHeight || 0 },
+        grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800, height: ws.gridHeight || 0, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
         snappedExternals: snapped,
       });
     }
@@ -2064,7 +2129,7 @@ function writeWorkspacesJsonSync() {
     payload.workspaces.push({
       name: ws.name,
       sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
-      grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800, height: ws.gridHeight || 0 },
+      grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800, height: ws.gridHeight || 0, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
       colorIndex: ws.colorIndex,
       snappedExternals: snapped,
     });
