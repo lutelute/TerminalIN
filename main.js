@@ -502,7 +502,7 @@ function verifyWindows(cmds) { return daemonRequest('verify', { windows: cmds })
 // We set `stabilizingUntil` on these events to suppress release logic
 // for a while afterward.
 let stabilizingUntil = 0;
-const STABILIZE_MS = 15000;
+const STABILIZE_MS = 60000; // sleep 復帰時のウィンドウ番号変化に余裕を持たせる
 let retileAfterStabilize = null;
 function beginStabilize(reason) {
   stabilizingUntil = Date.now() + STABILIZE_MS;
@@ -800,6 +800,8 @@ async function retileAll(ws, fireAndForget = false) {
       fireAndForgetMove(moveCmds);
     } else {
       await batchMove(moveCmds);
+      // Terminal.app のサイズ制約対策: osascript で size を非同期補完
+      osascriptMove(moveCmds).catch(() => {});
     }
   }
 }
@@ -1338,14 +1340,42 @@ function createWorkspace(name, savedState) {
     }
     let snappedChanged = false;
     for (const [k, info] of ws.snappedExternals) {
-      const live = liveMap.get(k);
+      let live = liveMap.get(k);
+      // sleep 復帰等で windowNumber が変わった場合: title + app + pid で再マッチ
+      if (!live && info.title) {
+        for (const w of windows) {
+          if (w.app === info.app && w.title === info.title) { live = w; break; }
+        }
+        if (!live) {
+          // 前方一致でも試す
+          const prefix = info.title.slice(0, Math.min(40, info.title.length));
+          for (const w of windows) {
+            if (w.app === info.app && w.title && w.title.startsWith(prefix)) { live = w; break; }
+          }
+        }
+        if (live) {
+          // windowNumber を更新して再リンク
+          ws.snappedExternals.delete(k);
+          snappedIndexRemove(k);
+          info.windowNumber = live.windowNumber;
+          info.pid = live.pid;
+          ws.snappedExternals.set(live.windowNumber, info);
+          snappedIndexAdd(live.windowNumber, ws);
+          snappedChanged = true;
+          // 復元位置に再 snap
+          const pos = getSlotBounds(ws, info.slot);
+          if (pos) batchMove([{ windowNumber: live.windowNumber, pid: live.pid, app: info.app, title: info.title, ...pos }]).catch(() => {});
+          info._missCount = 0;
+          continue;
+        }
+      }
       if (!live) {
         if ((axAlive && axAlive.has(k)) || isStabilizing()) {
           info._missCount = 0;
           continue;
         }
         info._missCount = (info._missCount || 0) + 1;
-        if (info._missCount >= 8) {
+        if (info._missCount >= 30) {  // ~60秒 grace period
           ws.snappedExternals.delete(k);
           snappedIndexRemove(k);
           snappedChanged = true;
