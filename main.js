@@ -800,8 +800,6 @@ async function retileAll(ws, fireAndForget = false) {
       fireAndForgetMove(moveCmds);
     } else {
       await batchMove(moveCmds);
-      // Terminal.app のサイズ制約対策: osascript で size を非同期補完
-      osascriptMove(moveCmds).catch(() => {});
     }
   }
 }
@@ -1362,9 +1360,9 @@ function createWorkspace(name, savedState) {
           ws.snappedExternals.set(live.windowNumber, info);
           snappedIndexAdd(live.windowNumber, ws);
           snappedChanged = true;
-          // 復元位置に再 snap
+          // 復元位置に再 snap (fire-and-forget で event loop ブロックしない)
           const pos = getSlotBounds(ws, info.slot);
-          if (pos) batchMove([{ windowNumber: live.windowNumber, pid: live.pid, app: info.app, title: info.title, ...pos }]).catch(() => {});
+          if (pos) fireAndForgetMove([{ windowNumber: live.windowNumber, pid: live.pid, app: info.app, title: info.title, ...pos }]);
           info._missCount = 0;
           continue;
         }
