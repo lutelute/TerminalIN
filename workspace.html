@@ -558,6 +558,13 @@ function render() {
     btn.addEventListener('click', () => setGridSize(c, r));
     selector.appendChild(btn);
   });
+  // Edit Grid ボタン
+  const editBtn = document.createElement('button');
+  editBtn.className = 'grid-opt';
+  editBtn.textContent = '\u270f\ufe0f';
+  editBtn.title = 'Edit Grid Ratios';
+  editBtn.addEventListener('click', () => ipcRenderer.send('enter-grid-edit'));
+  selector.appendChild(editBtn);
   gridTitle.appendChild(selector);
   _gridSection.appendChild(gridTitle);
 

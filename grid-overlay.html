@@ -9,6 +9,7 @@
     background: rgba(30, 30, 50, 0.08);
     overflow: hidden;
   }
+  body.edit-mode { background: rgba(60, 120, 220, 0.1); }
   .frame {
     position: absolute;
     inset: 0;
@@ -16,6 +17,7 @@
     border-radius: 8px;
     pointer-events: none;
   }
+  body.edit-mode .frame { border-color: rgba(60, 130, 230, 0.6); }
   .grid-container {
     position: absolute;
     inset: 3px;
@@ -26,6 +28,7 @@
     border: 1px dashed rgba(100, 120, 180, 0.25);
     border-radius: 4px;
   }
+  body.edit-mode .grid-cell { border-color: rgba(60, 130, 230, 0.4); background: rgba(60, 130, 230, 0.04); }
   .handle {
     position: absolute;
     z-index: 10;
@@ -57,6 +60,52 @@
     transition: background 0.15s;
   }
   .handle-corner:hover { background: rgba(80, 130, 220, 0.6); }
+
+  /* ── Edit mode: ratio handles (col/row lines) ── */
+  .col-line, .row-line {
+    position: absolute;
+    background: rgba(60, 130, 230, 0.3);
+    z-index: 20;
+    transition: background 0.15s;
+  }
+  .col-line {
+    top: 3px; bottom: 3px;
+    width: 8px;
+    margin-left: -4px;
+    cursor: ew-resize;
+  }
+  .row-line {
+    left: 3px; right: 3px;
+    height: 8px;
+    margin-top: -4px;
+    cursor: ns-resize;
+  }
+  .col-line:hover, .row-line:hover { background: rgba(60, 130, 230, 0.7); }
+  .col-line.dragging, .row-line.dragging { background: rgba(60, 130, 230, 0.9); }
+
+  /* ── Edit toolbar ── */
+  #toolbar {
+    position: absolute;
+    top: 8px; left: 50%; transform: translateX(-50%);
+    background: rgba(255,255,255,0.95);
+    border: 1px solid rgba(0,0,0,0.15);
+    border-radius: 8px;
+    padding: 6px 10px;
+    display: none;
+    gap: 6px;
+    align-items: center;
+    z-index: 30;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+  body.edit-mode #toolbar { display: flex; }
+  #toolbar button {
+    padding: 4px 10px; border-radius: 5px; font-size: 11px; font-weight: 600;
+    cursor: pointer; border: 1px solid rgba(0,0,0,0.1); background: #f5f5f5;
+  }
+  #toolbar button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+  #toolbar button.primary:hover { background: #1d4ed8; }
+  #toolbar button:hover { background: #eee; }
+  #toolbar span { font-size: 11px; color: #666; margin-right: 4px; }
 </style>
 </head>
 <body>
@@ -65,13 +114,40 @@
 <div class="handle handle-right" id="h-right"></div>
 <div class="handle handle-bottom" id="h-bottom"></div>
 <div class="handle handle-corner" id="h-corner"></div>
+<div id="toolbar">
+  <span>Grid Edit</span>
+  <button onclick="resetRatios()">Reset</button>
+  <button class="primary" onclick="exitEditMode()">Done</button>
+</div>
 <script>
 const { ipcRenderer } = require('electron');
 
+let gridCols = 2, gridRows = 2;
+let colRatios = null, rowRatios = null;
+let editMode = false;
+
+function getCumulative(ratios, n) {
+  const cum = [0];
+  if (!ratios || ratios.length !== n) {
+    for (let i = 1; i <= n; i++) cum.push(i / n);
+  } else {
+    let s = 0;
+    for (let i = 0; i < n; i++) { s += ratios[i]; cum.push(s); }
+  }
+  return cum;
+}
+
 function renderGrid(cols, rows) {
+  gridCols = cols; gridRows = rows;
   const container = document.getElementById('grid');
-  container.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-  container.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+  const cumC = getCumulative(colRatios, cols);
+  const cumR = getCumulative(rowRatios, rows);
+  const colSizes = [];
+  for (let i = 0; i < cols; i++) colSizes.push(`${(cumC[i+1] - cumC[i]) * 100}%`);
+  const rowSizes = [];
+  for (let i = 0; i < rows; i++) rowSizes.push(`${(cumR[i+1] - cumR[i]) * 100}%`);
+  container.style.gridTemplateColumns = colSizes.join(' ');
+  container.style.gridTemplateRows = rowSizes.join(' ');
   container.style.gap = '4px';
   container.innerHTML = '';
   for (let i = 0; i < cols * rows; i++) {
@@ -79,10 +155,100 @@ function renderGrid(cols, rows) {
     cell.className = 'grid-cell';
     container.appendChild(cell);
   }
+  if (editMode) renderEditLines();
 }
 
-ipcRenderer.on('update-grid', (_e, { cols, rows }) => {
+function renderEditLines() {
+  document.querySelectorAll('.col-line, .row-line').forEach(el => el.remove());
+  if (!editMode) return;
+  const cumC = getCumulative(colRatios, gridCols);
+  const cumR = getCumulative(rowRatios, gridRows);
+  // col lines (gridCols - 1 本)
+  for (let i = 1; i < gridCols; i++) {
+    const line = document.createElement('div');
+    line.className = 'col-line';
+    line.style.left = `${cumC[i] * 100}%`;
+    line.dataset.index = i;
+    line.addEventListener('mousedown', (e) => startLineDrag(e, 'col', i));
+    document.body.appendChild(line);
+  }
+  // row lines
+  for (let i = 1; i < gridRows; i++) {
+    const line = document.createElement('div');
+    line.className = 'row-line';
+    line.style.top = `${cumR[i] * 100}%`;
+    line.dataset.index = i;
+    line.addEventListener('mousedown', (e) => startLineDrag(e, 'row', i));
+    document.body.appendChild(line);
+  }
+}
+
+function startLineDrag(e, type, index) {
+  e.preventDefault();
+  e.stopPropagation();
+  const target = e.currentTarget;
+  target.classList.add('dragging');
+  ipcRenderer.send('set-overlay-clickthrough', false);
+
+  const rect = document.body.getBoundingClientRect();
+  const totalSize = type === 'col' ? rect.width : rect.height;
+
+  const onMove = (ev) => {
+    const pos = (type === 'col' ? ev.clientX : ev.clientY);
+    const ratio = Math.max(0.05, Math.min(0.95, pos / totalSize));
+    // 隣接セルとの境界を制限
+    const cum = type === 'col' ? getCumulative(colRatios, gridCols) : getCumulative(rowRatios, gridRows);
+    const minR = cum[index - 1] + 0.05;
+    const maxR = cum[index + 1] - 0.05;
+    const clampedRatio = Math.max(minR, Math.min(maxR, ratio));
+    // ratio を更新
+    if (!colRatios) colRatios = Array(gridCols).fill(1/gridCols);
+    if (!rowRatios) rowRatios = Array(gridRows).fill(1/gridRows);
+    const arr = type === 'col' ? colRatios : rowRatios;
+    const prev = cum[index - 1];
+    const next = cum[index + 1];
+    arr[index - 1] = clampedRatio - prev;
+    arr[index] = next - clampedRatio;
+    renderGrid(gridCols, gridRows);
+    // main に送信 (fire-and-forget でターミナル追従)
+    ipcRenderer.send('update-grid-ratios', { colRatios, rowRatios });
+  };
+  const onUp = () => {
+    target.classList.remove('dragging');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    ipcRenderer.send('set-overlay-clickthrough', true);
+    // 最終確定
+    ipcRenderer.send('commit-grid-ratios', { colRatios, rowRatios });
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function resetRatios() {
+  colRatios = null; rowRatios = null;
+  renderGrid(gridCols, gridRows);
+  ipcRenderer.send('commit-grid-ratios', { colRatios: null, rowRatios: null });
+}
+
+function exitEditMode() {
+  editMode = false;
+  document.body.classList.remove('edit-mode');
+  document.querySelectorAll('.col-line, .row-line').forEach(el => el.remove());
+  ipcRenderer.send('set-overlay-clickthrough', true);
+}
+
+ipcRenderer.on('update-grid', (_e, { cols, rows, colRatios: cr, rowRatios: rr }) => {
+  colRatios = cr || null;
+  rowRatios = rr || null;
   renderGrid(cols, rows);
+});
+
+ipcRenderer.on('enter-grid-edit-mode', () => {
+  editMode = true;
+  document.body.classList.add('edit-mode');
+  ipcRenderer.send('set-overlay-clickthrough', false);
+  renderEditLines();
 });
 
 // ── Click-through with interactive handles ──
@@ -90,10 +256,8 @@ let interactive = false;
 let dragging = null;
 let dragStartX, dragStartY, startBounds;
 
-// Forwarded mousemove: check if over a handle via elementFromPoint
 document.addEventListener('mousemove', (e) => {
   if (dragging) {
-    // During drag, resize the overlay
     if (!startBounds) return;
     const dx = e.screenX - dragStartX;
     const dy = e.screenY - dragStartY;
@@ -103,10 +267,9 @@ document.addEventListener('mousemove', (e) => {
     ipcRenderer.send('resize-overlay', { width: w, height: h });
     return;
   }
-
+  if (editMode) return; // edit モード中は clickthrough 制御しない
   const el = document.elementFromPoint(e.clientX, e.clientY);
   const onHandle = el && el.classList.contains('handle');
-
   if (onHandle && !interactive) {
     interactive = true;
     ipcRenderer.send('set-overlay-clickthrough', false);
@@ -131,9 +294,10 @@ document.addEventListener('mouseup', () => {
   if (dragging) {
     dragging = null;
     startBounds = null;
-    // Re-enable click-through after drag
-    interactive = false;
-    ipcRenderer.send('set-overlay-clickthrough', true);
+    if (!editMode) {
+      interactive = false;
+      ipcRenderer.send('set-overlay-clickthrough', true);
+    }
   }
 });
 
