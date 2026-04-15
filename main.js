@@ -502,32 +502,64 @@ function verifyWindows(cmds) { return daemonRequest('verify', { windows: cmds })
 // We set `stabilizingUntil` on these events to suppress release logic
 // for a while afterward.
 let stabilizingUntil = 0;
-const STABILIZE_MS = 60000; // sleep 復帰時のウィンドウ番号変化に余裕を持たせる
+const STABILIZE_MS = 60000;
 let retileAfterStabilize = null;
+let recoveryTimers = [];
+
+// 再 snap: title + app で live window を探し、snap し直す
+async function recoverSnappedWindows() {
+  const allLive = await listWindows();
+  for (const [, ws] of workspaces) {
+    if (!ws.win || ws.win.isDestroyed()) continue;
+    ensureOnScreen(ws);
+    // 各 snapped について再リンク試行
+    const toRelink = [];
+    for (const [k, info] of ws.snappedExternals) {
+      if (allLive.find(w => w.windowNumber === k)) continue; // 既に生きている
+      // title + app で再検索
+      let live = allLive.find(w => w.app === info.app && w.title === info.title);
+      if (!live && info.title) {
+        const prefix = info.title.slice(0, Math.min(40, info.title.length));
+        live = allLive.find(w => w.app === info.app && w.title && w.title.startsWith(prefix));
+      }
+      if (live) toRelink.push({ oldKey: k, info, live });
+    }
+    // 再リンク実行
+    for (const { oldKey, info, live } of toRelink) {
+      ws.snappedExternals.delete(oldKey);
+      snappedIndexRemove(oldKey);
+      info.windowNumber = live.windowNumber;
+      info.pid = live.pid;
+      info._missCount = 0;
+      ws.snappedExternals.set(live.windowNumber, info);
+      snappedIndexAdd(live.windowNumber, ws);
+    }
+    if (toRelink.length > 0) console.log(`[tin] recovered ${toRelink.length} snapped in "${ws.name}"`);
+    // retile で現在の sidebar 位置に基づいて再配置
+    try { await retileAll(ws); } catch {}
+    // renderer 更新
+    const hydrate = [];
+    for (const [wn, info] of ws.snappedExternals) hydrate.push({ windowNumber: wn, title: info.title, app: info.app });
+    if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('hydrate-snapped', hydrate);
+  }
+}
+
 function beginStabilize(reason) {
   stabilizingUntil = Date.now() + STABILIZE_MS;
-  // Reset all miss counters on every workspace
   for (const [, ws] of workspaces) {
     for (const [, info] of ws.snappedExternals) info._missCount = 0;
   }
   console.log(`[tin] stabilizing for ${STABILIZE_MS}ms (reason: ${reason})`);
-  // After stabilization, reposition all snapped windows — display changes
-  // can leave them on the wrong coordinates even though they're still alive.
-  // Delay also helps when workspace sidebars have been moved to a still-
-  // valid display by the OS and we want their new bounds as the reference.
-  if (retileAfterStabilize) clearTimeout(retileAfterStabilize);
-  retileAfterStabilize = setTimeout(async () => {
-    retileAfterStabilize = null;
-    for (const [, ws] of workspaces) {
-      if (!ws.win || ws.win.isDestroyed()) continue;
-      // Ensure the sidebar itself is on a valid display — if its saved
-      // bounds are entirely off every connected display, move it to the
-      // primary display.
-      ensureOnScreen(ws);
-      try { await retileAll(ws); } catch {}
-    }
-    console.log('[tin] retiled after stabilize');
-  }, STABILIZE_MS + 500);
+  // 既存タイマー全部クリア
+  recoveryTimers.forEach(t => clearTimeout(t));
+  recoveryTimers = [];
+  // 段階的に復旧試行: 1秒, 3秒, 8秒, 20秒, 60秒
+  [1000, 3000, 8000, 20000, 60000].forEach(delay => {
+    const t = setTimeout(() => {
+      recoverSnappedWindows().catch(e => console.warn('[tin] recovery failed:', e.message));
+    }, delay);
+    recoveryTimers.push(t);
+  });
 }
 function isStabilizing() { return Date.now() < stabilizingUntil; }
 
