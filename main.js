@@ -1324,8 +1324,23 @@ function createWorkspace(name, savedState) {
   // snap/unsnap の即時操作には影響しない。snapped の grace period は 8 回 = ~16s。
   ws.pollTimer = setInterval(async () => {
     if (!ws.win || ws.win.isDestroyed()) return;
-    if (_dragging) return; // ドラッグ中は poll スキップ (daemon 競合防止)
+    if (_dragging) return;
     const windows = await listWindows();
+
+    // 大量消失検知: sleep 復帰 / ディスプレイ切替の watchdog
+    // snapped の 50%以上が CGWindowList から消えた → 自動で stabilize + 復旧
+    if (!isStabilizing() && ws.snappedExternals.size >= 2) {
+      const liveSet = new Set();
+      for (const w of windows) liveSet.add(w.windowNumber);
+      let missing = 0;
+      for (const k of ws.snappedExternals.keys()) {
+        if (!liveSet.has(k)) missing++;
+      }
+      if (missing / ws.snappedExternals.size >= 0.5) {
+        console.log(`[tin] watchdog: ${missing}/${ws.snappedExternals.size} missing → auto-recovery`);
+        beginStabilize('watchdog-mass-disappear');
+      }
+    }
     // Title fallback for packaged app: キャッシュヒットを先に適用
     if (windows.length > 0) {
       let hasUnknown = false;
