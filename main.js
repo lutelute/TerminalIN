@@ -6,13 +6,13 @@ const { spawn, exec, execFile } = require('child_process');
 const autoSnap = require('./auto-snap');
 
 // N-API native addon: AXUIElement 操作を Electron main process 内で直接実行。
-// TiN.app の TCC 権限をそのまま使用 — daemon バイナリ不要。
+// TiN.app の TCC 権限をそのまま使用。
 let axHelper = null;
 try {
   axHelper = require('./build/Release/ax_helper.node');
   console.log('[tin] ax_helper loaded — native AX mode');
 } catch (e) {
-  console.warn('[tin] ax_helper not available, using daemon/osascript fallback:', e.message);
+  console.warn('[tin] ax_helper not available, falling back to osascript:', e.message);
 }
 
 // 非同期 osascript 実行。execSync だと main process が完全にブロックされ
@@ -342,9 +342,6 @@ function scheduleRestoreAll() {
 }
 
 async function restoreAllPending() {
-  // daemon が ready するまで待つ
-  for (let i = 0; i < 5 && !daemonReady; i++) await new Promise(r => setTimeout(r, 300));
-
   // 1回だけ listWindows
   let liveWindows = [];
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -417,84 +414,37 @@ const workspaces = new Map();
 let nextWsId = 1;
 let nextPtyId = 1;
 
-// ── Swift daemon (list + move only) ──
-// パッケージ版: Contents/MacOS/daemon (アプリバンドルの一部として TCC に認識される)
-// dev 版: プロジェクトルートの daemon
-const DAEMON_BIN = app.isPackaged
-  ? path.join(path.dirname(process.execPath), 'daemon')
-  : path.join(__dirname, 'daemon');
-let daemon = null;
-let daemonReady = false;
-const pendingRequests = new Map();
-let nextReqId = 1;
-
 process.on('uncaughtException', (err) => { if (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED') return; });
 
-function startDaemon() {
-  daemon = spawn(DAEMON_BIN, [], { stdio: ['pipe', 'pipe', 'pipe'] });
-  daemon.stdin.on('error', () => {});
-  let buffer = '';
-  daemon.stdout.on('data', (chunk) => {
-    buffer += chunk.toString();
-    let idx;
-    while ((idx = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, idx).trim();
-      buffer = buffer.slice(idx + 1);
-      if (!line) continue;
-      try {
-        const msg = JSON.parse(line);
-        if (msg.ready) { daemonReady = true; continue; }
-        const pending = pendingRequests.get(msg.id);
-        if (pending) { clearTimeout(pending.timer); pendingRequests.delete(msg.id); pending.resolve(msg.result); }
-      } catch {}
-    }
-  });
-  daemon.stderr.on('data', (d) => process.stderr.write('[daemon] ' + d));
-  daemon.on('close', () => { daemonReady = false; if (!app.isQuitting) setTimeout(startDaemon, 500); });
-  daemon.on('error', () => {});
-}
-
-function daemonRequest(cmd, extra = {}) {
-  return new Promise((resolve) => {
-    if (!daemon || !daemonReady) return resolve(cmd === 'list' ? [] : {});
-    const id = String(nextReqId++);
-    const timer = setTimeout(() => { pendingRequests.delete(id); resolve(cmd === 'list' ? [] : {}); }, 3000);
-    pendingRequests.set(id, { resolve, timer });
-    try { daemon.stdin.write(JSON.stringify({ id, cmd, ...extra }) + '\n'); }
-    catch { pendingRequests.delete(id); clearTimeout(timer); resolve(cmd === 'list' ? [] : {}); }
-  });
-}
-
+// 外部ウィンドウ一覧 (snap/retile/auto-snap/release 処理用)。TiN 自身は除外して
+// 自己 snap などの副作用を防ぐ。
 function listWindows() {
+  if (axHelper) {
+    try {
+      const all = axHelper.listWindows();
+      return Promise.resolve(all.filter(w => w.app !== 'TiN'));
+    } catch {}
+  }
+  return Promise.resolve([]);
+}
+
+// UI 表示用 (available リスト)。TiN ウィンドウも含めて別 workspace への移動を可能にする。
+function listWindowsForUI() {
   if (axHelper) {
     try { return Promise.resolve(axHelper.listWindows()); } catch {}
   }
-  return daemonRequest('list');
+  return Promise.resolve([]);
 }
 
-// Fire-and-forget: daemon に move を送るが応答を待たない。
-// sidebar ドラッグ中のリアルタイム retile 用。応答待ちで event loop を
-// ブロックしないので、次の move イベントをすぐ処理できる。
-// ドラッグ中の fire-and-forget move (native addon 優先)
+// Fire-and-forget: sidebar ドラッグ中のリアルタイム retile 用。応答待ちで
+// event loop をブロックしないので、次の move イベントをすぐ処理できる。
 function fireAndForgetMove(windows, positionOnly = false) {
   if (!windows.length) return;
   if (axHelper) {
     try { axHelper.moveWindows(windows, positionOnly); return; } catch {}
   }
-  if (daemon && daemonReady) {
-    try {
-      const id = String(nextReqId++);
-      const msg = { id, cmd: 'move', windows };
-      if (positionOnly) msg.positionOnly = true;
-      daemon.stdin.write(JSON.stringify(msg) + '\n');
-    } catch {}
-  } else {
-    osascriptMove(windows).catch(() => {});
-  }
+  osascriptMove(windows).catch(() => {});
 }
-
-// Verify windows still exist via AX (includes off-screen windows, unlike list)
-function verifyWindows(cmds) { return daemonRequest('verify', { windows: cmds }); }
 
 // ── Stabilization guard ──
 // Display reconnection and sleep/resume cause windows to temporarily
@@ -596,27 +546,13 @@ function normalizeAppName(name) {
   return map[name] || name;
 }
 
-// Move windows: daemon (AX set, global coords) を第一経路、System Events
-// (osascript) を fallback として使う。
-//
-// **注意**: 以前 `tell application "Terminal" set bounds` fallback が
-// display-local 座標で解釈されるバグを起こしていたため完全廃止していたが、
-// パッケージ版 TiN.app では daemon バイナリが親アプリとは別 cdhash で adhoc
-// 署名されており、macOS の TCC がアクセシビリティ権限を daemon に継承しない
-// ケースがあることが判明した (v1.2.5 以降)。結果 daemon の AX set は silent
-// に失敗し snap が効かない。
-//
-// 復活させる fallback は **System Events の `set position`/`set size`** を
-// 使う。これは `set bounds` と違ってグローバル座標で動作するので旧バグを
-// 再発させない。System Events 自体は常にアクセシビリティ権限を保持している
-// ので、daemon が権限不足で失敗しても動かせる。
-// daemon の AX 状態を覚えておき、untrusted と確認できたら以降は daemon を呼ばず
-// 直接 osascript fallback に行く (パッケージ版の rebuild 直後に TCC の cdhash が
-// 変わって権限が外れるため)。
+// Move windows: N-API addon (AXUIElement、TiN.app の TCC を直接使用) を第一経路、
+// System Events (osascript) を fallback として使う。
+// osascript fallback は System Events の set position/set size で動作し、
+// set bounds と違ってグローバル座標で解釈される。
 async function batchMove(cmds) {
   if (!cmds.length) return;
   const t0 = Date.now();
-  // 1. N-API addon (最速、TiN.app の TCC を直接使用)
   if (axHelper) {
     try {
       const moved = axHelper.moveWindows(cmds, false);
@@ -625,14 +561,6 @@ async function batchMove(cmds) {
       if (moved === cmds.length) return;
     } catch {}
   }
-  // 2. daemon fallback
-  const result = await daemonRequest('move', { windows: cmds });
-  if (result && typeof result.moved === 'number' && result.moved === cmds.length) {
-    const dt = Date.now() - t0;
-    if (dt > 30) console.log(`[tin] batchMove(daemon): ${dt}ms ${cmds.length}win`);
-    return;
-  }
-  // 3. osascript fallback
   await osascriptMove(cmds);
   const dt = Date.now() - t0;
   if (dt > 50) console.log(`[tin] batchMove(osascript): ${dt}ms ${cmds.length}win`);
@@ -672,33 +600,24 @@ async function osascriptMove(cmds) {
   if (jobs.length) await Promise.all(jobs);
 }
 
-// Raise: daemon (fast) with osascript fallback.
-// daemon が AXRaise を使ってアプリをアクティブ化せず z-order だけ上げる。
-// パッケージ版で daemon の AX 権限が継承されない場合、silent fail するので
-// daemon が返す failed[] を元に System Events で再試行する。
+// Raise: N-API addon で AXRaise (対象アプリをアクティブ化せず z-order だけ上げる)。
+// native が一部失敗した場合のみ System Events で再試行する。
 // 注: fallback は `set frontmost to true` を **使わない** — 対象アプリ全体を
 // アクティブ化すると TiN がその後ろに隠れてしまうため。
 async function raiseSpecificWindows(cmds) {
   if (!cmds.length) return;
-  // daemon raise を試み、失敗時は osascript fallback
-  let retry = cmds;
-  {
-    const result = await daemonRequest('raise', { windows: cmds });
-    if (result && typeof result.raised === 'number') {
-      if (result.raised === cmds.length && (!Array.isArray(result.failed) || result.failed.length === 0)) {
-        return;
-      }
-      if (Array.isArray(result.failed) && result.failed.length > 0) {
-        const failedSet = new Set(result.failed);
-        retry = cmds.filter(c => failedSet.has(c.windowNumber));
-      } else {
-        return;
-      }
-    }
+  const t0 = Date.now();
+  if (axHelper) {
+    try {
+      const raised = axHelper.raiseWindows(cmds);
+      const dt = Date.now() - t0;
+      if (dt > 30) console.log(`[tin] raise(native): ${dt}ms ${cmds.length}win raised=${raised}`);
+      if (raised === cmds.length) return;
+    } catch {}
   }
-  // daemon 応答なし or 一部失敗 → System Events fallback (非同期)
+  // osascript fallback (AXRaise via System Events)
   const byApp = new Map();
-  for (const cmd of retry) {
+  for (const cmd of cmds) {
     if (!cmd.app) continue;
     const normalizedApp = normalizeAppName(cmd.app);
     if (!byApp.has(normalizedApp)) byApp.set(normalizedApp, []);
@@ -911,6 +830,8 @@ function createGridTerminal(ws, slot) {
   const gw = { win: gridWin, pty: p, ptyId, slot };
   ws.gridWindows.set(slot, gw);
 
+  gridWin.on('page-title-updated', (e) => e.preventDefault());
+  gridWin.setTitle(`TiN — ${ws.name} [${slot}]`);
   gridWin.loadFile('grid-terminal.html');
   gridWin.webContents.on('did-finish-load', () => {
     gridWin.webContents.send('init-terminal', { id: ptyId });
@@ -1070,14 +991,21 @@ ipcMain.handle('raise-snapped', async (event, { windowNumber }) => {
 
 // ── IPC: wobble (縦方向に 8px ゆすって戻す) + raise ──
 // 「クリックしたカードがどのウィンドウか視覚的に示す」ための軽量アニメ。
-// daemon が AX 直叩きで実装しているので osascript より高速かつ name マッチ
-// 不要 (windowNumber で一意にヒット、Finder ghost 問題も回避)。
-// snapped / available どちらからも呼べる汎用 IPC。
+// axHelper.listWindows で現在位置を取得 → moveWindows で y-8 → 60ms → 元に戻す。
 ipcMain.handle('wobble-window', async (_event, { windowNumber, pid, app: appName, title, windowIndex }) => {
   if (!windowNumber && !appName) return { ok: false };
-  await daemonRequest('wobble', {
-    windows: [{ windowNumber, pid, app: appName, title, windowIndex: windowIndex || 0 }],
-  });
+  if (!axHelper) return { ok: false };
+  try {
+    const all = axHelper.listWindows();
+    const w = all.find(x => x.windowNumber === windowNumber)
+          || all.find(x => x.pid === pid && x.title === title);
+    if (!w) return { ok: false };
+    const target = { windowNumber: w.windowNumber, pid: w.pid, app: appName, title: w.title, windowIndex: windowIndex || 0 };
+    axHelper.moveWindows([{ ...target, x: w.x, y: w.y - 8, width: w.width, height: w.height }], true);
+    await new Promise(r => setTimeout(r, 60));
+    axHelper.moveWindows([{ ...target, x: w.x, y: w.y, width: w.width, height: w.height }], true);
+    axHelper.raiseWindows([target]);
+  } catch {}
   return { ok: true };
 });
 
@@ -1085,6 +1013,35 @@ ipcMain.handle('get-snapped-externals', (event) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return {};
   return Object.fromEntries([...ws.snappedExternals.entries()].map(([k, v]) => [k, v.slot]));
+});
+
+// Available リストから他の TiN workspace の sidebar をクリックしたとき、
+// その workspace 全体 (sidebar + grid + snapped) を前面化する。
+ipcMain.on('raise-tin-window', (_event, { windowNumber }) => {
+  for (const [, ws] of workspaces) {
+    if (ws.win && !ws.win.isDestroyed() && ws.win.getNativeWindowHandle) {
+      // windowNumber は CGWindowList 経由の値なので Electron BrowserWindow とは直接紐付かない。
+      // sidebar のタイトル位置で照合する代わりに、bounds でマッチしてもよいが、
+      // 単純に title 一致 (TiN — {name}) で対象を決める方が確実。
+    }
+  }
+  // CGWindowList の windowNumber から対象の workspace を逆引き
+  if (!axHelper) return;
+  try {
+    const all = axHelper.listWindows();
+    const target = all.find(w => w.windowNumber === windowNumber);
+    if (!target) return;
+    // タイトルから workspace 名を抽出: "TiN — {name}"
+    const m = /^TiN — (.+?)$/.exec(target.title);
+    if (!m) return;
+    const wsName = m[1];
+    for (const [, ws] of workspaces) {
+      if (ws.name === wsName) {
+        raiseAllWorkspaceWindows(ws, true);
+        return;
+      }
+    }
+  } catch {}
 });
 
 // ── IPC: grid config ──
@@ -1107,6 +1064,11 @@ ipcMain.on('rename-workspace', (event, { name }) => {
   const ws = findWorkspace(event.sender);
   if (ws) {
     ws.name = name;
+    if (ws.win && !ws.win.isDestroyed()) ws.win.setTitle(`TiN — ${name}`);
+    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) ws.gridOverlay.setTitle(`TiN — ${name} Grid`);
+    for (const [slot, gw] of ws.gridWindows) {
+      if (gw.win && !gw.win.isDestroyed()) gw.win.setTitle(`TiN — ${name} [${slot}]`);
+    }
     scheduleSaveWorkspaces();
   }
 });
@@ -1160,6 +1122,9 @@ function createWorkspace(name, savedState) {
 
   const wsName = name || (savedState && savedState.name) || `Workspace ${wsId}`;
   const savedGrid = savedState && savedState.grid;
+  // HTML <title> による上書きを防止 — CGWindowList でワークスペース名が見えるように
+  win.on('page-title-updated', (e) => e.preventDefault());
+  win.setTitle(`TiN — ${wsName}`);
   const ws = {
     id: wsId, win, name: wsName,
     snappedExternals: new Map(),
@@ -1209,6 +1174,7 @@ function createWorkspace(name, savedState) {
     });
     // Hide from macOS native Window menu listing (must be set via property, not constructor)
     overlay.excludedFromShownWindowsMenu = true;
+    overlay.setTitle(`TiN — ${wsName} Grid`);
     overlay.loadFile('grid-overlay.html');
     overlay.webContents.on('did-finish-load', () => {
       overlay.webContents.send('update-grid', { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios });
@@ -1325,7 +1291,8 @@ function createWorkspace(name, savedState) {
   ws.pollTimer = setInterval(async () => {
     if (!ws.win || ws.win.isDestroyed()) return;
     if (_dragging) return;
-    const windows = await listWindows();
+    const windowsAll = await listWindowsForUI();
+    const windows = windowsAll.filter(w => w.app !== 'TiN');
 
     // 大量消失検知: sleep 復帰 / ディスプレイ切替の watchdog
     // snapped の 50%以上が CGWindowList から消えた → 自動で stabilize + 復旧
@@ -1389,19 +1356,6 @@ function createWorkspace(name, savedState) {
     const liveMap = new Map();
     for (const w of windows) liveMap.set(w.windowNumber, w);
 
-    // snapped externals の生死チェック (missing があるときだけ verify IPC)
-    const missingList = [];
-    for (const [k, info] of ws.snappedExternals) {
-      if (!liveMap.has(k)) missingList.push({ key: k, info });
-    }
-    let axAlive;
-    if (missingList.length > 0) {
-      const verifyCmds = missingList.map(({ key, info }) => ({
-        windowNumber: key, pid: info.pid, app: info.app, title: info.title,
-      }));
-      const vr = await verifyWindows(verifyCmds);
-      axAlive = (vr && Array.isArray(vr.alive)) ? new Set(vr.alive) : new Set();
-    }
     let snappedChanged = false;
     for (const [k, info] of ws.snappedExternals) {
       let live = liveMap.get(k);
@@ -1434,7 +1388,7 @@ function createWorkspace(name, savedState) {
         }
       }
       if (!live) {
-        if ((axAlive && axAlive.has(k)) || isStabilizing()) {
+        if (isStabilizing()) {
           info._missCount = 0;
           continue;
         }
@@ -1474,7 +1428,14 @@ function createWorkspace(name, savedState) {
     }
     const gridSlots = {};
     for (const [slot, gw] of ws.gridWindows) gridSlots[slot] = { ptyId: gw.ptyId };
-    ws.win.webContents.send('external-windows', windows, snappedByOther, gridSlots);
+    // UI には TiN 自身も含めて送る (available リストに TiN workspace を表示するため)。
+    // 自 workspace の TiN ウィンドウは除外して重複表示を防ぐ。
+    const ownTitles = new Set();
+    ownTitles.add(`TiN — ${ws.name}`);
+    ownTitles.add(`TiN — ${ws.name} Grid`);
+    for (const [slot] of ws.gridWindows) ownTitles.add(`TiN — ${ws.name} [${slot}]`);
+    const windowsForUI = windowsAll.filter(w => !(w.app === 'TiN' && ownTitles.has(w.title)));
+    ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots);
   }, 2000);
 
   win.on('closed', async () => {
@@ -2009,7 +1970,6 @@ async function triggerAutoSnap(opts = {}) {
 app.isQuitting = false;
 
 app.whenReady().then(() => {
-  startDaemon();
   writeInfoJson();
   writeSnappedJson();
 
@@ -2188,7 +2148,6 @@ app.on('before-quit', () => {
   app.isQuitting = true;
   // quit 前に workspace 状態を確実に書き出す (debounce timer を待たない)
   try { writeWorkspacesJsonSync(); } catch (e) { console.warn('[tin] final save failed:', e.message); }
-  if (daemon) { try { daemon.kill(); } catch {} daemon = null; }
   // 統合ステートファイルのクリーンアップ (クライアントが "TiN 未起動" と判定できるように)
   // workspaces.json は残す (次回起動で復元するため)
   try { if (fs.existsSync(INFO_JSON)) fs.unlinkSync(INFO_JSON); } catch {}

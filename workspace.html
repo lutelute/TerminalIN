@@ -160,6 +160,7 @@
   .badge-ext { background: rgba(40,120,210,0.1); color: rgba(30,100,190,0.8); }
   .badge-term { background: rgba(40,120,210,0.12); color: rgba(20,90,180,0.85); }
   .badge-finder { background: rgba(255,170,40,0.15); color: rgba(200,120,0,0.9); }
+  .badge-tin { background: rgba(130,70,220,0.14); color: rgba(100,50,180,0.9); }
 
   /* サブセクション見出し (TERMINAL / FINDER) */
   .subsection-title {
@@ -324,6 +325,7 @@ const snappedExternals = new Map();
 let externalWindows = [];
 let showTerminals = true;
 let showFinders = true;
+let showTiNWindows = true;
 let snappedByOther = {};
 let gridSlots = {};
 let gridCols = 2, gridRows = 2;
@@ -512,12 +514,16 @@ function setGridSize(cols, rows) {
 // ── Render ──
 let sidebarCollapsed = true; // Sidebar terminals collapsed by default
 
-// アプリ種別判定 (Finder / Terminal 系)
+// アプリ種別判定 (Finder / Terminal / TiN)
 const FINDER_APPS = new Set(['Finder', 'ファインダー']);
 function isFinderApp(appName) {
   return !!appName && FINDER_APPS.has(appName);
 }
+function isTiNApp(appName) {
+  return appName === 'TiN';
+}
 function appBadgeHtml(appName) {
+  if (isTiNApp(appName)) return '<span class="card-badge badge-tin">TiN</span>';
   if (isFinderApp(appName)) return '<span class="card-badge badge-finder">FINDER</span>';
   return '<span class="card-badge badge-term">TERM</span>';
 }
@@ -630,8 +636,12 @@ function render() {
   const available = externalWindows.filter(w => !snappedExternals.has(w.windowNumber));
   _availSection.innerHTML = '';
   if (available.length > 0) {
-    const availableTerminal = available.filter(w => !isFinderApp(w.app));
+    const availableTerminal = available.filter(w => !isFinderApp(w.app) && !isTiNApp(w.app));
     const availableFinder = available.filter(w => isFinderApp(w.app));
+    // TiN Grid overlay と slot terminal は sidebar と同一 workspace を表すので除外、sidebar のみ表示
+    const availableTiN = available.filter(w =>
+      isTiNApp(w.app) && !/ Grid$/.test(w.title) && !/\[\d+\]$/.test(w.title)
+    );
 
     const extTitle = document.createElement('div');
     extTitle.className = 'section-title';
@@ -657,18 +667,25 @@ function render() {
       } else {
         item.innerHTML = `${appBadgeHtml(w.app)}<span class="ext-title">${t}</span>`;
         item.style.cursor = 'pointer';
-        item.title = 'Click title to locate, Snap to dock';
+        item.title = isTiNApp(w.app) ? 'クリックで前面化' : 'Click title to locate, Snap to dock';
         item.addEventListener('click', (e) => {
           if (e.target && e.target.classList && e.target.classList.contains('ext-btn')) return;
-          ipcRenderer.invoke('wobble-window', {
-            windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title,
-          });
+          if (isTiNApp(w.app)) {
+            // TiN 自身は wobble しない (自分を揺らしても意味がない)、raise のみ
+            ipcRenderer.send('raise-tin-window', { windowNumber: w.windowNumber });
+          } else {
+            ipcRenderer.invoke('wobble-window', {
+              windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title,
+            });
+          }
         });
-        const btn = document.createElement('button');
-        btn.className = 'ext-btn snap';
-        btn.textContent = 'Snap';
-        btn.addEventListener('click', (e) => { e.stopPropagation(); snapExternal(w); });
-        item.appendChild(btn);
+        if (!isTiNApp(w.app)) {
+          const btn = document.createElement('button');
+          btn.className = 'ext-btn snap';
+          btn.textContent = 'Snap';
+          btn.addEventListener('click', (e) => { e.stopPropagation(); snapExternal(w); });
+          item.appendChild(btn);
+        }
       }
       return item;
     };
@@ -694,6 +711,14 @@ function render() {
       subTitle.appendChild(fAi);
       _availSection.appendChild(subTitle);
       if (showFinders) availableFinder.forEach(w => _availSection.appendChild(renderAvailItem(w)));
+    }
+    if (availableTiN.length > 0) {
+      const subTitle = document.createElement('div');
+      subTitle.className = 'subsection-title tin section-title-clickable';
+      subTitle.innerHTML = `<span class="section-toggle">${showTiNWindows ? '\u25be' : '\u25b8'}</span><span class="subsection-icon">\u25C6</span>TiN (${availableTiN.length})`;
+      subTitle.addEventListener('click', () => { showTiNWindows = !showTiNWindows; render(); });
+      _availSection.appendChild(subTitle);
+      if (showTiNWindows) availableTiN.forEach(w => _availSection.appendChild(renderAvailItem(w)));
     }
   }
 
