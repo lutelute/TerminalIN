@@ -416,7 +416,20 @@ let nextPtyId = 1;
 
 process.on('uncaughtException', (err) => { if (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED') return; });
 
+// 外部ウィンドウ一覧 (snap/retile/auto-snap/release 処理用)。TiN 自身は除外して
+// 自己 snap などの副作用を防ぐ。
 function listWindows() {
+  if (axHelper) {
+    try {
+      const all = axHelper.listWindows();
+      return Promise.resolve(all.filter(w => w.app !== 'TiN'));
+    } catch {}
+  }
+  return Promise.resolve([]);
+}
+
+// UI 表示用 (available リスト)。TiN ウィンドウも含めて別 workspace への移動を可能にする。
+function listWindowsForUI() {
   if (axHelper) {
     try { return Promise.resolve(axHelper.listWindows()); } catch {}
   }
@@ -817,6 +830,8 @@ function createGridTerminal(ws, slot) {
   const gw = { win: gridWin, pty: p, ptyId, slot };
   ws.gridWindows.set(slot, gw);
 
+  gridWin.on('page-title-updated', (e) => e.preventDefault());
+  gridWin.setTitle(`TiN — ${ws.name} [${slot}]`);
   gridWin.loadFile('grid-terminal.html');
   gridWin.webContents.on('did-finish-load', () => {
     gridWin.webContents.send('init-terminal', { id: ptyId });
@@ -1000,6 +1015,35 @@ ipcMain.handle('get-snapped-externals', (event) => {
   return Object.fromEntries([...ws.snappedExternals.entries()].map(([k, v]) => [k, v.slot]));
 });
 
+// Available リストから他の TiN workspace の sidebar をクリックしたとき、
+// その workspace 全体 (sidebar + grid + snapped) を前面化する。
+ipcMain.on('raise-tin-window', (_event, { windowNumber }) => {
+  for (const [, ws] of workspaces) {
+    if (ws.win && !ws.win.isDestroyed() && ws.win.getNativeWindowHandle) {
+      // windowNumber は CGWindowList 経由の値なので Electron BrowserWindow とは直接紐付かない。
+      // sidebar のタイトル位置で照合する代わりに、bounds でマッチしてもよいが、
+      // 単純に title 一致 (TiN — {name}) で対象を決める方が確実。
+    }
+  }
+  // CGWindowList の windowNumber から対象の workspace を逆引き
+  if (!axHelper) return;
+  try {
+    const all = axHelper.listWindows();
+    const target = all.find(w => w.windowNumber === windowNumber);
+    if (!target) return;
+    // タイトルから workspace 名を抽出: "TiN — {name}"
+    const m = /^TiN — (.+?)$/.exec(target.title);
+    if (!m) return;
+    const wsName = m[1];
+    for (const [, ws] of workspaces) {
+      if (ws.name === wsName) {
+        raiseAllWorkspaceWindows(ws, true);
+        return;
+      }
+    }
+  } catch {}
+});
+
 // ── IPC: grid config ──
 ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
   const ws = findWorkspace(event.sender);
@@ -1020,6 +1064,11 @@ ipcMain.on('rename-workspace', (event, { name }) => {
   const ws = findWorkspace(event.sender);
   if (ws) {
     ws.name = name;
+    if (ws.win && !ws.win.isDestroyed()) ws.win.setTitle(`TiN — ${name}`);
+    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) ws.gridOverlay.setTitle(`TiN — ${name} Grid`);
+    for (const [slot, gw] of ws.gridWindows) {
+      if (gw.win && !gw.win.isDestroyed()) gw.win.setTitle(`TiN — ${name} [${slot}]`);
+    }
     scheduleSaveWorkspaces();
   }
 });
@@ -1073,6 +1122,9 @@ function createWorkspace(name, savedState) {
 
   const wsName = name || (savedState && savedState.name) || `Workspace ${wsId}`;
   const savedGrid = savedState && savedState.grid;
+  // HTML <title> による上書きを防止 — CGWindowList でワークスペース名が見えるように
+  win.on('page-title-updated', (e) => e.preventDefault());
+  win.setTitle(`TiN — ${wsName}`);
   const ws = {
     id: wsId, win, name: wsName,
     snappedExternals: new Map(),
@@ -1122,6 +1174,7 @@ function createWorkspace(name, savedState) {
     });
     // Hide from macOS native Window menu listing (must be set via property, not constructor)
     overlay.excludedFromShownWindowsMenu = true;
+    overlay.setTitle(`TiN — ${wsName} Grid`);
     overlay.loadFile('grid-overlay.html');
     overlay.webContents.on('did-finish-load', () => {
       overlay.webContents.send('update-grid', { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios });
@@ -1238,7 +1291,8 @@ function createWorkspace(name, savedState) {
   ws.pollTimer = setInterval(async () => {
     if (!ws.win || ws.win.isDestroyed()) return;
     if (_dragging) return;
-    const windows = await listWindows();
+    const windowsAll = await listWindowsForUI();
+    const windows = windowsAll.filter(w => w.app !== 'TiN');
 
     // 大量消失検知: sleep 復帰 / ディスプレイ切替の watchdog
     // snapped の 50%以上が CGWindowList から消えた → 自動で stabilize + 復旧
@@ -1374,7 +1428,14 @@ function createWorkspace(name, savedState) {
     }
     const gridSlots = {};
     for (const [slot, gw] of ws.gridWindows) gridSlots[slot] = { ptyId: gw.ptyId };
-    ws.win.webContents.send('external-windows', windows, snappedByOther, gridSlots);
+    // UI には TiN 自身も含めて送る (available リストに TiN workspace を表示するため)。
+    // 自 workspace の TiN ウィンドウは除外して重複表示を防ぐ。
+    const ownTitles = new Set();
+    ownTitles.add(`TiN — ${ws.name}`);
+    ownTitles.add(`TiN — ${ws.name} Grid`);
+    for (const [slot] of ws.gridWindows) ownTitles.add(`TiN — ${ws.name} [${slot}]`);
+    const windowsForUI = windowsAll.filter(w => !(w.app === 'TiN' && ownTitles.has(w.title)));
+    ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots);
   }, 2000);
 
   win.on('closed', async () => {
