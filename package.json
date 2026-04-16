@@ -7,8 +7,8 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "build": "electron-builder --mac",
-    "predist": "bash scripts/build-daemon.sh",
-    "prebuild": "bash scripts/build-daemon.sh",
+    "predist": "npx node-gyp rebuild",
+    "prebuild": "npx node-gyp rebuild",
     "dist": "electron-builder --mac --publish never"
   },
   "keywords": [],
@@ -33,12 +33,6 @@
       ],
       "identity": null,
       "icon": "icon.icns",
-      "extraFiles": [
-        {
-          "from": "daemon",
-          "to": "MacOS/daemon"
-        }
-      ],
       "protocols": [
         {
           "name": "TiN URL",
