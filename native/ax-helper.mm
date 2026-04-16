@@ -17,7 +17,8 @@ static void ensureTerminalApps() {
         terminalApps = [[NSSet alloc] initWithArray:@[
             @"Terminal", @"ターミナル", @"iTerm2", @"Alacritty",
             @"Warp", @"kitty", @"Hyper", @"WezTerm",
-            @"Finder", @"ファインダー"
+            @"Finder", @"ファインダー",
+            @"TiN"
         ]];
     }
 }
