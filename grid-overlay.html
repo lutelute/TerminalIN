@@ -217,7 +217,8 @@ function startLineDrag(e, type, index) {
     target.classList.remove('dragging');
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
-    ipcRenderer.send('set-overlay-clickthrough', true);
+    // edit モード中は overlay をクリック可能のままにする (Done ボタンを押すため)。
+    if (!editMode) ipcRenderer.send('set-overlay-clickthrough', true);
     // 最終確定
     ipcRenderer.send('commit-grid-ratios', { colRatios, rowRatios });
   };

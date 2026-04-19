@@ -88,16 +88,10 @@ static napi_value ListWindows(napi_env env, napi_callback_info info) {
     return result;
 }
 
-// ── AX ヘルパー: pid → AXUIElement → windows ──
-static AXUIElementRef findAXWindow(pid_t pid, int windowNumber, const char *title, int windowIndex) {
-    AXUIElementRef appRef = AXUIElementCreateApplication(pid);
-    CFTypeRef windowsRef = NULL;
-    if (AXUIElementCopyAttributeValue(appRef, kAXWindowsAttribute, &windowsRef) != kAXErrorSuccess) {
-        CFRelease(appRef);
-        return NULL;
-    }
-
-    CFArrayRef windows = (CFArrayRef)windowsRef;
+// ── AX ヘルパー: windows 配列から対象を見つける (AX fetch 済み前提) ──
+// batch 呼び出し時に同一 pid のウィンドウリストを使い回すために分離。
+static AXUIElementRef findAXWindowInList(CFArrayRef windows, int windowNumber, const char *title, int windowIndex) {
+    if (!windows) return NULL;
     CFIndex count = CFArrayGetCount(windows);
 
     // 1. windowNumber (CGWindowID) でマッチ
@@ -106,8 +100,6 @@ static AXUIElementRef findAXWindow(pid_t pid, int windowNumber, const char *titl
         CGWindowID wid = 0;
         if (_AXUIElementGetWindow(win, &wid) == kAXErrorSuccess && wid == (CGWindowID)windowNumber) {
             CFRetain(win);
-            CFRelease(windowsRef);
-            CFRelease(appRef);
             return win;
         }
     }
@@ -120,12 +112,10 @@ static AXUIElementRef findAXWindow(pid_t pid, int windowNumber, const char *titl
             CFTypeRef titleRef = NULL;
             if (AXUIElementCopyAttributeValue(win, kAXTitleAttribute, &titleRef) == kAXErrorSuccess) {
                 NSString *t = (__bridge NSString *)titleRef;
-                NSUInteger prefixLen = MIN(40, targetTitle.length);
+                NSUInteger prefixLen = MIN((NSUInteger)40, targetTitle.length);
                 if ([t isEqualToString:targetTitle] || [t hasPrefix:[targetTitle substringToIndex:prefixLen]]) {
                     CFRetain(win);
                     CFRelease(titleRef);
-                    CFRelease(windowsRef);
-                    CFRelease(appRef);
                     return win;
                 }
                 CFRelease(titleRef);
@@ -157,8 +147,6 @@ static AXUIElementRef findAXWindow(pid_t pid, int windowNumber, const char *titl
                     CFRelease(posRef);
                     if (fabs(axPos.x - cgPos.x) < 5 && fabs(axPos.y - cgPos.y) < 5) {
                         CFRetain(win);
-                        CFRelease(windowsRef);
-                        CFRelease(appRef);
                         return win;
                     }
                 }
@@ -170,14 +158,24 @@ static AXUIElementRef findAXWindow(pid_t pid, int windowNumber, const char *titl
     if (windowIndex >= 0 && windowIndex < (int)count) {
         AXUIElementRef win = (AXUIElementRef)CFArrayGetValueAtIndex(windows, windowIndex);
         CFRetain(win);
-        CFRelease(windowsRef);
-        CFRelease(appRef);
         return win;
     }
 
+    return NULL;
+}
+
+// pid → AX windows を fetch してマッチ。単発呼び出し用。
+static AXUIElementRef findAXWindow(pid_t pid, int windowNumber, const char *title, int windowIndex) {
+    AXUIElementRef appRef = AXUIElementCreateApplication(pid);
+    CFTypeRef windowsRef = NULL;
+    if (AXUIElementCopyAttributeValue(appRef, kAXWindowsAttribute, &windowsRef) != kAXErrorSuccess) {
+        CFRelease(appRef);
+        return NULL;
+    }
+    AXUIElementRef result = findAXWindowInList((CFArrayRef)windowsRef, windowNumber, title, windowIndex);
     CFRelease(windowsRef);
     CFRelease(appRef);
-    return NULL;
+    return result;
 }
 
 // ── move: position + size を設定 ──
@@ -197,6 +195,12 @@ static napi_value MoveWindows(napi_env env, napi_callback_info info) {
     napi_get_array_length(env, args[0], &length);
 
     int moved = 0;
+
+    // 同一 pid のウィンドウ一覧を使い回すためのキャッシュ。
+    // sidebar drag 時に 4 ウィンドウを同一 pid で処理するケースで AX 列挙を 4→1 に削減。
+    struct AppCache { pid_t pid; AXUIElementRef appRef; CFArrayRef windowsRef; };
+    AppCache cache[16] = {};
+    int cacheSize = 0;
 
     for (uint32_t i = 0; i < length; i++) {
         napi_value item;
@@ -227,7 +231,32 @@ static napi_value MoveWindows(napi_env env, napi_callback_info info) {
             napi_get_named_property(env, item, "height", &v); napi_get_value_double(env, v, &h);
         }
 
-        AXUIElementRef win = findAXWindow((pid_t)pid, windowNumber, title, windowIndex);
+        // pid ごとに AX windows を一度だけ fetch (キャッシュヒットは O(cacheSize))
+        CFArrayRef windowsRef = NULL;
+        bool cacheHit = false;
+        for (int ci = 0; ci < cacheSize; ci++) {
+            if (cache[ci].pid == pid) {
+                windowsRef = cache[ci].windowsRef;  // NULL の場合は失敗済み
+                cacheHit = true;
+                break;
+            }
+        }
+        if (!cacheHit) {
+            AXUIElementRef appRef = AXUIElementCreateApplication((pid_t)pid);
+            CFTypeRef wRef = NULL;
+            AXError axErr = AXUIElementCopyAttributeValue(appRef, kAXWindowsAttribute, &wRef);
+            if (axErr != kAXErrorSuccess) {
+                CFRelease(appRef);
+                if (cacheSize < 16) cache[cacheSize++] = { (pid_t)pid, NULL, NULL };
+                continue;
+            }
+            windowsRef = (CFArrayRef)wRef;
+            if (cacheSize < 16) cache[cacheSize++] = { (pid_t)pid, appRef, windowsRef };
+            else { CFRelease(appRef); CFRelease(windowsRef); continue; }
+        }
+        if (!windowsRef) continue;
+
+        AXUIElementRef win = findAXWindowInList(windowsRef, windowNumber, title, windowIndex);
         if (!win) continue;
 
         CGPoint point = CGPointMake(x, y);
@@ -239,6 +268,7 @@ static napi_value MoveWindows(napi_env env, napi_callback_info info) {
                 CFRelease(posVal);
             }
         } else {
+            // Terminal.app は set size で独自に window を動かすので pos-size-pos で上書き。
             CGSize size = CGSizeMake(w, h);
             AXValueRef sizeVal = AXValueCreate((AXValueType)kAXValueCGSizeType, &size);
             if (posVal) AXUIElementSetAttributeValue(win, kAXPositionAttribute, posVal);
@@ -249,6 +279,12 @@ static napi_value MoveWindows(napi_env env, napi_callback_info info) {
 
         moved++;
         CFRelease(win);
+    }
+
+    // キャッシュ解放
+    for (int ci = 0; ci < cacheSize; ci++) {
+        if (cache[ci].windowsRef) CFRelease(cache[ci].windowsRef);
+        if (cache[ci].appRef) CFRelease(cache[ci].appRef);
     }
 
     napi_value result;
@@ -265,6 +301,11 @@ static napi_value RaiseWindows(napi_env env, napi_callback_info info) {
     uint32_t length;
     napi_get_array_length(env, args[0], &length);
     int raised = 0;
+
+    // MoveWindows と同じ per-pid キャッシュ
+    struct AppCache { pid_t pid; AXUIElementRef appRef; CFArrayRef windowsRef; };
+    AppCache cache[16] = {};
+    int cacheSize = 0;
 
     for (uint32_t i = 0; i < length; i++) {
         napi_value item;
@@ -287,11 +328,35 @@ static napi_value RaiseWindows(napi_env env, napi_callback_info info) {
             napi_get_value_int32(env, wiVal, &windowIndex);
         }
 
-        AXUIElementRef win = findAXWindow((pid_t)pid, windowNumber, title, windowIndex);
+        CFArrayRef windowsRef = NULL;
+        bool cacheHit = false;
+        for (int ci = 0; ci < cacheSize; ci++) {
+            if (cache[ci].pid == pid) { windowsRef = cache[ci].windowsRef; cacheHit = true; break; }
+        }
+        if (!cacheHit) {
+            AXUIElementRef appRef = AXUIElementCreateApplication((pid_t)pid);
+            CFTypeRef wRef = NULL;
+            if (AXUIElementCopyAttributeValue(appRef, kAXWindowsAttribute, &wRef) != kAXErrorSuccess) {
+                CFRelease(appRef);
+                if (cacheSize < 16) cache[cacheSize++] = { (pid_t)pid, NULL, NULL };
+                continue;
+            }
+            windowsRef = (CFArrayRef)wRef;
+            if (cacheSize < 16) cache[cacheSize++] = { (pid_t)pid, appRef, windowsRef };
+            else { CFRelease(appRef); CFRelease(windowsRef); continue; }
+        }
+        if (!windowsRef) continue;
+
+        AXUIElementRef win = findAXWindowInList(windowsRef, windowNumber, title, windowIndex);
         if (!win) continue;
 
         if (AXUIElementPerformAction(win, kAXRaiseAction) == kAXErrorSuccess) raised++;
         CFRelease(win);
+    }
+
+    for (int ci = 0; ci < cacheSize; ci++) {
+        if (cache[ci].windowsRef) CFRelease(cache[ci].windowsRef);
+        if (cache[ci].appRef) CFRelease(cache[ci].appRef);
     }
 
     napi_value result;
@@ -374,6 +439,38 @@ static napi_value MoveToSpace(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// moveWindowsToActiveSpace(windowNumbers) → moved count
+// 指定 windowNumber を全て現在アクティブな Space に引き寄せる。
+static napi_value MoveWindowsToActiveSpace(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+    int cid = CGSMainConnectionID();
+    uint64_t activeSpace = CGSGetActiveSpace(cid);
+
+    uint32_t length;
+    napi_get_array_length(env, args[0], &length);
+    int moved = 0;
+
+    NSMutableArray *wins = [NSMutableArray new];
+    for (uint32_t i = 0; i < length; i++) {
+        napi_value item;
+        napi_get_element(env, args[0], i, &item);
+        int32_t wn;
+        napi_get_value_int32(env, item, &wn);
+        [wins addObject:@((CGWindowID)wn)];
+    }
+    if (wins.count > 0) {
+        CGSMoveWindowsToManagedSpace(cid, (__bridge CFArrayRef)wins, activeSpace);
+        moved = (int)wins.count;
+    }
+
+    napi_value result;
+    napi_create_int32(env, moved, &result);
+    return result;
+}
+
 // ── axTrusted ──
 static napi_value IsAXTrusted(napi_env env, napi_callback_info info) {
     napi_value result;
@@ -398,6 +495,9 @@ static napi_value Init(napi_env env, napi_value exports) {
 
     napi_create_function(env, NULL, 0, MoveToSpace, NULL, &fn);
     napi_set_named_property(env, exports, "moveToSpace", fn);
+
+    napi_create_function(env, NULL, 0, MoveWindowsToActiveSpace, NULL, &fn);
+    napi_set_named_property(env, exports, "moveWindowsToActiveSpace", fn);
 
     return exports;
 }
