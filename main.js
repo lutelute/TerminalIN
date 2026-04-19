@@ -1048,9 +1048,9 @@ ipcMain.handle('raise-snapped', async (event, { windowNumber }) => {
   return { ok: false };
 });
 
-// ── IPC: wobble (縦方向に 8px ゆすって戻す) + raise ──
+// ── IPC: wobble (ジグザグに揺らして場所を示す) + raise ──
 // 「クリックしたカードがどのウィンドウか視覚的に示す」ための軽量アニメ。
-// axHelper.listWindows で現在位置を取得 → moveWindows で y-8 → 60ms → 元に戻す。
+// raise で最前面化した上で、左右+上+元位置の 3-pulse で視認性を高める。
 ipcMain.handle('wobble-window', async (_event, { windowNumber, pid, app: appName, title, windowIndex }) => {
   if (!windowNumber && !appName) return { ok: false };
   if (!axHelper) return { ok: false };
@@ -1060,10 +1060,19 @@ ipcMain.handle('wobble-window', async (_event, { windowNumber, pid, app: appName
           || all.find(x => x.pid === pid && x.title === title);
     if (!w) return { ok: false };
     const target = { windowNumber: w.windowNumber, pid: w.pid, app: appName, title: w.title, windowIndex: windowIndex || 0 };
-    axHelper.moveWindows([{ ...target, x: w.x, y: w.y - 8, width: w.width, height: w.height }], true);
-    await new Promise(r => setTimeout(r, 60));
-    axHelper.moveWindows([{ ...target, x: w.x, y: w.y, width: w.width, height: w.height }], true);
+    // 1. まず raise して z-order を最前面に (wobble を見えるようにする)
     axHelper.raiseWindows([target]);
+    // 2. 3-pulse wobble: ジグザグに動かして視覚的に判別させる
+    const pulses = [
+      { dx: 14, dy: 0 },
+      { dx: -14, dy: 0 },
+      { dx: 0, dy: -10 },
+      { dx: 0, dy: 0 },  // 元位置
+    ];
+    for (const p of pulses) {
+      axHelper.moveWindows([{ ...target, x: w.x + p.dx, y: w.y + p.dy, width: w.width, height: w.height }], true);
+      await new Promise(r => setTimeout(r, 45));
+    }
   } catch {}
   return { ok: true };
 });

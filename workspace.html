@@ -862,7 +862,18 @@ function render() {
       if (otherWs) {
         const ownerColor = snappedByOther[w.windowNumber];
         const wsBadgeStyle = ownerColor && ownerColor.color ? `style="background:${ownerColor.color.bg};color:${ownerColor.color.fg};cursor:pointer"` : 'style="cursor:pointer"';
-        item.innerHTML = `${appBadgeHtml(w.app)}<span class="ext-title">${t}</span><span class="ws-badge" ${wsBadgeStyle} title="クリックでこのウィンドウを前面化">\u2192 ${ownerColor.name}</span>`;
+        item.innerHTML = `${appBadgeHtml(w.app)}<span class="ext-title">${t}</span><span class="ws-badge" ${wsBadgeStyle} title="バッジ: 所属 workspace を前面化">\u2192 ${ownerColor.name}</span>`;
+        item.style.cursor = 'pointer';
+        item.title = 'クリックでこのウィンドウを wobble (場所確認)';
+        // item 本体クリック: そのウィンドウだけを wobble (どの workspace 所属でも)
+        item.addEventListener('click', (e) => {
+          if (e.target && e.target.classList && (e.target.classList.contains('ws-badge') || e.target.classList.contains('ext-btn'))) return;
+          if (isTiNApp(w.app)) {
+            ipcRenderer.send('raise-tin-window', { windowNumber: w.windowNumber });
+          } else {
+            ipcRenderer.invoke('wobble-window', { windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title });
+          }
+        });
         // バッジクリックで所属 workspace 全体を前面化
         item.querySelector('.ws-badge').addEventListener('click', (e) => {
           e.stopPropagation();
