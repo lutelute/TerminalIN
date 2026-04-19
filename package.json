@@ -5,6 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "predev": "osascript -e 'tell application \"TiN\" to quit' 2>/dev/null; pkill -f 'TiN.app/Contents/MacOS/TiN' 2>/dev/null; sleep 1; exit 0",
     "dev": "electron . --dev",
     "build": "electron-builder --mac",
     "predist": "npx node-gyp rebuild",
