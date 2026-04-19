@@ -1422,17 +1422,37 @@ function createWorkspace(name, savedState) {
     const windows = windowsAll.filter(w => w.app !== 'TiN');
 
     // 大量消失検知: sleep 復帰 / ディスプレイ切替の watchdog
-    // snapped の 50%以上が CGWindowList から消えた → 自動で stabilize + 復旧
+    // windowNumber が変わっただけ (title 再マッチで救える) のケースは missing 扱いしない。
+    // 連続 2 回 50%以上 missing した時だけ発動 → 1 poll の瞬間的な欠落では誤発動しない。
     if (!isStabilizing() && ws.snappedExternals.size >= 2) {
       const liveSet = new Set();
       for (const w of windows) liveSet.add(w.windowNumber);
       let missing = 0;
-      for (const k of ws.snappedExternals.keys()) {
-        if (!liveSet.has(k)) missing++;
+      for (const [k, info] of ws.snappedExternals) {
+        if (liveSet.has(k)) continue;
+        let found = false;
+        if (info.title) {
+          for (const w of windows) {
+            if (w.app === info.app && w.title === info.title) { found = true; break; }
+          }
+          if (!found) {
+            const prefix = info.title.slice(0, Math.min(40, info.title.length));
+            for (const w of windows) {
+              if (w.app === info.app && w.title && w.title.startsWith(prefix)) { found = true; break; }
+            }
+          }
+        }
+        if (!found) missing++;
       }
       if (missing / ws.snappedExternals.size >= 0.5) {
-        console.log(`[tin] watchdog: ${missing}/${ws.snappedExternals.size} missing → auto-recovery`);
-        beginStabilize('watchdog-mass-disappear');
+        ws._watchdogMissStreak = (ws._watchdogMissStreak || 0) + 1;
+        if (ws._watchdogMissStreak >= 2) {
+          console.log(`[tin] watchdog: ${missing}/${ws.snappedExternals.size} missing (streak=${ws._watchdogMissStreak}) → auto-recovery`);
+          beginStabilize('watchdog-mass-disappear');
+          ws._watchdogMissStreak = 0;
+        }
+      } else {
+        ws._watchdogMissStreak = 0;
       }
     }
     // Title fallback for packaged app: キャッシュヒットを先に適用
