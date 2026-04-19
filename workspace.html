@@ -196,6 +196,25 @@
   .subsection-title .subsection-icon { font-size: 11px; }
   .subsection-title.term { color: rgba(30,100,190,0.6); }
   .subsection-title.finder { color: rgba(200,120,0,0.75); }
+  .subsection-title.tin { color: rgba(110,60,190,0.75); }
+
+  /* TiN タブは 2 列 grid で表示 */
+  .avail-tin-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2px 4px;
+    padding: 2px 2px 4px;
+  }
+  .avail-tin-grid .ext-item {
+    min-width: 0;
+    padding: 4px 6px;
+    border-bottom: none;
+    border-radius: 4px;
+    background: rgba(130,70,220,0.04);
+  }
+  .avail-tin-grid .ext-item:hover { background: rgba(130,70,220,0.10); }
+  .avail-tin-grid .ext-item .ext-title { font-size: 10px; min-width: 0; }
+  body.compact .avail-tin-grid .ext-item { padding: 3px 5px; }
 
   .card-close {
     width: 20px; height: 20px; border-radius: 5px;
@@ -965,7 +984,12 @@ function render() {
       subTitle.innerHTML = `<span class="section-toggle">${showTiNWindows ? '\u25be' : '\u25b8'}</span><span class="subsection-icon">\u25C6</span>TiN (${availableTiN.length})`;
       subTitle.addEventListener('click', () => { showTiNWindows = !showTiNWindows; render(); });
       _availSection.appendChild(subTitle);
-      if (showTiNWindows) availableTiN.forEach(w => _availSection.appendChild(renderAvailItem(w)));
+      if (showTiNWindows) {
+        const tinGrid = document.createElement('div');
+        tinGrid.className = 'avail-tin-grid';
+        availableTiN.forEach(w => tinGrid.appendChild(renderAvailItem(w)));
+        _availSection.appendChild(tinGrid);
+      }
     }
   }
 
