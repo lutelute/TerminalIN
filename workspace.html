@@ -86,9 +86,19 @@
   body.collapsed #collapse-btn { transform: rotate(180deg); }
 
   /* ── Content ── */
-  #content { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 5px; }
+  #content { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 5px; }
   #content::-webkit-scrollbar { width: 5px; }
   #content::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 3px; }
+  /* ── Console (sidebar 下部に常時固定、スクロール外) ── */
+  #console-fixed {
+    flex-shrink: 0;
+    border-top: 1px solid rgba(0,0,0,0.08);
+    background: rgba(0,0,0,0.015);
+    padding: 6px 8px 4px;
+    max-height: 40%;
+    overflow-y: auto;
+  }
+  body.collapsed #console-fixed { display: none; }
 
   /* ── Sections ── */
   .section {
@@ -424,6 +434,69 @@ function renderRestoreBanner() {
   }
 }
 
+// ── Preferences modal ──
+async function openPreferences() {
+  const settings = await ipcRenderer.invoke('get-settings');
+  let backdrop = document.getElementById('tin-prefs-backdrop');
+  if (backdrop) backdrop.remove();
+  backdrop = document.createElement('div');
+  backdrop.id = 'tin-prefs-backdrop';
+  backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  const panel = document.createElement('div');
+  panel.style.cssText = 'background:#fafafa;padding:20px 24px;border-radius:10px;min-width:280px;box-shadow:0 10px 30px rgba(0,0,0,0.3);font-size:13px;color:#222;';
+  panel.innerHTML = `
+    <div style="font-weight:600;font-size:15px;margin-bottom:14px;">Preferences</div>
+    <label style="display:block;margin-bottom:10px;">Poll 間隔
+      <select id="pref-poll" style="margin-left:8px;">
+        <option value="2000">2s (即応)</option>
+        <option value="4000">4s (標準)</option>
+        <option value="8000">8s (軽量)</option>
+      </select>
+    </label>
+    <label style="display:block;margin-bottom:10px;">Drag 終了時
+      <select id="pref-drag" style="margin-left:8px;">
+        <option value="position">Position のみ (軽量)</option>
+        <option value="full">Position + Size</option>
+        <option value="off">追従しない (Retile ボタンで)</option>
+      </select>
+    </label>
+    <label style="display:block;margin-bottom:10px;">新規 Workspace デフォルト Grid
+      <select id="pref-grid" style="margin-left:8px;">
+        <option value="2,2">2×2</option>
+        <option value="3,3">3×3</option>
+        <option value="2,3">2×3</option>
+      </select>
+    </label>
+    <label style="display:flex;align-items:center;margin-bottom:16px;">
+      <input type="checkbox" id="pref-autolaunch" style="margin-right:8px;">ログイン時に自動起動
+    </label>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button id="pref-cancel" style="padding:5px 12px;">Cancel</button>
+      <button id="pref-save" style="padding:5px 12px;background:#2563eb;color:#fff;border:1px solid #2563eb;border-radius:4px;">Save</button>
+    </div>
+  `;
+  backdrop.appendChild(panel);
+  document.body.appendChild(backdrop);
+  panel.querySelector('#pref-poll').value = String(settings.pollIntervalMs || 4000);
+  panel.querySelector('#pref-drag').value = settings.dragEndMode || 'position';
+  panel.querySelector('#pref-grid').value = `${settings.defaultGridCols||2},${settings.defaultGridRows||2}`;
+  panel.querySelector('#pref-autolaunch').checked = !!settings.autoLaunch;
+  panel.querySelector('#pref-cancel').onclick = () => backdrop.remove();
+  panel.querySelector('#pref-save').onclick = async () => {
+    const [c, r] = panel.querySelector('#pref-grid').value.split(',').map(Number);
+    await ipcRenderer.invoke('save-settings', {
+      pollIntervalMs: Number(panel.querySelector('#pref-poll').value),
+      dragEndMode: panel.querySelector('#pref-drag').value,
+      defaultGridCols: c,
+      defaultGridRows: r,
+      autoLaunch: panel.querySelector('#pref-autolaunch').checked,
+    });
+    backdrop.remove();
+  };
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.remove(); });
+}
+ipcRenderer.on('open-preferences', openPreferences);
+
 ipcRenderer.on('restore-report', (_e, report) => {
   lastRestoreReport = report;
   renderRestoreBanner();
@@ -490,12 +563,136 @@ async function removeGridTerminal(slot) {
 }
 
 // ── External terminals ──
-async function snapExternal(w) {
+function showToast(msg, kind = 'info') {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  const bg = kind === 'error' ? 'rgba(220,38,38,0.92)' : 'rgba(28,28,30,0.92)';
+  t.style.cssText = `
+    position:fixed; bottom:18px; left:50%; transform:translateX(-50%) translateY(8px);
+    background:${bg}; color:#fff; padding:8px 14px; border-radius:8px; font-size:12px;
+    z-index:10001; box-shadow:0 8px 24px rgba(0,0,0,0.35); opacity:0;
+    transition:opacity .14s ease, transform .18s ease; pointer-events:none;
+  `;
+  document.body.appendChild(t);
+  requestAnimationFrame(() => { t.style.opacity = '1'; t.style.transform = 'translateX(-50%) translateY(0)'; });
+  setTimeout(() => {
+    t.style.opacity = '0'; t.style.transform = 'translateX(-50%) translateY(8px)';
+    setTimeout(() => t.remove(), 250);
+  }, 2200);
+}
+
+async function snapExternal(w, targetSlot) {
   const result = await ipcRenderer.invoke('snap-external', {
     windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title,
     x: w.x, y: w.y, width: w.width, height: w.height,
+    targetSlot: (typeof targetSlot === 'number') ? targetSlot : undefined,
   });
   if (result.ok) { snappedExternals.set(w.windowNumber, { title: w.title, app: w.app }); render(); }
+  else if (result.reason === 'no-slot') showToast('空きスロットがありません。Grid を増やすか既存の snap を解除してください。', 'error');
+  else if (result.reason === 'snapped-elsewhere') showToast('他の workspace で既に snap されています。', 'error');
+  else if (!result.ok) showToast('snap に失敗しました。', 'error');
+}
+
+// ── Slot picker: Snap ボタンクリック時に浮かぶミニグリッド ──
+let _pickerEl = null;
+async function openSlotPicker(anchorBtn, w) {
+  if (_pickerEl) { _pickerEl.remove(); _pickerEl = null; }
+  const state = await ipcRenderer.invoke('get-grid-state');
+  if (!state) return;
+  const { cols, rows, slots } = state;
+  // 空 slot が 1 つしかなければそこへ直接 snap (ピッカー不要)
+  const freeSlots = slots.map((s,i)=>s?null:i).filter(i=>i!==null);
+  if (freeSlots.length === 1) { snapExternal(w, freeSlots[0]); return; }
+  if (freeSlots.length === 0) { snapExternal(w); return; } // no-slot エラーは main 側で処理
+
+  const picker = document.createElement('div');
+  _pickerEl = picker;
+  picker.className = 'slot-picker';
+  picker.style.cssText = `
+    position:fixed; z-index:10000;
+    background:rgba(28,28,30,0.92); backdrop-filter:blur(14px);
+    border:1px solid rgba(255,255,255,0.08); border-radius:10px;
+    padding:10px; box-shadow:0 16px 40px rgba(0,0,0,0.5);
+    opacity:0; transform:scale(0.94); transition:opacity .12s ease,transform .14s ease;
+  `;
+  const grid = document.createElement('div');
+  grid.style.cssText = `display:grid; grid-template-columns:repeat(${cols},1fr); grid-template-rows:repeat(${rows},1fr); gap:5px; width:${cols*52}px; height:${rows*40}px;`;
+  for (let i = 0; i < cols * rows; i++) {
+    const cell = document.createElement('div');
+    const occ = slots[i];
+    const isFree = !occ;
+    cell.style.cssText = `
+      border-radius:6px; position:relative; cursor:${isFree?'pointer':'not-allowed'};
+      background:${isFree?'rgba(59,130,246,0.12)':'rgba(255,255,255,0.04)'};
+      border:1px solid ${isFree?'rgba(96,165,250,0.45)':'rgba(255,255,255,0.06)'};
+      transition:background .12s ease, border-color .12s ease, transform .08s ease;
+      display:flex; align-items:center; justify-content:center;
+      color:${isFree?'#93c5fd':'rgba(255,255,255,0.35)'};
+      font-size:10px; font-weight:600; overflow:hidden;
+      padding:2px 4px; text-align:center; line-height:1.15;
+    `;
+    if (isFree) {
+      cell.textContent = String(i + 1);
+      cell.addEventListener('mouseenter', () => {
+        cell.style.background = 'rgba(59,130,246,0.35)';
+        cell.style.borderColor = '#60a5fa';
+        cell.style.transform = 'scale(1.04)';
+      });
+      cell.addEventListener('mouseleave', () => {
+        cell.style.background = 'rgba(59,130,246,0.12)';
+        cell.style.borderColor = 'rgba(96,165,250,0.45)';
+        cell.style.transform = 'scale(1)';
+      });
+      cell.addEventListener('click', (e) => {
+        e.stopPropagation();
+        picker.remove(); _pickerEl = null;
+        snapExternal(w, i);
+      });
+    } else {
+      const t = (occ.title || '').slice(0, 20);
+      cell.textContent = t;
+      cell.title = occ.title || occ.type;
+    }
+    grid.appendChild(cell);
+  }
+  picker.appendChild(grid);
+  document.body.appendChild(picker);
+
+  // viewport 内に必ず収める (上部アイテム時も menu bar / 端クリップ回避)
+  const r = anchorBtn.getBoundingClientRect();
+  const pw = picker.offsetWidth, ph = picker.offsetHeight;
+  const margin = 12;
+  // 横: 左側優先、入らなければ右、それでもダメなら画面端に貼る
+  let left = r.left - pw - 10;
+  if (left < margin) left = r.right + 10;
+  if (left + pw + margin > window.innerWidth) left = window.innerWidth - pw - margin;
+  if (left < margin) left = margin;
+  // 縦: anchor 中央に合わせる → 上下にはみ出たら anchor の下/上へフォールバック
+  let top = r.top + r.height / 2 - ph / 2;
+  if (top < margin) {
+    top = r.bottom + 6;  // anchor の下に置く
+    if (top + ph + margin > window.innerHeight) top = margin;
+  }
+  if (top + ph + margin > window.innerHeight) {
+    top = r.top - ph - 6;  // anchor の上に置く
+    if (top < margin) top = Math.max(margin, window.innerHeight - ph - margin);
+  }
+  picker.style.left = `${left}px`; picker.style.top = `${top}px`;
+  requestAnimationFrame(() => { picker.style.opacity = '1'; picker.style.transform = 'scale(1)'; });
+
+  // 外クリックで閉じる
+  const closer = (e) => {
+    if (!picker.contains(e.target) && e.target !== anchorBtn) {
+      picker.remove(); _pickerEl = null;
+      document.removeEventListener('mousedown', closer, true);
+      document.removeEventListener('keydown', keyCloser);
+    }
+  };
+  const keyCloser = (e) => { if (e.key === 'Escape') { picker.remove(); _pickerEl = null; document.removeEventListener('mousedown', closer, true); document.removeEventListener('keydown', keyCloser); } };
+  setTimeout(() => {
+    document.addEventListener('mousedown', closer, true);
+    document.addEventListener('keydown', keyCloser);
+  }, 0);
 }
 
 async function unsnapExternal(windowNumber) {
@@ -571,6 +768,13 @@ function render() {
   editBtn.title = 'Edit Grid Ratios';
   editBtn.addEventListener('click', () => ipcRenderer.send('enter-grid-edit'));
   selector.appendChild(editBtn);
+  // Retile ボタン (snapped ウィンドウを slot に揃え直す)
+  const retileBtn = document.createElement('button');
+  retileBtn.className = 'grid-opt';
+  retileBtn.textContent = '\u21bb';
+  retileBtn.title = 'Retile (snap 済みウィンドウを grid に揃え直す)';
+  retileBtn.addEventListener('click', () => ipcRenderer.invoke('retile-now'));
+  selector.appendChild(retileBtn);
   gridTitle.appendChild(selector);
   _gridSection.appendChild(gridTitle);
 
@@ -683,7 +887,7 @@ function render() {
           const btn = document.createElement('button');
           btn.className = 'ext-btn snap';
           btn.textContent = 'Snap';
-          btn.addEventListener('click', (e) => { e.stopPropagation(); snapExternal(w); });
+          btn.addEventListener('click', (e) => { e.stopPropagation(); openSlotPicker(btn, w); });
           item.appendChild(btn);
         }
       }
@@ -822,11 +1026,20 @@ ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo) => {
   scheduleRender();
 });
 
-// ── Raise on titlebar click only (軽量化: 全 mousedown での raise-all を廃止) ──
-// 以前は document 全体の mousedown で raise-all を送っていたが、毎クリック
-// daemon.raise が走り体感ラグの原因になっていた。タイトルバークリックのみに限定。
-document.getElementById('titlebar').addEventListener('mousedown', () => {
+// ── Raise on sidebar click (軽量: mousedown ではなく mouseup + debounce で発火) ──
+// titlebar + content のクリックで snapped 全体を前面化。0.8s throttle で多発防止。
+let _raiseThrottle = 0;
+function triggerRaiseAll() {
+  const now = Date.now();
+  if (now - _raiseThrottle < 800) return;
+  _raiseThrottle = now;
   ipcRenderer.send('raise-all');
+}
+document.getElementById('titlebar').addEventListener('mousedown', triggerRaiseAll);
+// content エリア内クリック (ただしボタン等の個別要素は除く: stopPropagation 済み)
+document.getElementById('content').addEventListener('mousedown', (e) => {
+  // すでに stopPropagation されてる要素 (Snap ボタン等) はここに届かない
+  triggerRaiseAll();
 });
 
 // ── Collapse ──
