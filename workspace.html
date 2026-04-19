@@ -75,6 +75,12 @@
   }
   #collapse-btn:hover { background: rgba(0,0,0,0.06); color: rgba(40,40,70,0.6); }
 
+  #titlebar-grid {
+    display: flex; align-items: center; gap: 2px;
+    -webkit-app-region: no-drag;
+  }
+  #titlebar-grid .grid-opt { -webkit-app-region: no-drag; }
+
   body.collapsed #content, body.collapsed #status { display: none; }
   body.collapsed #titlebar {
     flex-direction: column; height: 100%; padding: 42px 0 8px; align-items: center; gap: 6px;
@@ -84,6 +90,7 @@
   body.collapsed #title:hover { background: transparent; }
   body.collapsed #title-input { display: none !important; }
   body.collapsed #collapse-btn { transform: rotate(180deg); }
+  body.collapsed #titlebar-grid { display: none; }
 
   /* ── Content ── */
   #content { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 5px; }
@@ -309,6 +316,7 @@
   <span id="title">TiN</span>
   <input id="title-input" type="text" />
   <div style="flex:1"></div>
+  <div id="titlebar-grid"></div>
   <div id="collapse-btn" title="Collapse sidebar (Cmd+B)">‹</div>
 </div>
 <div id="content"></div>
@@ -747,6 +755,8 @@ let _sectionsAttached = false;
 function render() {
   // ━━ GRID section (rebuild children only) ━━
   _gridSection.innerHTML = '';
+  const _titlebarGrid = document.getElementById('titlebar-grid');
+  if (_titlebarGrid) _titlebarGrid.innerHTML = '';
   const gridCount = Object.keys(gridSlots).length + snappedExternals.size;
   const gridTitle = document.createElement('div');
   gridTitle.className = 'section-title';
@@ -775,7 +785,11 @@ function render() {
   retileBtn.title = 'Retile (snap 済みウィンドウを grid に揃え直す)';
   retileBtn.addEventListener('click', () => ipcRenderer.invoke('retile-now'));
   selector.appendChild(retileBtn);
-  gridTitle.appendChild(selector);
+  if (_titlebarGrid) {
+    _titlebarGrid.appendChild(selector);
+  } else {
+    gridTitle.appendChild(selector);
+  }
   _gridSection.appendChild(gridTitle);
 
   for (const [slot] of Object.entries(gridSlots)) {
