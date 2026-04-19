@@ -187,38 +187,185 @@
   .badge-finder { background: rgba(255,170,40,0.15); color: rgba(200,120,0,0.9); }
   .badge-tin { background: rgba(130,70,220,0.14); color: rgba(100,50,180,0.9); }
 
-  /* サブセクション見出し (TERMINAL / FINDER) */
-  .subsection-title {
-    font-size: 9px; font-weight: 600; letter-spacing: 0.8px;
-    padding: 6px 8px 3px; color: rgba(0,0,0,0.35);
-    display: flex; align-items: center; gap: 5px;
+  /* ── Segmented Tabs (AVAILABLE) — v1.3.4 B 案 ── */
+  .avail-tabs {
+    display: flex;
+    padding: 0 2px;
+    border-bottom: 1px solid rgba(0,0,0,0.08);
+    margin: 0 -2px 4px;
   }
-  .subsection-title .subsection-icon { font-size: 11px; }
-  .subsection-title.term { color: rgba(30,100,190,0.6); }
-  .subsection-title.finder { color: rgba(200,120,0,0.75); }
-  .subsection-title.tin { color: rgba(110,60,190,0.75); }
+  .avail-tab {
+    flex: 1;
+    padding: 7px 3px 6px;
+    font-size: 10px; font-weight: 700;
+    color: rgba(0,0,0,0.4);
+    text-align: center; cursor: pointer;
+    border-bottom: 2px solid transparent;
+    display: flex; align-items: center; justify-content: center; gap: 4px;
+    user-select: none;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    transition: color 0.1s, border-color 0.1s;
+  }
+  .avail-tab:hover:not(.active) { color: rgba(0,0,0,0.65); }
+  .avail-tab .tab-count {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 14px; height: 13px; padding: 0 3px;
+    border-radius: 6px;
+    background: rgba(0,0,0,0.06); color: rgba(0,0,0,0.5);
+    font-size: 9px; font-weight: 700;
+    font-feature-settings: "tnum";
+  }
+  .avail-tab.active { color: rgba(0,0,0,0.9); }
+  .avail-tab.term.active { color: rgba(30,100,190,0.95); border-bottom-color: rgba(30,100,190,0.8); }
+  .avail-tab.term.active .tab-count { background: rgba(30,100,190,0.12); color: rgba(30,100,190,0.95); }
+  .avail-tab.finder.active { color: rgba(200,120,0,0.95); border-bottom-color: rgba(200,120,0,0.85); }
+  .avail-tab.finder.active .tab-count { background: rgba(200,120,0,0.15); color: rgba(200,120,0,0.95); }
+  .avail-tab.tin.active { color: rgba(100,50,180,0.95); border-bottom-color: rgba(100,50,180,0.85); }
+  .avail-tab.tin.active .tab-count { background: rgba(100,50,180,0.14); color: rgba(100,50,180,0.95); }
+  .avail-tab .tab-ai {
+    font-size: 8px; font-weight: 700;
+    padding: 1px 4px; border-radius: 3px;
+    background: rgba(0,0,0,0.05); color: rgba(0,0,0,0.4);
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .avail-tab .tab-ai:hover { background: rgba(0,0,0,0.1); color: rgba(0,0,0,0.7); }
 
-  /* AVAILABLE サブセクション (TERMINAL/FINDER/TiN) のアイテムを 2 列 grid で表示 */
-  .avail-item-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 2px 4px;
-    padding: 2px 2px 4px;
+  /* Search */
+  .avail-search { padding: 4px 2px 6px; }
+  .avail-search input {
+    width: 100%;
+    padding: 5px 8px;
+    font-size: 11px;
+    border: 1px solid rgba(0,0,0,0.08);
+    border-radius: 5px;
+    background: rgba(0,0,0,0.025);
+    color: rgba(0,0,0,0.85);
+    outline: none;
+    font-family: inherit;
+    transition: border-color 0.1s, background 0.1s;
   }
-  .avail-item-grid .ext-item {
+  .avail-search input::placeholder { color: rgba(0,0,0,0.3); }
+  .avail-search input:focus { border-color: rgba(40,110,200,0.5); background: #fff; }
+
+  /* Row */
+  .avail-list { display: flex; flex-direction: column; gap: 1px; padding: 0 2px 2px; }
+  .row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 6px;
+    cursor: pointer;
+    border-radius: 5px;
+    transition: background 0.1s;
     min-width: 0;
-    padding: 4px 6px;
-    border-bottom: none;
-    border-radius: 4px;
   }
-  .avail-item-grid .ext-item .ext-title { font-size: 10px; min-width: 0; }
-  .avail-item-grid .ext-btn { padding: 2px 5px; font-size: 9px; }
-  .avail-item-grid .app-badge { padding: 1px 4px; font-size: 9px; }
-  body.compact .avail-item-grid .ext-item { padding: 3px 5px; }
-  .avail-item-grid.tin .ext-item { background: rgba(130,70,220,0.04); }
-  .avail-item-grid.tin .ext-item:hover { background: rgba(130,70,220,0.10); }
-  .avail-item-grid.term .ext-item:hover { background: rgba(30,100,190,0.06); }
-  .avail-item-grid.finder .ext-item:hover { background: rgba(200,120,0,0.06); }
+  .row:hover { background: rgba(0,0,0,0.03); }
+  .row .row-icon {
+    flex-shrink: 0;
+    width: 22px; height: 22px;
+    border-radius: 5px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 9px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    letter-spacing: 0.02em;
+  }
+  .row.term .row-icon { background: rgba(30,100,190,0.1); color: rgba(30,100,190,0.9); }
+  .row.finder .row-icon { background: rgba(200,120,0,0.12); color: rgba(200,120,0,0.95); }
+  .row.tin .row-icon { background: rgba(100,50,180,0.12); color: rgba(100,50,180,0.95); }
+  .row .row-info { flex: 1; min-width: 0; }
+  .row .row-title {
+    font-size: 11.5px; font-weight: 500; color: rgba(0,0,0,0.85);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .row .row-subtitle {
+    font-size: 9.5px; color: rgba(0,0,0,0.42);
+    margin-top: 1px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .row .row-action {
+    flex-shrink: 0;
+    font-size: 9.5px; font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: none;
+    background: rgba(0,0,0,0.04);
+    cursor: pointer;
+    color: rgba(0,0,0,0.55);
+    transition: all 0.1s;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    opacity: 0.7;
+  }
+  .row:hover .row-action { opacity: 1; }
+  .row.term:hover .row-action { background: rgba(30,100,190,0.9); color: white; }
+  .row.finder:hover .row-action { background: rgba(200,120,0,0.9); color: white; }
+  .row.tin .row-action { background: rgba(100,50,180,0.1); color: rgba(100,50,180,0.85); }
+  .row.tin:hover .row-action { background: rgba(100,50,180,0.9); color: white; }
+  .row .row-ws-badge {
+    flex-shrink: 0;
+    font-size: 9px; font-weight: 600;
+    padding: 2px 6px; border-radius: 4px;
+    white-space: nowrap; cursor: pointer;
+  }
+  .row.current {
+    background: rgba(100,50,180,0.06);
+    position: relative;
+  }
+  .row.current::before {
+    content: ""; position: absolute; left: 0; top: 3px; bottom: 3px;
+    width: 2px; border-radius: 1px; background: rgba(100,50,180,0.7);
+  }
+  body.compact .row { padding: 4px 5px; }
+  body.compact .row .row-icon { width: 20px; height: 20px; font-size: 8px; }
+  body.compact .row .row-title { font-size: 10.5px; }
+  body.compact .row .row-subtitle { font-size: 9px; }
+  .avail-empty {
+    padding: 18px 10px;
+    text-align: center;
+    font-size: 10.5px;
+    color: rgba(0,0,0,0.3);
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+
+  /* Grid dots strip */
+  .grid-dots-strip {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 2px;
+  }
+  .grid-dots-row { display: flex; gap: 3px; flex: 1; min-width: 0; }
+  .grid-dot {
+    flex: 1; height: 18px;
+    min-width: 18px;
+    border-radius: 4px;
+    background: rgba(0,0,0,0.04);
+    border: 1px solid rgba(0,0,0,0.07);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; color: rgba(0,0,0,0.35);
+    cursor: pointer;
+    transition: all 0.1s;
+    font-weight: 700;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .grid-dot:hover { background: rgba(0,0,0,0.08); color: rgba(0,0,0,0.6); }
+  .grid-dot.filled-pty {
+    background: rgba(50,170,110,0.14); border-color: rgba(50,170,110,0.55);
+    color: rgba(40,130,85,0.95);
+  }
+  .grid-dot.filled-ext {
+    background: rgba(40,120,210,0.14); border-color: rgba(40,120,210,0.55);
+    color: rgba(30,90,180,0.95);
+  }
+  .grid-dot.filled-pty:hover { background: rgba(50,170,110,0.22); }
+  .grid-dot.filled-ext:hover { background: rgba(40,120,210,0.22); }
+  .grid-count-pill {
+    font-size: 9.5px; color: rgba(0,0,0,0.45);
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-weight: 600;
+    padding: 2px 6px; border-radius: 4px;
+    background: rgba(0,0,0,0.04);
+    font-feature-settings: "tnum";
+  }
+  body.compact .grid-dot { height: 14px; font-size: 8px; }
 
   .card-close {
     width: 20px; height: 20px; border-radius: 5px;
@@ -378,6 +525,11 @@ let showTiNWindows = true;
 let snappedByOther = {};
 let gridSlots = {};
 let gridCols = 2, gridRows = 2;
+// B案: AVAILABLE タブ切替 state
+let activeAvailTab = 'term'; // 'term' | 'finder' | 'tin'
+let availSearchText = '';
+// input 要素を render 跨ぎで保持 (focus / 入力値維持)
+let _availSearchInput = null;
 
 // ── Title renaming (click to edit) ──
 titleEl.addEventListener('click', () => {
@@ -772,6 +924,130 @@ function snappedBadgeHtml(appName) {
   return appBadgeHtml(appName);
 }
 
+// ── B案: renderAvailRow + populate/updateAvailList (タブ切替 + search フィルタ) ──
+function renderAvailRow(w, type) {
+  const row = document.createElement('div');
+  row.className = `row ${type}`;
+
+  // icon
+  const icon = document.createElement('div');
+  icon.className = 'row-icon';
+  icon.textContent = type === 'term' ? 'T' : type === 'finder' ? 'F' : '\u25C6';
+  row.appendChild(icon);
+
+  // title / subtitle 分割
+  const rawTitle = w.title || 'untitled';
+  let titleText = rawTitle;
+  let subtitleText = w.app || '';
+  if (type === 'tin') {
+    const m = rawTitle.match(/^TiN\s*[\u2014\u2013\-]\s*(.+)$/);
+    if (m) { titleText = m[1].trim(); subtitleText = 'Workspace'; }
+  } else {
+    const m = rawTitle.match(/^(.{1,24}?)\s+[\u2014\u2013]\s+(.+)$/);
+    if (m) { titleText = m[1]; subtitleText = m[2]; }
+  }
+  if (titleText.length > 30) titleText = titleText.substring(0, 27) + '...';
+  if (subtitleText && subtitleText.length > 40) subtitleText = subtitleText.substring(0, 37) + '...';
+
+  const info = document.createElement('div');
+  info.className = 'row-info';
+  const titleDiv = document.createElement('div');
+  titleDiv.className = 'row-title';
+  titleDiv.textContent = titleText;
+  info.appendChild(titleDiv);
+  if (subtitleText) {
+    const sub = document.createElement('div');
+    sub.className = 'row-subtitle';
+    sub.textContent = subtitleText;
+    info.appendChild(sub);
+  }
+  row.appendChild(info);
+
+  // 右側: ws-badge (他 workspace 所属) or action ボタン
+  const otherWs = snappedByOther[w.windowNumber];
+  if (otherWs) {
+    const wsBadge = document.createElement('span');
+    wsBadge.className = 'row-ws-badge';
+    wsBadge.textContent = '\u2192 ' + (otherWs.name || '');
+    if (otherWs.color) {
+      wsBadge.style.background = otherWs.color.bg;
+      wsBadge.style.color = otherWs.color.fg;
+    }
+    wsBadge.title = 'バッジ: 所属 workspace を前面化';
+    wsBadge.addEventListener('click', (e) => {
+      e.stopPropagation();
+      ipcRenderer.send('switch-to-workspace-of', { windowNumber: w.windowNumber });
+    });
+    row.appendChild(wsBadge);
+  } else {
+    const action = document.createElement('button');
+    action.className = 'row-action';
+    action.textContent = type === 'tin' ? 'Go' : 'Snap';
+    action.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (type === 'tin') {
+        ipcRenderer.send('raise-tin-window', { windowNumber: w.windowNumber });
+      } else {
+        openSlotPicker(action, w);
+      }
+    });
+    row.appendChild(action);
+  }
+
+  // row 本体クリック
+  row.addEventListener('click', (e) => {
+    if (e.target.classList.contains('row-action') || e.target.classList.contains('row-ws-badge')) return;
+    if (type === 'tin') {
+      ipcRenderer.send('raise-tin-window', { windowNumber: w.windowNumber });
+    } else {
+      ipcRenderer.invoke('wobble-window', {
+        windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title,
+      });
+    }
+  });
+  return row;
+}
+
+function filterAvailByQ(items, q) {
+  if (!q) return items;
+  const lo = q.toLowerCase();
+  return items.filter(w =>
+    (w.title || '').toLowerCase().includes(lo) ||
+    (w.app || '').toLowerCase().includes(lo)
+  );
+}
+
+function populateAvailList(container, terminal, finder, tin) {
+  container.innerHTML = '';
+  let items, type;
+  if (activeAvailTab === 'term') { items = terminal; type = 'term'; }
+  else if (activeAvailTab === 'finder') { items = finder; type = 'finder'; }
+  else { items = tin; type = 'tin'; }
+  const filtered = filterAvailByQ(items, availSearchText);
+  if (filtered.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'avail-empty';
+    empty.textContent = availSearchText
+      ? `"${availSearchText}" にマッチなし`
+      : (items.length === 0 ? '(空)' : '');
+    container.appendChild(empty);
+    return;
+  }
+  filtered.forEach(w => container.appendChild(renderAvailRow(w, type)));
+}
+
+function updateAvailList() {
+  const list = document.querySelector('[data-avail-list="1"]');
+  if (!list) return;
+  const available = externalWindows.filter(w => !snappedExternals.has(w.windowNumber));
+  const terminal = available.filter(w => !isFinderApp(w.app) && !isTiNApp(w.app));
+  const finder = available.filter(w => isFinderApp(w.app));
+  const tin = available.filter(w =>
+    isTiNApp(w.app) && !/ Grid$/.test(w.title) && !/\[\d+\]$/.test(w.title)
+  );
+  populateAvailList(list, terminal, finder, tin);
+}
+
 // ── Persistent DOM sections (created once, updated in-place) ──
 const _gridSection = document.createElement('div');
 _gridSection.className = 'section section-grid';
@@ -833,6 +1109,35 @@ function render() {
   }
   _gridSection.appendChild(gridTitle);
 
+  // GRID dots strip — slot 状態を 1 行で可視化
+  {
+    const totalSlots = gridCols * gridRows;
+    const ptySet = new Set(Object.keys(gridSlots).map(Number));
+    const strip = document.createElement('div');
+    strip.className = 'grid-dots-strip';
+    const dotsRow = document.createElement('div');
+    dotsRow.className = 'grid-dots-row';
+    for (let i = 0; i < totalSlots; i++) {
+      const dot = document.createElement('div');
+      dot.className = 'grid-dot';
+      if (ptySet.has(i)) {
+        dot.classList.add('filled-pty');
+        dot.textContent = 'P';
+        dot.title = `Slot ${i + 1}: Terminal (pty)`;
+      } else {
+        dot.textContent = String(i + 1);
+        dot.title = `Slot ${i + 1}: Empty`;
+      }
+      dotsRow.appendChild(dot);
+    }
+    strip.appendChild(dotsRow);
+    const countPill = document.createElement('span');
+    countPill.className = 'grid-count-pill';
+    countPill.textContent = `${ptySet.size + snappedExternals.size}/${totalSlots}`;
+    strip.appendChild(countPill);
+    _gridSection.appendChild(strip);
+  }
+
   for (const [slot] of Object.entries(gridSlots)) {
     const card = document.createElement('div');
     card.className = 'ext-item';
@@ -891,120 +1196,87 @@ function render() {
     _gridSection.appendChild(releaseAll);
   }
 
-  // ━━ AVAILABLE section ━━
+  // ━━ AVAILABLE section (B案: Segmented Tabs) ━━
   const available = externalWindows.filter(w => !snappedExternals.has(w.windowNumber));
   _availSection.innerHTML = '';
   if (available.length > 0) {
     const availableTerminal = available.filter(w => !isFinderApp(w.app) && !isTiNApp(w.app));
     const availableFinder = available.filter(w => isFinderApp(w.app));
-    // TiN Grid overlay と slot terminal は sidebar と同一 workspace を表すので除外、sidebar のみ表示
+    // TiN Grid overlay と slot terminal は除外、sidebar のみ
     const availableTiN = available.filter(w =>
       isTiNApp(w.app) && !/ Grid$/.test(w.title) && !/\[\d+\]$/.test(w.title)
     );
 
-    const extTitle = document.createElement('div');
-    extTitle.className = 'section-title';
-    extTitle.innerHTML = `<span class="section-accent">AVAILABLE</span> (${available.length})`;
-    // (AI ボタンは TERMINAL / FINDER サブセクションに個別配置)
-    _availSection.appendChild(extTitle);
-
-    const renderAvailItem = (w) => {
-      const item = document.createElement('div');
-      item.className = 'ext-item';
-      let t = w.title || 'untitled';
-      if (t.length > 28) t = t.substring(0, 25) + '...';
-      const otherWs = snappedByOther[w.windowNumber];
-      if (otherWs) {
-        const ownerColor = snappedByOther[w.windowNumber];
-        const wsBadgeStyle = ownerColor && ownerColor.color ? `style="background:${ownerColor.color.bg};color:${ownerColor.color.fg};cursor:pointer"` : 'style="cursor:pointer"';
-        item.innerHTML = `${appBadgeHtml(w.app)}<span class="ext-title">${t}</span><span class="ws-badge" ${wsBadgeStyle} title="バッジ: 所属 workspace を前面化">\u2192 ${ownerColor.name}</span>`;
-        item.style.cursor = 'pointer';
-        item.title = 'クリックでこのウィンドウを wobble (場所確認)';
-        // item 本体クリック: そのウィンドウだけを wobble (どの workspace 所属でも)
-        item.addEventListener('click', (e) => {
-          if (e.target && e.target.classList && (e.target.classList.contains('ws-badge') || e.target.classList.contains('ext-btn'))) return;
-          if (isTiNApp(w.app)) {
-            ipcRenderer.send('raise-tin-window', { windowNumber: w.windowNumber });
-          } else {
-            ipcRenderer.invoke('wobble-window', { windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title });
-          }
-        });
-        // バッジクリックで所属 workspace 全体を前面化
-        item.querySelector('.ws-badge').addEventListener('click', (e) => {
+    // タブバー
+    const tabsBar = document.createElement('div');
+    tabsBar.className = 'avail-tabs';
+    const makeTab = (key, label, count, aiFilter) => {
+      const tab = document.createElement('div');
+      tab.className = `avail-tab ${key}${activeAvailTab === key ? ' active' : ''}`;
+      const labelSpan = document.createElement('span');
+      labelSpan.textContent = label;
+      const countSpan = document.createElement('span');
+      countSpan.className = 'tab-count';
+      countSpan.textContent = String(count);
+      tab.appendChild(labelSpan);
+      tab.appendChild(countSpan);
+      if (aiFilter) {
+        const ai = document.createElement('span');
+        ai.className = 'tab-ai';
+        ai.textContent = 'AI';
+        ai.title = 'Auto-snap this category';
+        ai.addEventListener('click', (e) => {
           e.stopPropagation();
-          ipcRenderer.send('switch-to-workspace-of', { windowNumber: w.windowNumber });
+          ipcRenderer.send('trigger-auto-snap', { filter: aiFilter });
         });
-      } else {
-        item.innerHTML = `${appBadgeHtml(w.app)}<span class="ext-title">${t}</span>`;
-        item.style.cursor = 'pointer';
-        item.title = isTiNApp(w.app) ? 'クリックで前面化' : 'Click title to locate, Snap to dock';
-        item.addEventListener('click', (e) => {
-          if (e.target && e.target.classList && e.target.classList.contains('ext-btn')) return;
-          if (isTiNApp(w.app)) {
-            // TiN 自身は wobble しない (自分を揺らしても意味がない)、raise のみ
-            ipcRenderer.send('raise-tin-window', { windowNumber: w.windowNumber });
-          } else {
-            ipcRenderer.invoke('wobble-window', {
-              windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title,
-            });
-          }
-        });
-        if (!isTiNApp(w.app)) {
-          const btn = document.createElement('button');
-          btn.className = 'ext-btn snap';
-          btn.textContent = 'Snap';
-          btn.addEventListener('click', (e) => { e.stopPropagation(); openSlotPicker(btn, w); });
-          item.appendChild(btn);
-        }
+        tab.appendChild(ai);
       }
-      return item;
+      tab.addEventListener('click', () => {
+        if (activeAvailTab === key) return;
+        activeAvailTab = key;
+        render();
+      });
+      return tab;
     };
+    tabsBar.appendChild(makeTab('term', 'Terminal', availableTerminal.length, 'terminal'));
+    tabsBar.appendChild(makeTab('finder', 'Finder', availableFinder.length, 'finder'));
+    tabsBar.appendChild(makeTab('tin', 'TiN', availableTiN.length, null));
+    _availSection.appendChild(tabsBar);
 
-    if (availableTerminal.length > 0) {
-      const subTitle = document.createElement('div');
-      subTitle.className = 'subsection-title term section-title-clickable';
-      subTitle.innerHTML = `<span class="section-toggle">${showTerminals ? '\u25be' : '\u25b8'}</span><span class="subsection-icon">\u2328\uFE0F</span>TERMINAL (${availableTerminal.length})`;
-      subTitle.addEventListener('click', (e) => { if (e.target.classList.contains('grid-opt')) return; showTerminals = !showTerminals; render(); });
-      const tAi = document.createElement('button'); tAi.className = 'grid-opt'; tAi.textContent = 'AI'; tAi.style.marginLeft = 'auto';
-      tAi.addEventListener('click', (e) => { e.stopPropagation(); ipcRenderer.send('trigger-auto-snap', { filter: 'terminal' }); });
-      subTitle.appendChild(tAi);
-      _availSection.appendChild(subTitle);
-      if (showTerminals) {
-        const tg = document.createElement('div');
-        tg.className = 'avail-item-grid term';
-        availableTerminal.forEach(w => tg.appendChild(renderAvailItem(w)));
-        _availSection.appendChild(tg);
-      }
+    // search input (render 跨ぎで input 要素を保持 → focus/値維持)
+    const searchWrap = document.createElement('div');
+    searchWrap.className = 'avail-search';
+    if (!_availSearchInput) {
+      _availSearchInput = document.createElement('input');
+      _availSearchInput.type = 'text';
+      _availSearchInput.spellcheck = false;
+      _availSearchInput.addEventListener('input', (e) => {
+        availSearchText = e.target.value;
+        updateAvailList();
+      });
+      _availSearchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && availSearchText) {
+          _availSearchInput.value = '';
+          availSearchText = '';
+          updateAvailList();
+        }
+      });
     }
-    if (availableFinder.length > 0) {
-      const subTitle = document.createElement('div');
-      subTitle.className = 'subsection-title finder section-title-clickable';
-      subTitle.innerHTML = `<span class="section-toggle">${showFinders ? '\u25be' : '\u25b8'}</span><span class="subsection-icon">\uD83D\uDCC2</span>FINDER (${availableFinder.length})`;
-      subTitle.addEventListener('click', (e) => { if (e.target.classList.contains('grid-opt')) return; showFinders = !showFinders; render(); });
-      const fAi = document.createElement('button'); fAi.className = 'grid-opt'; fAi.textContent = 'AI'; fAi.style.marginLeft = 'auto';
-      fAi.addEventListener('click', (e) => { e.stopPropagation(); ipcRenderer.send('trigger-auto-snap', { filter: 'finder' }); });
-      subTitle.appendChild(fAi);
-      _availSection.appendChild(subTitle);
-      if (showFinders) {
-        const fg = document.createElement('div');
-        fg.className = 'avail-item-grid finder';
-        availableFinder.forEach(w => fg.appendChild(renderAvailItem(w)));
-        _availSection.appendChild(fg);
-      }
-    }
-    if (availableTiN.length > 0) {
-      const subTitle = document.createElement('div');
-      subTitle.className = 'subsection-title tin section-title-clickable';
-      subTitle.innerHTML = `<span class="section-toggle">${showTiNWindows ? '\u25be' : '\u25b8'}</span><span class="subsection-icon">\u25C6</span>TiN (${availableTiN.length})`;
-      subTitle.addEventListener('click', () => { showTiNWindows = !showTiNWindows; render(); });
-      _availSection.appendChild(subTitle);
-      if (showTiNWindows) {
-        const tinGrid = document.createElement('div');
-        tinGrid.className = 'avail-item-grid tin';
-        availableTiN.forEach(w => tinGrid.appendChild(renderAvailItem(w)));
-        _availSection.appendChild(tinGrid);
-      }
-    }
+    _availSearchInput.placeholder = activeAvailTab === 'term'
+      ? 'Filter terminals...'
+      : activeAvailTab === 'finder'
+        ? 'Filter finder windows...'
+        : 'Filter workspaces...';
+    if (_availSearchInput.value !== availSearchText) _availSearchInput.value = availSearchText;
+    searchWrap.appendChild(_availSearchInput);
+    _availSection.appendChild(searchWrap);
+
+    // list
+    const list = document.createElement('div');
+    list.className = 'avail-list';
+    list.setAttribute('data-avail-list', '1');
+    _availSection.appendChild(list);
+    populateAvailList(list, availableTerminal, availableFinder, availableTiN);
   }
 
   // ━━ SIDEBAR TERMINALS section (xterm containers are preserved across renders) ━━
