@@ -76,10 +76,18 @@
   #collapse-btn:hover { background: rgba(0,0,0,0.06); color: rgba(40,40,70,0.6); }
 
   #titlebar-grid {
-    display: flex; align-items: center; gap: 2px;
+    display: flex; align-items: center; gap: 3px;
+    margin-left: 6px; padding-left: 10px;
+    border-left: 1px solid rgba(0,0,0,0.12);
+    height: 22px;
     -webkit-app-region: no-drag;
   }
-  #titlebar-grid .grid-opt { -webkit-app-region: no-drag; }
+  #titlebar-grid .grid-opt {
+    -webkit-app-region: no-drag;
+    padding: 4px 9px; font-size: 11px; min-width: 26px;
+    line-height: 1;
+  }
+  #titlebar-grid .grid-size-cycle { min-width: 38px; }
 
   body.collapsed #content, body.collapsed #status { display: none; }
   body.collapsed #titlebar {
@@ -764,13 +772,23 @@ function render() {
   gridTitle.innerHTML = `<span class="section-accent"${accentStyle}>GRID</span> (${gridCount}/${gridCols * gridRows})`;
   const selector = document.createElement('div');
   selector.className = 'grid-selector';
-  [['2\u00d72', 2, 2], ['3\u00d73', 3, 3], ['2\u00d73', 2, 3]].forEach(([label, c, r]) => {
-    const btn = document.createElement('button');
-    btn.className = 'grid-opt' + (c === gridCols && r === gridRows ? ' active' : '');
-    btn.textContent = label;
-    btn.addEventListener('click', () => setGridSize(c, r));
-    selector.appendChild(btn);
-  });
+  const presets = [['2\u00d72', 2, 2], ['3\u00d73', 3, 3], ['2\u00d73', 2, 3]];
+  const curIdx = presets.findIndex(([_, c, r]) => c === gridCols && r === gridRows);
+  const sizeBtn = document.createElement('button');
+  sizeBtn.className = 'grid-opt grid-size-cycle active';
+  sizeBtn.textContent = curIdx >= 0 ? presets[curIdx][0] : `${gridCols}\u00d7${gridRows}`;
+  sizeBtn.title = 'Click to cycle sizes (or scroll)';
+  const cycleBy = (dir) => {
+    const base = curIdx < 0 ? 0 : curIdx;
+    const next = presets[(base + dir + presets.length) % presets.length];
+    setGridSize(next[1], next[2]);
+  };
+  sizeBtn.addEventListener('click', () => cycleBy(1));
+  sizeBtn.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    cycleBy(e.deltaY > 0 ? 1 : -1);
+  }, { passive: false });
+  selector.appendChild(sizeBtn);
   // Edit Grid ボタン
   const editBtn = document.createElement('button');
   editBtn.className = 'grid-opt';
