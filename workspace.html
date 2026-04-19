@@ -198,23 +198,27 @@
   .subsection-title.finder { color: rgba(200,120,0,0.75); }
   .subsection-title.tin { color: rgba(110,60,190,0.75); }
 
-  /* TiN タブは 2 列 grid で表示 */
-  .avail-tin-grid {
+  /* AVAILABLE サブセクション (TERMINAL/FINDER/TiN) のアイテムを 2 列 grid で表示 */
+  .avail-item-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 2px 4px;
     padding: 2px 2px 4px;
   }
-  .avail-tin-grid .ext-item {
+  .avail-item-grid .ext-item {
     min-width: 0;
     padding: 4px 6px;
     border-bottom: none;
     border-radius: 4px;
-    background: rgba(130,70,220,0.04);
   }
-  .avail-tin-grid .ext-item:hover { background: rgba(130,70,220,0.10); }
-  .avail-tin-grid .ext-item .ext-title { font-size: 10px; min-width: 0; }
-  body.compact .avail-tin-grid .ext-item { padding: 3px 5px; }
+  .avail-item-grid .ext-item .ext-title { font-size: 10px; min-width: 0; }
+  .avail-item-grid .ext-btn { padding: 2px 5px; font-size: 9px; }
+  .avail-item-grid .app-badge { padding: 1px 4px; font-size: 9px; }
+  body.compact .avail-item-grid .ext-item { padding: 3px 5px; }
+  .avail-item-grid.tin .ext-item { background: rgba(130,70,220,0.04); }
+  .avail-item-grid.tin .ext-item:hover { background: rgba(130,70,220,0.10); }
+  .avail-item-grid.term .ext-item:hover { background: rgba(30,100,190,0.06); }
+  .avail-item-grid.finder .ext-item:hover { background: rgba(200,120,0,0.06); }
 
   .card-close {
     width: 20px; height: 20px; border-radius: 5px;
@@ -965,7 +969,12 @@ function render() {
       tAi.addEventListener('click', (e) => { e.stopPropagation(); ipcRenderer.send('trigger-auto-snap', { filter: 'terminal' }); });
       subTitle.appendChild(tAi);
       _availSection.appendChild(subTitle);
-      if (showTerminals) availableTerminal.forEach(w => _availSection.appendChild(renderAvailItem(w)));
+      if (showTerminals) {
+        const tg = document.createElement('div');
+        tg.className = 'avail-item-grid term';
+        availableTerminal.forEach(w => tg.appendChild(renderAvailItem(w)));
+        _availSection.appendChild(tg);
+      }
     }
     if (availableFinder.length > 0) {
       const subTitle = document.createElement('div');
@@ -976,7 +985,12 @@ function render() {
       fAi.addEventListener('click', (e) => { e.stopPropagation(); ipcRenderer.send('trigger-auto-snap', { filter: 'finder' }); });
       subTitle.appendChild(fAi);
       _availSection.appendChild(subTitle);
-      if (showFinders) availableFinder.forEach(w => _availSection.appendChild(renderAvailItem(w)));
+      if (showFinders) {
+        const fg = document.createElement('div');
+        fg.className = 'avail-item-grid finder';
+        availableFinder.forEach(w => fg.appendChild(renderAvailItem(w)));
+        _availSection.appendChild(fg);
+      }
     }
     if (availableTiN.length > 0) {
       const subTitle = document.createElement('div');
@@ -986,7 +1000,7 @@ function render() {
       _availSection.appendChild(subTitle);
       if (showTiNWindows) {
         const tinGrid = document.createElement('div');
-        tinGrid.className = 'avail-tin-grid';
+        tinGrid.className = 'avail-item-grid tin';
         availableTiN.forEach(w => tinGrid.appendChild(renderAvailItem(w)));
         _availSection.appendChild(tinGrid);
       }
