@@ -347,7 +347,7 @@ async function restoreSnappedWindows(ws, persistedList) {
     // renderer の snappedExternals Map を初期化するための別 IPC
     const hydrate = [];
     for (const [wn, info] of ws.snappedExternals) {
-      hydrate.push({ windowNumber: wn, title: info.title, app: info.app });
+      hydrate.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
     }
     ws.win.webContents.send('hydrate-snapped', hydrate);
   } catch {}
@@ -414,7 +414,7 @@ async function restoreAllPending() {
     try {
       ws.win.webContents.send('restore-report', { restored, missing });
       const hydrate = [];
-      for (const [wn, info] of ws.snappedExternals) hydrate.push({ windowNumber: wn, title: info.title, app: info.app });
+      for (const [wn, info] of ws.snappedExternals) hydrate.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
       ws.win.webContents.send('hydrate-snapped', hydrate);
     } catch {}
     console.log(`[tin] restored ${restored.length} snapped, ${missing.length} missing in "${ws.name}"`);
@@ -519,7 +519,7 @@ async function recoverSnappedWindows() {
     try { await retileAll(ws); } catch {}
     // renderer 更新
     const hydrate = [];
-    for (const [wn, info] of ws.snappedExternals) hydrate.push({ windowNumber: wn, title: info.title, app: info.app });
+    for (const [wn, info] of ws.snappedExternals) hydrate.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
     if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('hydrate-snapped', hydrate);
   }
 }
@@ -1176,6 +1176,36 @@ ipcMain.handle('retile-now', async (event) => {
   return { ok: true };
 });
 
+// slot 入れ替え (drag&drop から呼ばれる)。pty/ext どちらも対応。
+ipcMain.handle('swap-grid-slots', async (event, { src, dst }) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return { ok: false };
+  if (src === dst) return { ok: true };
+  const total = ws.gridCols * ws.gridRows;
+  if (!Number.isFinite(src) || !Number.isFinite(dst) || src < 0 || dst < 0 || src >= total || dst >= total) {
+    return { ok: false, reason: 'invalid-slot' };
+  }
+  const srcPty = ws.gridWindows.get(src);
+  const dstPty = ws.gridWindows.get(dst);
+  let srcExt = null, dstExt = null;
+  for (const [wn, info] of ws.snappedExternals) {
+    if (info.slot === src) srcExt = { wn, info };
+    else if (info.slot === dst) dstExt = { wn, info };
+  }
+  // pty: gridWindows Map を入れ替え
+  if (srcPty) ws.gridWindows.delete(src);
+  if (dstPty) ws.gridWindows.delete(dst);
+  if (srcPty) ws.gridWindows.set(dst, srcPty);
+  if (dstPty) ws.gridWindows.set(src, dstPty);
+  // ext: info.slot を更新
+  if (srcExt) srcExt.info.slot = dst;
+  if (dstExt) dstExt.info.slot = src;
+  // retile で visual 反映 (ext window 移動 + pty window move)
+  try { await retileAll(ws); } catch (e) { console.error('[swap-grid-slots] retile error', e); }
+  try { scheduleSaveWorkspaces(); } catch {}
+  return { ok: true };
+});
+
 ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return;
@@ -1584,7 +1614,12 @@ function createWorkspace(name, savedState) {
     ownTitles.add(`TiN — ${ws.name} Grid`);
     for (const [slot] of ws.gridWindows) ownTitles.add(`TiN — ${ws.name} [${slot}]`);
     const windowsForUI = windowsAll.filter(w => !(w.app === 'TiN' && ownTitles.has(w.title)));
-    ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots);
+    // snapped ext の slot 情報も renderer に送る (dots/cards の slot 可視化用)
+    const snappedSlots = {};
+    for (const [wn, info] of ws.snappedExternals) {
+      if (typeof info.slot === 'number') snappedSlots[wn] = info.slot;
+    }
+    ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots, snappedSlots);
   };
   ws.pollTimer = setInterval(pollFn, appSettings.pollIntervalMs || 4000);
   ws._pollRestart = () => {
@@ -2097,7 +2132,7 @@ async function triggerAutoSnap(opts = {}) {
       if (!ws.win || ws.win.isDestroyed()) continue;
       const hydrate = [];
       for (const [wn, info] of ws.snappedExternals) {
-        hydrate.push({ windowNumber: wn, title: info.title, app: info.app });
+        hydrate.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
       }
       ws.win.webContents.send('hydrate-snapped', hydrate);
     }

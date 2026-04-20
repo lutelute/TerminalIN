@@ -367,6 +367,30 @@
   }
   body.compact .grid-dot { height: 14px; font-size: 8px; }
 
+  /* Slot card (drag&drop 対応 + slot 番号バッジ) */
+  .slot-card { cursor: grab; }
+  .slot-card:active { cursor: grabbing; }
+  .slot-card.dragging { opacity: 0.35; }
+  .slot-card.drag-over { outline: 2px dashed rgba(40,120,210,0.5); outline-offset: -2px; }
+  .slot-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 16px; height: 16px; padding: 0 4px;
+    border-radius: 4px;
+    background: rgba(0,0,0,0.08);
+    color: rgba(0,0,0,0.55);
+    font-size: 9px; font-weight: 700;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-feature-settings: "tnum";
+    flex-shrink: 0;
+    margin-right: 2px;
+    user-select: none;
+  }
+  /* Grid dot: drag state */
+  .grid-dot.dragging { opacity: 0.35; cursor: grabbing; }
+  .grid-dot.drag-over { outline: 2px dashed rgba(40,120,210,0.6); outline-offset: -1px; }
+  .grid-dot[draggable="true"] { cursor: grab; }
+  .grid-dot[draggable="true"]:active { cursor: grabbing; }
+
   .card-close {
     width: 20px; height: 20px; border-radius: 5px;
     display: flex; align-items: center; justify-content: center;
@@ -569,7 +593,7 @@ ipcRenderer.on('workspace-info', (_e, info) => {
 // 復元時の snapped Map 初期化 (main 側で既に配置済みの窓を renderer に知らせる)
 ipcRenderer.on('hydrate-snapped', (_e, list) => {
   for (const entry of (list || [])) {
-    snappedExternals.set(entry.windowNumber, { title: entry.title, app: entry.app });
+    snappedExternals.set(entry.windowNumber, { title: entry.title, app: entry.app, slot: entry.slot });
   }
   render();
 });
@@ -928,6 +952,7 @@ function snappedBadgeHtml(appName) {
 function renderAvailRow(w, type) {
   const row = document.createElement('div');
   row.className = `row ${type}`;
+  if (w._self) row.classList.add('current');
 
   // icon
   const icon = document.createElement('div');
@@ -941,7 +966,7 @@ function renderAvailRow(w, type) {
   let subtitleText = w.app || '';
   if (type === 'tin') {
     const m = rawTitle.match(/^TiN\s*[\u2014\u2013\-]\s*(.+)$/);
-    if (m) { titleText = m[1].trim(); subtitleText = 'Workspace'; }
+    if (m) { titleText = m[1].trim(); subtitleText = w._self ? 'Current workspace' : 'Workspace'; }
   } else {
     const m = rawTitle.match(/^(.{1,24}?)\s+[\u2014\u2013]\s+(.+)$/);
     if (m) { titleText = m[1]; subtitleText = m[2]; }
@@ -963,7 +988,21 @@ function renderAvailRow(w, type) {
   }
   row.appendChild(info);
 
-  // 右側: ws-badge (他 workspace 所属) or action ボタン
+  // 右側: HERE badge (self) / ws-badge (他 workspace 所属) / action ボタン
+  if (w._self) {
+    const hereBadge = document.createElement('span');
+    hereBadge.className = 'row-ws-badge';
+    hereBadge.textContent = 'HERE';
+    if (wsColor) {
+      hereBadge.style.background = wsColor.bg;
+      hereBadge.style.color = wsColor.fg;
+    }
+    hereBadge.style.cursor = 'default';
+    row.appendChild(hereBadge);
+    row.style.cursor = 'default';
+    row.title = '現在の workspace';
+    return row;
+  }
   const otherWs = snappedByOther[w.windowNumber];
   if (otherWs) {
     const wsBadge = document.createElement('span');
@@ -1045,6 +1084,15 @@ function updateAvailList() {
   const tin = available.filter(w =>
     isTiNApp(w.app) && !/ Grid$/.test(w.title) && !/\[\d+\]$/.test(w.title)
   );
+  if (wsName) {
+    tin.unshift({
+      windowNumber: -999,
+      app: 'TiN',
+      title: `TiN \u2014 ${wsName}`,
+      pid: -1,
+      _self: true,
+    });
+  }
   populateAvailList(list, terminal, finder, tin);
 }
 
@@ -1110,9 +1158,18 @@ function render() {
   _gridSection.appendChild(gridTitle);
 
   // GRID dots strip — slot 状態を 1 行で可視化
+  // slot→entry マップ (pty / ext を統合)
+  const slotEntries = new Map();
+  for (const [slot, data] of Object.entries(gridSlots)) {
+    slotEntries.set(Number(slot), { slot: Number(slot), type: 'pty', data });
+  }
+  for (const [wn, info] of snappedExternals) {
+    if (typeof info.slot === 'number') slotEntries.set(info.slot, { slot: info.slot, type: 'ext', wn, info });
+  }
+
+  // GRID dots strip — slot 状態を 1 行で可視化 (drag target)
   {
     const totalSlots = gridCols * gridRows;
-    const ptySet = new Set(Object.keys(gridSlots).map(Number));
     const strip = document.createElement('div');
     strip.className = 'grid-dots-strip';
     const dotsRow = document.createElement('div');
@@ -1120,62 +1177,130 @@ function render() {
     for (let i = 0; i < totalSlots; i++) {
       const dot = document.createElement('div');
       dot.className = 'grid-dot';
-      if (ptySet.has(i)) {
+      dot.dataset.slot = i;
+      const entry = slotEntries.get(i);
+      if (entry && entry.type === 'pty') {
         dot.classList.add('filled-pty');
         dot.textContent = 'P';
-        dot.title = `Slot ${i + 1}: Terminal (pty)`;
+        dot.title = `Slot ${i + 1}: Terminal (pty) — drag to swap`;
+        dot.draggable = true;
+      } else if (entry && entry.type === 'ext') {
+        dot.classList.add('filled-ext');
+        const live = externalWindows.find(w => w.windowNumber === entry.wn);
+        const app = (live && live.app) || entry.info.app || '';
+        dot.textContent = isFinderApp(app) ? 'F' : 'T';
+        dot.title = `Slot ${i + 1}: ${entry.info.title || app} — drag to swap`;
+        dot.draggable = true;
       } else {
         dot.textContent = String(i + 1);
-        dot.title = `Slot ${i + 1}: Empty`;
+        dot.title = `Slot ${i + 1}: Empty — drop here to move`;
       }
+      // drag&drop (slot 入れ替え)
+      dot.addEventListener('dragstart', (e) => {
+        if (!dot.draggable) return;
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', String(i));
+        dot.classList.add('dragging');
+      });
+      dot.addEventListener('dragend', () => dot.classList.remove('dragging'));
+      dot.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        dot.classList.add('drag-over');
+      });
+      dot.addEventListener('dragleave', () => dot.classList.remove('drag-over'));
+      dot.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dot.classList.remove('drag-over');
+        const src = Number(e.dataTransfer.getData('text/plain'));
+        if (!Number.isFinite(src) || src === i) return;
+        ipcRenderer.invoke('swap-grid-slots', { src, dst: i });
+      });
       dotsRow.appendChild(dot);
     }
     strip.appendChild(dotsRow);
     const countPill = document.createElement('span');
     countPill.className = 'grid-count-pill';
-    countPill.textContent = `${ptySet.size + snappedExternals.size}/${totalSlots}`;
+    countPill.textContent = `${slotEntries.size}/${totalSlots}`;
     strip.appendChild(countPill);
     _gridSection.appendChild(strip);
   }
 
-  for (const [slot] of Object.entries(gridSlots)) {
+  // slot cards — slot 順でソート + slot 番号バッジ + drag&drop
+  const sortedEntries = [...slotEntries.values()].sort((a, b) => a.slot - b.slot);
+  for (const entry of sortedEntries) {
     const card = document.createElement('div');
-    card.className = 'ext-item';
-    card.innerHTML = `<span class="card-badge badge-grid">GRID</span><span class="ext-title">Terminal #${Number(slot) + 1}</span>`;
-    const closeBtn = document.createElement('span');
-    closeBtn.className = 'card-close';
-    closeBtn.textContent = '\u00d7';
-    closeBtn.addEventListener('click', () => removeGridTerminal(slot));
-    card.appendChild(closeBtn);
-    _gridSection.appendChild(card);
-  }
-
-  for (const [wn, info] of snappedExternals) {
-    const item = document.createElement('div');
-    item.className = 'ext-item';
-    let t = info.title || '';
-    if (t.length > 35) t = t.substring(0, 32) + '...';
-    const liveForBadge = externalWindows.find(w => w.windowNumber === wn);
-    const appForBadge = liveForBadge ? liveForBadge.app : (info.app || '');
-    item.innerHTML = `${appBadgeHtml(appForBadge)}<span class="ext-title">${t}</span>`;
-    item.style.cursor = 'pointer';
-    item.title = 'Click to locate & raise window';
-    item.addEventListener('click', (e) => {
-      if (e.target && e.target.classList && e.target.classList.contains('ext-btn')) return;
+    card.className = 'ext-item slot-card';
+    card.draggable = true;
+    card.dataset.slot = entry.slot;
+    const slotBadge = document.createElement('span');
+    slotBadge.className = 'slot-badge';
+    slotBadge.textContent = String(entry.slot + 1);
+    card.appendChild(slotBadge);
+    if (entry.type === 'pty') {
+      const gridBadge = document.createElement('span');
+      gridBadge.className = 'card-badge badge-grid';
+      gridBadge.textContent = 'GRID';
+      card.appendChild(gridBadge);
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'ext-title';
+      titleSpan.textContent = `Terminal #${entry.slot + 1}`;
+      card.appendChild(titleSpan);
+      const closeBtn = document.createElement('span');
+      closeBtn.className = 'card-close';
+      closeBtn.textContent = '\u00d7';
+      closeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeGridTerminal(entry.slot); });
+      card.appendChild(closeBtn);
+    } else {
+      const { wn, info } = entry;
+      let t = info.title || '';
+      if (t.length > 32) t = t.substring(0, 29) + '...';
       const live = externalWindows.find(w => w.windowNumber === wn);
-      ipcRenderer.invoke('wobble-window', {
-        windowNumber: wn,
-        pid: live ? live.pid : undefined,
-        app: live ? live.app : undefined,
-        title: live ? live.title : (info.title || ''),
+      const appForBadge = live ? live.app : (info.app || '');
+      card.insertAdjacentHTML('beforeend', appBadgeHtml(appForBadge));
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'ext-title';
+      titleSpan.textContent = t;
+      card.appendChild(titleSpan);
+      card.style.cursor = 'grab';
+      card.title = 'Click: locate & raise window | Drag: swap slot';
+      card.addEventListener('click', (e) => {
+        if (e.target.classList.contains('ext-btn') || e.target.classList.contains('slot-badge')) return;
+        const liveNow = externalWindows.find(w => w.windowNumber === wn);
+        ipcRenderer.invoke('wobble-window', {
+          windowNumber: wn,
+          pid: liveNow ? liveNow.pid : undefined,
+          app: liveNow ? liveNow.app : undefined,
+          title: liveNow ? liveNow.title : (info.title || ''),
+        });
       });
+      const btn = document.createElement('button');
+      btn.className = 'ext-btn release';
+      btn.textContent = 'Release';
+      btn.addEventListener('click', (e) => { e.stopPropagation(); unsnapExternal(wn); });
+      card.appendChild(btn);
+    }
+    // drag&drop for card
+    card.addEventListener('dragstart', (e) => {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(entry.slot));
+      card.classList.add('dragging');
     });
-    const btn = document.createElement('button');
-    btn.className = 'ext-btn release';
-    btn.textContent = 'Release';
-    btn.addEventListener('click', (e) => { e.stopPropagation(); unsnapExternal(wn); });
-    item.appendChild(btn);
-    _gridSection.appendChild(item);
+    card.addEventListener('dragend', () => card.classList.remove('dragging'));
+    card.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      card.classList.add('drag-over');
+    });
+    card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
+    card.addEventListener('drop', (e) => {
+      e.preventDefault();
+      card.classList.remove('drag-over');
+      const src = Number(e.dataTransfer.getData('text/plain'));
+      if (!Number.isFinite(src) || src === entry.slot) return;
+      ipcRenderer.invoke('swap-grid-slots', { src, dst: entry.slot });
+    });
+    _gridSection.appendChild(card);
   }
 
   if (gridCount < gridCols * gridRows) {
@@ -1206,6 +1331,16 @@ function render() {
     const availableTiN = available.filter(w =>
       isTiNApp(w.app) && !/ Grid$/.test(w.title) && !/\[\d+\]$/.test(w.title)
     );
+    // 自己 pseudo-entry を先頭に追加 (HERE 表示)
+    if (wsName) {
+      availableTiN.unshift({
+        windowNumber: -999,
+        app: 'TiN',
+        title: `TiN \u2014 ${wsName}`,
+        pid: -1,
+        _self: true,
+      });
+    }
 
     // タブバー
     const tabsBar = document.createElement('div');
@@ -1361,10 +1496,17 @@ function scheduleRender() {
   _renderTimer = setTimeout(() => { _renderTimer = null; render(); }, 100);
 }
 
-ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo) => {
+ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snappedSlots) => {
   snappedByOther = otherSnapped || {};
   gridSlots = gridInfo || {};
   externalWindows = windows;
+  // slot 情報を snappedExternals に反映 (dots/cards 可視化用)
+  if (snappedSlots) {
+    for (const [wn, slot] of Object.entries(snappedSlots)) {
+      const info = snappedExternals.get(Number(wn));
+      if (info) info.slot = slot;
+    }
+  }
   // live window のタイトル/app で snappedExternals を同期更新
   // (復元時やパッケージ版で初期タイトルが空の場合にここで補完される)
   for (const [k, info] of snappedExternals) {
