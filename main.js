@@ -1659,7 +1659,10 @@ function createWorkspace(name, savedState) {
     for (const [wn, info] of ws.snappedExternals) {
       if (typeof info.slot === 'number') snappedSlots[wn] = info.slot;
     }
-    ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots, snappedSlots);
+    // 最前面 window (focused slot ハイライト用)
+    let frontmostWn = 0;
+    try { if (axHelper && axHelper.getFrontmostWindowNumber) frontmostWn = axHelper.getFrontmostWindowNumber() || 0; } catch {}
+    ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots, snappedSlots, frontmostWn);
   };
   ws.pollTimer = setInterval(pollFn, appSettings.pollIntervalMs || 4000);
   ws._pollRestart = () => {

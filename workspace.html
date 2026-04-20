@@ -408,6 +408,20 @@
   .grid-dot[draggable="true"] { cursor: grab; }
   .grid-dot[draggable="true"]:active { cursor: grabbing; }
 
+  /* Focused window ハイライト (最前面の window が属する slot) */
+  .slot-card.focused {
+    background: rgba(255,220,90,0.18);
+    box-shadow: 0 0 0 1px rgba(220,170,30,0.45) inset, 0 0 8px rgba(255,200,60,0.25);
+  }
+  .slot-card.focused .slot-badge {
+    background: rgba(220,170,30,0.35);
+    color: rgba(120,85,10,0.95);
+  }
+  .grid-dot.focused {
+    box-shadow: 0 0 0 2px rgba(220,170,30,0.75) inset, 0 0 8px rgba(255,200,60,0.4);
+    transform: scale(1.05);
+  }
+
   .card-close {
     width: 20px; height: 20px; border-radius: 5px;
     display: flex; align-items: center; justify-content: center;
@@ -571,6 +585,8 @@ let activeAvailTab = 'term'; // 'term' | 'finder' | 'tin'
 let availSearchText = '';
 // input 要素を render 跨ぎで保持 (focus / 入力値維持)
 let _availSearchInput = null;
+// 最前面 window の windowNumber (slot card のハイライト用)
+let frontmostWindowNumber = 0;
 
 // ── Title renaming (click to edit) ──
 titleEl.addEventListener('click', () => {
@@ -1113,6 +1129,52 @@ function updateAvailList() {
   populateAvailList(list, terminal, finder, tin);
 }
 
+// 楽観的更新: main への invoke と並行で renderer の slot state を即座に反映
+function reorderSlotsLocally(src, dst, before) {
+  const items = [];
+  for (const [wn, info] of snappedExternals) {
+    if (typeof info.slot === 'number') items.push({ type: 'ext', slot: info.slot, wn, info });
+  }
+  for (const slot of Object.keys(gridSlots)) {
+    items.push({ type: 'pty', slot: Number(slot), slotKey: slot });
+  }
+  items.sort((a, b) => a.slot - b.slot);
+  const srcIdx = items.findIndex(i => i.slot === src);
+  const dstIdx = items.findIndex(i => i.slot === dst);
+  if (srcIdx < 0 || dstIdx < 0) return;
+  const srcItem = items[srcIdx];
+  items.splice(srcIdx, 1);
+  let insertIdx = items.findIndex(i => i.slot === dst);
+  if (!before) insertIdx++;
+  items.splice(insertIdx, 0, srcItem);
+  const oldPty = gridSlots;
+  const newPty = {};
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.type === 'pty') {
+      newPty[i] = oldPty[item.slotKey];
+    } else {
+      item.info.slot = i;
+    }
+  }
+  gridSlots = newPty;
+}
+function swapSlotsLocally(src, dst) {
+  const srcExt = [...snappedExternals.values()].find(i => i.slot === src);
+  const dstExt = [...snappedExternals.values()].find(i => i.slot === dst);
+  const srcPty = gridSlots[src];
+  const dstPty = gridSlots[dst];
+  if (srcPty || dstPty) {
+    const newPty = { ...gridSlots };
+    delete newPty[src]; delete newPty[dst];
+    if (srcPty) newPty[dst] = srcPty;
+    if (dstPty) newPty[src] = dstPty;
+    gridSlots = newPty;
+  }
+  if (srcExt) srcExt.slot = dst;
+  if (dstExt) dstExt.slot = src;
+}
+
 // ── Persistent DOM sections (created once, updated in-place) ──
 const _gridSection = document.createElement('div');
 _gridSection.className = 'section section-grid';
@@ -1206,6 +1268,7 @@ function render() {
         const live = externalWindows.find(w => w.windowNumber === entry.wn);
         const app = (live && live.app) || entry.info.app || '';
         if (isFinderApp(app)) dot.classList.add('filled-ext-finder');
+        if (entry.wn === frontmostWindowNumber && frontmostWindowNumber > 0) dot.classList.add('focused');
         // ラベル: window title の頭文字 (英/日 1 文字目、大文字化)
         const rawTitle = (live && live.title) || entry.info.title || '';
         const firstChar = rawTitle.trim().charAt(0).toUpperCase() || (isFinderApp(app) ? 'F' : 'T');
@@ -1235,6 +1298,8 @@ function render() {
         dot.classList.remove('drag-over');
         const src = Number(e.dataTransfer.getData('text/plain'));
         if (!Number.isFinite(src) || src === i) return;
+        swapSlotsLocally(src, i);
+        render();
         ipcRenderer.invoke('swap-grid-slots', { src, dst: i });
       });
       dotsRow.appendChild(dot);
@@ -1252,6 +1317,9 @@ function render() {
   for (const entry of sortedEntries) {
     const card = document.createElement('div');
     card.className = 'ext-item slot-card';
+    if (entry.type === 'ext' && entry.wn === frontmostWindowNumber && frontmostWindowNumber > 0) {
+      card.classList.add('focused');
+    }
     card.draggable = true;
     card.dataset.slot = entry.slot;
     const slotBadge = document.createElement('span');
@@ -1343,6 +1411,9 @@ function render() {
         if (dragging && dstCard) {
           const dstSlot = Number(dstCard.dataset.slot);
           if (Number.isFinite(dstSlot) && dstSlot !== srcSlot) {
+            // 楽観的更新 — UI を先に反映 (poll 待ちなしで見た目が即動く)
+            reorderSlotsLocally(srcSlot, dstSlot, dstBefore);
+            render();
             ipcRenderer.invoke('reorder-grid-slot', { src: srcSlot, dst: dstSlot, before: dstBefore });
           }
         }
@@ -1548,10 +1619,11 @@ function scheduleRender() {
   _renderTimer = setTimeout(() => { _renderTimer = null; render(); }, 100);
 }
 
-ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snappedSlots) => {
+ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snappedSlots, frontmostWn) => {
   snappedByOther = otherSnapped || {};
   gridSlots = gridInfo || {};
   externalWindows = windows;
+  frontmostWindowNumber = frontmostWn || 0;
   // slot 情報を snappedExternals に反映 (dots/cards 可視化用)
   if (snappedSlots) {
     for (const [wn, slot] of Object.entries(snappedSlots)) {
