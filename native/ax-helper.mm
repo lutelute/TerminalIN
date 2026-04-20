@@ -478,6 +478,32 @@ static napi_value IsAXTrusted(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// ── 最前面ウィンドウの CGWindowNumber を取得 ──
+// z-order 上位の layer=0 normal window を返す。一致なければ 0。
+static napi_value GetFrontmostWindowNumber(napi_env env, napi_callback_info info) {
+    CFArrayRef windowList = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID);
+    int32_t result = 0;
+    if (windowList) {
+        for (NSDictionary *win in (__bridge NSArray *)windowList) {
+            NSNumber *layer = win[(__bridge NSString *)kCGWindowLayer];
+            if (layer && [layer intValue] != 0) continue;
+            NSDictionary *bounds = win[(__bridge NSString *)kCGWindowBounds];
+            if (!bounds) continue;
+            CGFloat w = [bounds[@"Width"] floatValue];
+            CGFloat h = [bounds[@"Height"] floatValue];
+            if (w <= 50 || h <= 50) continue;
+            NSNumber *wn = win[(__bridge NSString *)kCGWindowNumber];
+            if (wn) { result = [wn intValue]; break; }
+        }
+        CFRelease(windowList);
+    }
+    napi_value ret;
+    napi_create_int32(env, result, &ret);
+    return ret;
+}
+
 // ── Module init ──
 static napi_value Init(napi_env env, napi_value exports) {
     napi_value fn;
@@ -498,6 +524,9 @@ static napi_value Init(napi_env env, napi_value exports) {
 
     napi_create_function(env, NULL, 0, MoveWindowsToActiveSpace, NULL, &fn);
     napi_set_named_property(env, exports, "moveWindowsToActiveSpace", fn);
+
+    napi_create_function(env, NULL, 0, GetFrontmostWindowNumber, NULL, &fn);
+    napi_set_named_property(env, exports, "getFrontmostWindowNumber", fn);
 
     return exports;
 }
