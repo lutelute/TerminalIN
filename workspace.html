@@ -1072,6 +1072,9 @@ function renderAvailRow(w, type) {
     if (type === 'tin') {
       ipcRenderer.send('raise-tin-window', { windowNumber: w.windowNumber });
     } else {
+      // 楽観的: wobble (= raise) 前にハイライトを更新
+      frontmostWindowNumber = w.windowNumber;
+      render();
       ipcRenderer.invoke('wobble-window', {
         windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title,
       });
@@ -1356,6 +1359,9 @@ function render() {
       card.addEventListener('click', (e) => {
         if (card._draggingNow) return;
         if (e.target.classList.contains('ext-btn') || e.target.classList.contains('slot-badge')) return;
+        // 楽観的: raise 前にハイライトを即移動 (poll 待ちで ~1s 遅延を解消)
+        frontmostWindowNumber = wn;
+        render();
         const liveNow = externalWindows.find(w => w.windowNumber === wn);
         ipcRenderer.invoke('wobble-window', {
           windowNumber: wn,
