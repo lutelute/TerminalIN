@@ -355,8 +355,13 @@
     background: rgba(40,120,210,0.14); border-color: rgba(40,120,210,0.55);
     color: rgba(30,90,180,0.95);
   }
+  .grid-dot.filled-ext.filled-ext-finder {
+    background: rgba(200,120,0,0.14); border-color: rgba(200,120,0,0.55);
+    color: rgba(160,95,0,0.95);
+  }
   .grid-dot.filled-pty:hover { background: rgba(50,170,110,0.22); }
   .grid-dot.filled-ext:hover { background: rgba(40,120,210,0.22); }
+  .grid-dot.filled-ext.filled-ext-finder:hover { background: rgba(200,120,0,0.22); }
   .grid-count-pill {
     font-size: 9.5px; color: rgba(0,0,0,0.45);
     font-family: 'SF Mono', 'Menlo', monospace;
@@ -936,12 +941,12 @@ function isTiNApp(appName) {
 }
 function appBadgeHtml(appName) {
   if (isTiNApp(appName)) return '<span class="card-badge badge-tin">TiN</span>';
-  if (isFinderApp(appName)) return '<span class="card-badge badge-finder">FINDER</span>';
-  return '<span class="card-badge badge-term">TERM</span>';
+  if (isFinderApp(appName)) return '<span class="card-badge badge-finder">F</span>';
+  return '<span class="card-badge badge-term">T</span>';
 }
 // GRID 内の snapped バッジ: workspace 固有色を使用
 function snappedBadgeHtml(appName) {
-  const label = isFinderApp(appName) ? 'FINDER' : 'TERM';
+  const label = isFinderApp(appName) ? 'F' : 'T';
   if (wsColor) {
     return `<span class="card-badge" style="background:${wsColor.bg};color:${wsColor.fg}">${label}</span>`;
   }
@@ -1188,11 +1193,15 @@ function render() {
         dot.classList.add('filled-ext');
         const live = externalWindows.find(w => w.windowNumber === entry.wn);
         const app = (live && live.app) || entry.info.app || '';
-        dot.textContent = isFinderApp(app) ? 'F' : 'T';
-        dot.title = `Slot ${i + 1}: ${entry.info.title || app} — drag to swap`;
+        if (isFinderApp(app)) dot.classList.add('filled-ext-finder');
+        // ラベル: window title の頭文字 (英/日 1 文字目、大文字化)
+        const rawTitle = (live && live.title) || entry.info.title || '';
+        const firstChar = rawTitle.trim().charAt(0).toUpperCase() || (isFinderApp(app) ? 'F' : 'T');
+        dot.textContent = firstChar;
+        dot.title = `Slot ${i + 1}: ${rawTitle || app} — drag to swap`;
         dot.draggable = true;
       } else {
-        dot.textContent = String(i + 1);
+        dot.textContent = '\u25a1';
         dot.title = `Slot ${i + 1}: Empty — drop here to move`;
       }
       // drag&drop (slot 入れ替え)
