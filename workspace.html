@@ -1625,6 +1625,13 @@ function scheduleRender() {
   _renderTimer = setTimeout(() => { _renderTimer = null; render(); }, 100);
 }
 
+// Frontmost 更新 (main の軽量 poll から 500ms 以内に届く) — ext snap card のハイライト即反映
+ipcRenderer.on('frontmost-update', (_e, wn) => {
+  if (wn === frontmostWindowNumber) return;
+  frontmostWindowNumber = wn || 0;
+  render();
+});
+
 ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snappedSlots, frontmostWn) => {
   snappedByOther = otherSnapped || {};
   gridSlots = gridInfo || {};

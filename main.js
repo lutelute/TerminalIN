@@ -2202,9 +2202,32 @@ async function triggerAutoSnap(opts = {}) {
 // ── App ──
 app.isQuitting = false;
 
+// Frontmost window 専用の軽量 poll (getFrontmostWindowNumber は CGWindowList 1 回 ~1ms)。
+// 外部 cmd+tab / 他 app 切替時の focused ハイライト更新用。
+// 500ms × 1ms = 0.2% 未満の CPU 使用率で済む。
+let _lastFrontmost = 0;
+let _frontmostInterval = null;
+function startFrontmostPoll() {
+  if (!axHelper || !axHelper.getFrontmostWindowNumber) return;
+  if (_frontmostInterval) return;
+  _frontmostInterval = setInterval(() => {
+    try {
+      const wn = axHelper.getFrontmostWindowNumber() || 0;
+      if (wn === _lastFrontmost) return;
+      _lastFrontmost = wn;
+      for (const [, ws] of workspaces) {
+        if (ws.win && !ws.win.isDestroyed()) {
+          ws.win.webContents.send('frontmost-update', wn);
+        }
+      }
+    } catch {}
+  }, 500);
+}
+
 app.whenReady().then(() => {
   writeInfoJson();
   writeSnappedJson();
+  startFrontmostPoll();
 
   // Accessibility 権限チェック: 無いと snap / raise が silent fail するので
   // 明示的にダイアログ表示して System Settings へ誘導。
