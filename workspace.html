@@ -377,6 +377,18 @@
   .slot-card:active { cursor: grabbing; }
   .slot-card.dragging { opacity: 0.35; }
   .slot-card.drag-over { outline: 2px dashed rgba(40,120,210,0.5); outline-offset: -2px; }
+  /* line の間挿入インジケータ (上/下に 3px 太線) */
+  .slot-card { position: relative; }
+  .slot-card.drag-over-top::before,
+  .slot-card.drag-over-bottom::after {
+    content: ''; position: absolute; left: 0; right: 0;
+    height: 3px; background: rgba(40,120,210,0.85);
+    border-radius: 2px;
+    box-shadow: 0 0 6px rgba(40,120,210,0.5);
+    pointer-events: none;
+  }
+  .slot-card.drag-over-top::before { top: -2px; }
+  .slot-card.drag-over-bottom::after { bottom: -2px; }
   .slot-badge {
     display: inline-flex; align-items: center; justify-content: center;
     min-width: 16px; height: 16px; padding: 0 4px;
@@ -1289,25 +1301,34 @@ function render() {
       btn.addEventListener('click', (e) => { e.stopPropagation(); unsnapExternal(wn); });
       card.appendChild(btn);
     }
-    // drag&drop for card
+    // drag&drop for card — line の間にドロップして挿入 (reorder)
     card.addEventListener('dragstart', (e) => {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', String(entry.slot));
       card.classList.add('dragging');
     });
-    card.addEventListener('dragend', () => card.classList.remove('dragging'));
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom');
+    });
     card.addEventListener('dragover', (e) => {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
-      card.classList.add('drag-over');
+      const rect = card.getBoundingClientRect();
+      const before = e.clientY < rect.top + rect.height / 2;
+      card.classList.toggle('drag-over-top', before);
+      card.classList.toggle('drag-over-bottom', !before);
     });
-    card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
+    card.addEventListener('dragleave', () => {
+      card.classList.remove('drag-over-top', 'drag-over-bottom');
+    });
     card.addEventListener('drop', (e) => {
       e.preventDefault();
-      card.classList.remove('drag-over');
+      const rect = card.getBoundingClientRect();
+      const before = e.clientY < rect.top + rect.height / 2;
+      card.classList.remove('drag-over-top', 'drag-over-bottom');
       const src = Number(e.dataTransfer.getData('text/plain'));
       if (!Number.isFinite(src) || src === entry.slot) return;
-      ipcRenderer.invoke('swap-grid-slots', { src, dst: entry.slot });
+      ipcRenderer.invoke('reorder-grid-slot', { src, dst: entry.slot, before });
     });
     _gridSection.appendChild(card);
   }

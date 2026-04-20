@@ -1176,6 +1176,42 @@ ipcMain.handle('retile-now', async (event) => {
   return { ok: true };
 });
 
+// slot の順序を並べ替え (line card の間にドロップする挿入操作)。
+// src の entry を dst の前/後ろに挿入し、全 slot を 0,1,2,... で再割当。
+ipcMain.handle('reorder-grid-slot', async (event, { src, dst, before }) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return { ok: false };
+  if (src === dst) return { ok: true };
+  const items = [];
+  for (const [wn, info] of ws.snappedExternals) items.push({ type: 'ext', slot: info.slot, ref: info, wn });
+  for (const [slot, gw] of ws.gridWindows) items.push({ type: 'pty', slot, ref: gw });
+  items.sort((a, b) => a.slot - b.slot);
+  const srcIdx = items.findIndex(i => i.slot === src);
+  if (srcIdx < 0) return { ok: false, reason: 'src-not-found' };
+  const dstIdx = items.findIndex(i => i.slot === dst);
+  if (dstIdx < 0) return { ok: false, reason: 'dst-not-found' };
+  const srcItem = items[srcIdx];
+  items.splice(srcIdx, 1);
+  // splice 後、dst の index を再取得 (srcIdx<dstIdx なら -1 ずれる)
+  let insertIdx = items.findIndex(i => i.slot === dst);
+  if (!before) insertIdx++;
+  items.splice(insertIdx, 0, srcItem);
+  // slot を 0,1,2,... で再割当
+  ws.gridWindows.clear();
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.type === 'pty') {
+      ws.gridWindows.set(i, item.ref);
+      if (item.ref.slot !== undefined) item.ref.slot = i;
+    } else {
+      item.ref.slot = i;
+    }
+  }
+  try { await retileAll(ws); } catch (e) { console.error('[reorder-grid-slot] retile error', e); }
+  try { scheduleSaveWorkspaces(); } catch {}
+  return { ok: true };
+});
+
 // slot 入れ替え (drag&drop から呼ばれる)。pty/ext どちらも対応。
 ipcMain.handle('swap-grid-slots', async (event, { src, dst }) => {
   const ws = findWorkspace(event.sender);
