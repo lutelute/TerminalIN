@@ -1180,22 +1180,26 @@ ipcMain.handle('retile-now', async (event) => {
 // src の entry を dst の前/後ろに挿入し、全 slot を 0,1,2,... で再割当。
 ipcMain.handle('reorder-grid-slot', async (event, { src, dst, before }) => {
   const ws = findWorkspace(event.sender);
+  console.log(`[reorder] src=${src} dst=${dst} before=${before} ws=${ws ? ws.name : 'null'}`);
   if (!ws) return { ok: false };
+  src = Number(src); dst = Number(dst);
   if (src === dst) return { ok: true };
   const items = [];
   for (const [wn, info] of ws.snappedExternals) items.push({ type: 'ext', slot: info.slot, ref: info, wn });
-  for (const [slot, gw] of ws.gridWindows) items.push({ type: 'pty', slot, ref: gw });
+  for (const [slot, gw] of ws.gridWindows) items.push({ type: 'pty', slot: Number(slot), ref: gw });
   items.sort((a, b) => a.slot - b.slot);
+  console.log(`[reorder] items=`, items.map(i => `${i.type}@${i.slot}`).join(','));
   const srcIdx = items.findIndex(i => i.slot === src);
-  if (srcIdx < 0) return { ok: false, reason: 'src-not-found' };
+  if (srcIdx < 0) { console.log(`[reorder] src-not-found src=${src}`); return { ok: false, reason: 'src-not-found' }; }
   const dstIdx = items.findIndex(i => i.slot === dst);
-  if (dstIdx < 0) return { ok: false, reason: 'dst-not-found' };
+  if (dstIdx < 0) { console.log(`[reorder] dst-not-found dst=${dst}`); return { ok: false, reason: 'dst-not-found' }; }
   const srcItem = items[srcIdx];
   items.splice(srcIdx, 1);
   // splice 後、dst の index を再取得 (srcIdx<dstIdx なら -1 ずれる)
   let insertIdx = items.findIndex(i => i.slot === dst);
   if (!before) insertIdx++;
   items.splice(insertIdx, 0, srcItem);
+  console.log(`[reorder] reassigned=`, items.map((i, idx) => `${i.type}@${idx}(was=${i.slot})`).join(','));
   // slot を 0,1,2,... で再割当
   ws.gridWindows.clear();
   for (let i = 0; i < items.length; i++) {
@@ -1207,7 +1211,7 @@ ipcMain.handle('reorder-grid-slot', async (event, { src, dst, before }) => {
       item.ref.slot = i;
     }
   }
-  try { await retileAll(ws); } catch (e) { console.error('[reorder-grid-slot] retile error', e); }
+  try { await retileAll(ws); } catch (e) { console.error('[reorder] retile error', e); }
   try { scheduleSaveWorkspaces(); } catch {}
   return { ok: true };
 });

@@ -1286,6 +1286,7 @@ function render() {
       card.style.cursor = 'grab';
       card.title = 'Click: locate & raise window | Drag: swap slot';
       card.addEventListener('click', (e) => {
+        if (card._draggingNow) return;
         if (e.target.classList.contains('ext-btn') || e.target.classList.contains('slot-badge')) return;
         const liveNow = externalWindows.find(w => w.windowNumber === wn);
         ipcRenderer.invoke('wobble-window', {
@@ -1301,34 +1302,55 @@ function render() {
       btn.addEventListener('click', (e) => { e.stopPropagation(); unsnapExternal(wn); });
       card.appendChild(btn);
     }
-    // drag&drop for card — line の間にドロップして挿入 (reorder)
-    card.addEventListener('dragstart', (e) => {
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', String(entry.slot));
-      card.classList.add('dragging');
-    });
-    card.addEventListener('dragend', () => {
-      card.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom');
-    });
-    card.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-      const rect = card.getBoundingClientRect();
-      const before = e.clientY < rect.top + rect.height / 2;
-      card.classList.toggle('drag-over-top', before);
-      card.classList.toggle('drag-over-bottom', !before);
-    });
-    card.addEventListener('dragleave', () => {
-      card.classList.remove('drag-over-top', 'drag-over-bottom');
-    });
-    card.addEventListener('drop', (e) => {
-      e.preventDefault();
-      const rect = card.getBoundingClientRect();
-      const before = e.clientY < rect.top + rect.height / 2;
-      card.classList.remove('drag-over-top', 'drag-over-bottom');
-      const src = Number(e.dataTransfer.getData('text/plain'));
-      if (!Number.isFinite(src) || src === entry.slot) return;
-      ipcRenderer.invoke('reorder-grid-slot', { src, dst: entry.slot, before });
+    // drag&drop for card — Pointer Events 版 (HTML5 DnD は Electron で drop が届かない症状あり)
+    card.draggable = false;
+    card.addEventListener('mousedown', (e) => {
+      // Release/close ボタン等の上なら通常動作
+      if (e.button !== 0) return;
+      if (e.target.closest('.ext-btn, .card-close, .slot-badge')) return;
+      const srcSlot = entry.slot;
+      const startX = e.clientX, startY = e.clientY;
+      let dragging = false;
+      let dstCard = null;
+      let dstBefore = true;
+      const clearIndicators = () => {
+        document.querySelectorAll('.slot-card').forEach(c => c.classList.remove('drag-over-top', 'drag-over-bottom'));
+      };
+      const onMove = (ev) => {
+        if (!dragging) {
+          if (Math.abs(ev.clientX - startX) < 4 && Math.abs(ev.clientY - startY) < 4) return;
+          dragging = true;
+          card.classList.add('dragging');
+          card._draggingNow = true; // click 抑制用
+        }
+        const el = document.elementFromPoint(ev.clientX, ev.clientY);
+        const tc = el && el.closest ? el.closest('.slot-card') : null;
+        clearIndicators();
+        if (tc && tc !== card) {
+          const rect = tc.getBoundingClientRect();
+          dstBefore = ev.clientY < rect.top + rect.height / 2;
+          tc.classList.add(dstBefore ? 'drag-over-top' : 'drag-over-bottom');
+          dstCard = tc;
+        } else {
+          dstCard = null;
+        }
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        clearIndicators();
+        card.classList.remove('dragging');
+        if (dragging && dstCard) {
+          const dstSlot = Number(dstCard.dataset.slot);
+          if (Number.isFinite(dstSlot) && dstSlot !== srcSlot) {
+            ipcRenderer.invoke('reorder-grid-slot', { src: srcSlot, dst: dstSlot, before: dstBefore });
+          }
+        }
+        // click 抑制をリセット (1 tick 後、click event 後)
+        setTimeout(() => { card._draggingNow = false; }, 0);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
     });
     _gridSection.appendChild(card);
   }
