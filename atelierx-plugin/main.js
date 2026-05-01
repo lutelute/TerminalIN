@@ -167,7 +167,7 @@ function syncDecorators() {
     const matched = cardHasSnappedWindow(card, lookup);
     if (matched) {
       api.setCardDecorator(card.id, {
-        badge: '🔒 TiN',
+        badge: '📦 TiN',
         tooltip: `TiN管理中 (${matched.app})`,
         excludeFromGrid: true,
       });

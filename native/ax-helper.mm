@@ -6,9 +6,41 @@
 #import <Cocoa/Cocoa.h>
 #import <ApplicationServices/ApplicationServices.h>
 #include <node_api.h>
+#include <dlfcn.h>
 
 // Private API: get CGWindowID from AXUIElement
 extern "C" AXError _AXUIElementGetWindow(AXUIElementRef element, CGWindowID *windowID);
+
+// ── SkyLight.framework の Space 移動 API (macOS 14+, CGS 代替) ──
+// dlopen で動的に読み込み、古い macOS でも安全に動作する。
+typedef int SLSCid;
+typedef SLSCid (*PFN_SLSMainConnectionID)(void);
+typedef uint64_t (*PFN_SLSGetActiveSpace)(SLSCid cid);
+typedef void (*PFN_SLSMoveWindowsToManagedSpace)(SLSCid cid, CFArrayRef windows, uint64_t spaceID);
+typedef CFArrayRef (*PFN_SLSCopyManagedDisplaySpaces)(SLSCid cid);
+typedef CGError (*PFN_SLSGetWindowOwner)(SLSCid cid, CGWindowID wid, SLSCid *ownerCid);
+
+static PFN_SLSMainConnectionID pfnSLSMain = NULL;
+static PFN_SLSGetActiveSpace pfnSLSGetActive = NULL;
+static PFN_SLSMoveWindowsToManagedSpace pfnSLSMove = NULL;
+static PFN_SLSCopyManagedDisplaySpaces pfnSLSCopySpaces = NULL;
+static PFN_SLSGetWindowOwner pfnSLSGetOwner = NULL;
+
+static void initSkyLight() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    void *h = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY | RTLD_NOLOAD);
+    if (!h) h = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY);
+    if (!h) return;
+    pfnSLSMain       = (PFN_SLSMainConnectionID)dlsym(h, "SLSMainConnectionID");
+    pfnSLSGetActive  = (PFN_SLSGetActiveSpace)dlsym(h, "SLSGetActiveSpace");
+    pfnSLSMove       = (PFN_SLSMoveWindowsToManagedSpace)dlsym(h, "SLSMoveWindowsToManagedSpace");
+    pfnSLSCopySpaces = (PFN_SLSCopyManagedDisplaySpaces)dlsym(h, "SLSCopyManagedDisplaySpaces");
+    pfnSLSGetOwner   = (PFN_SLSGetWindowOwner)dlsym(h, "SLSGetWindowOwner");
+    if (!pfnSLSGetOwner)
+        pfnSLSGetOwner = (PFN_SLSGetWindowOwner)dlsym(h, "CGSGetWindowOwner");
+}
 
 static NSSet *terminalApps = nil;
 
@@ -95,13 +127,27 @@ static AXUIElementRef findAXWindowInList(CFArrayRef windows, int windowNumber, c
     CFIndex count = CFArrayGetCount(windows);
 
     // 1. windowNumber (CGWindowID) でマッチ
+    // AXWindowID (公式属性, macOS 10.15+) を優先、失敗時は _AXUIElementGetWindow にフォールバック
     for (CFIndex i = 0; i < count; i++) {
         AXUIElementRef win = (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
         CGWindowID wid = 0;
-        if (_AXUIElementGetWindow(win, &wid) == kAXErrorSuccess && wid == (CGWindowID)windowNumber) {
-            CFRetain(win);
-            return win;
+        bool matched = false;
+
+        CFTypeRef widRef = NULL;
+        if (AXUIElementCopyAttributeValue(win, CFSTR("AXWindowID"), &widRef) == kAXErrorSuccess && widRef) {
+            if (CFGetTypeID(widRef) == CFNumberGetTypeID()) {
+                CFNumberGetValue((CFNumberRef)widRef, kCFNumberSInt32Type, &wid);
+            }
+            CFRelease(widRef);
+            matched = (wid == (CGWindowID)windowNumber);
         }
+        if (!matched) {
+            wid = 0;
+            if (_AXUIElementGetWindow(win, &wid) == kAXErrorSuccess) {
+                matched = (wid == (CGWindowID)windowNumber);
+            }
+        }
+        if (matched) { CFRetain(win); return win; }
     }
 
     // 2. title でマッチ
@@ -123,8 +169,8 @@ static AXUIElementRef findAXWindowInList(CFArrayRef windows, int windowNumber, c
         }
     }
 
-    // 3. CGWindowList position でマッチ
-    CFArrayRef cgList = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+    // 3. CGWindowList position でマッチ (全 Space を対象: OnScreenOnly だと別 Space のウィンドウを見逃す)
+    CFArrayRef cgList = CGWindowListCopyWindowInfo(kCGWindowListExcludeDesktopElements, kCGNullWindowID);
     if (cgList) {
         CGPoint cgPos = {-99999, -99999};
         for (NSDictionary *w in (__bridge NSArray *)cgList) {
@@ -364,12 +410,30 @@ static napi_value RaiseWindows(napi_env env, napi_callback_info info) {
     return result;
 }
 
-// ── Spaces 移動 (CGS プライベート API) ──
+// ── Spaces 移動 (CGS プライベート API — フォールバック用) ──
 extern "C" {
     int CGSMainConnectionID(void);
     CFArrayRef CGSCopyManagedDisplaySpaces(int cid);
     void CGSMoveWindowsToManagedSpace(int cid, CFArrayRef windows, uint64_t space);
     uint64_t CGSGetActiveSpace(int cid);
+    // 各ウィンドウのオーナー connection を取得 (他プロセスのウィンドウ移動に必要)
+    CGError CGSGetWindowOwner(int cid, CGWindowID wid, int *ownerCid);
+}
+
+// SLS or CGS を統一的に呼ぶヘルパー
+static int spaceCid() {
+    initSkyLight();
+    return pfnSLSMain ? pfnSLSMain() : CGSMainConnectionID();
+}
+static uint64_t spaceGetActive(int cid) {
+    return pfnSLSGetActive ? pfnSLSGetActive(cid) : CGSGetActiveSpace(cid);
+}
+static CFArrayRef spaceCopyDisplaySpaces(int cid) {
+    return pfnSLSCopySpaces ? pfnSLSCopySpaces(cid) : CGSCopyManagedDisplaySpaces(cid);
+}
+static void spaceMoveWindows(int cid, CFArrayRef windows, uint64_t spaceID) {
+    if (pfnSLSMove) pfnSLSMove(cid, windows, spaceID);
+    else CGSMoveWindowsToManagedSpace(cid, windows, spaceID);
 }
 
 // moveToSpace(windowNumbers: number[], direction: number) → moved count
@@ -381,11 +445,11 @@ static napi_value MoveToSpace(napi_env env, napi_callback_info info) {
     int32_t direction;
     napi_get_value_int32(env, args[1], &direction);
 
-    int cid = CGSMainConnectionID();
-    uint64_t currentSpace = CGSGetActiveSpace(cid);
+    int cid = spaceCid();
+    uint64_t currentSpace = spaceGetActive(cid);
 
     // 全 Space を列挙
-    CFArrayRef displays = CGSCopyManagedDisplaySpaces(cid);
+    CFArrayRef displays = spaceCopyDisplaySpaces(cid);
     if (!displays) {
         napi_value result;
         napi_create_int32(env, 0, &result);
@@ -393,7 +457,8 @@ static napi_value MoveToSpace(napi_env env, napi_callback_info info) {
     }
 
     NSMutableArray<NSNumber*> *allSpaces = [NSMutableArray new];
-    for (NSDictionary *display in (__bridge NSArray *)displays) {
+    NSArray *displayArr = (__bridge NSArray *)displays;
+    for (NSDictionary *display in displayArr) {
         NSArray *spaces = display[@"Spaces"];
         for (NSDictionary *space in spaces) {
             NSNumber *spaceId = space[@"id64"] ?: space[@"ManagedSpaceID"];
@@ -417,22 +482,51 @@ static napi_value MoveToSpace(napi_env env, napi_callback_info info) {
     NSInteger nextIdx = (currentIdx + direction + (NSInteger)allSpaces.count) % (NSInteger)allSpaces.count;
     uint64_t targetSpace = [allSpaces[nextIdx] unsignedLongLongValue];
 
-    // windowNumber 配列を取得して移動
+    // windowNumber 配列をまとめて移動
     uint32_t length;
     napi_get_array_length(env, args[0], &length);
-    int moved = 0;
 
+    // 各ウィンドウをオーナー Connection で個別に移動。
+    // 他プロセスのウィンドウは SLSMain connection では移動できないため、
+    // CGSGetWindowOwner でオーナーの connection を取得して使う。
+    int moved = 0;
     for (uint32_t i = 0; i < length; i++) {
         napi_value item;
         napi_get_element(env, args[0], i, &item);
         int32_t wn;
         napi_get_value_int32(env, item, &wn);
         CGWindowID winId = (CGWindowID)wn;
-        CFArrayRef winArray = CFArrayCreate(NULL, (const void **)&winId, 1, NULL);
-        CGSMoveWindowsToManagedSpace(cid, winArray, targetSpace);
-        CFRelease(winArray);
+
+        int ownerCid = 0;
+        if (pfnSLSGetOwner) {
+            pfnSLSGetOwner(cid, winId, &ownerCid);
+        } else {
+            CGSGetWindowOwner(cid, winId, &ownerCid);
+        }
+        int moveCid = (ownerCid > 0) ? ownerCid : cid;
+
+        spaceMoveWindows(moveCid, (__bridge CFArrayRef)@[@(wn)], targetSpace);
         moved++;
     }
+
+    // ウィンドウ移動後に対象 Space へ切り替え (Ctrl+右/左矢印キーイベント送信)
+    // 100ms 待機して compositor が安定してから切り替える
+    int32_t dir = direction;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        CGKeyCode keyCode = (dir > 0) ? 124 : 123; // 124=right, 123=left
+        CGEventRef dn = CGEventCreateKeyboardEvent(NULL, keyCode, true);
+        if (dn) {
+            CGEventSetFlags(dn, kCGEventFlagMaskControl);
+            CGEventPost(kCGHIDEventTap, dn);
+            CFRelease(dn);
+        }
+        CGEventRef up = CGEventCreateKeyboardEvent(NULL, keyCode, false);
+        if (up) {
+            CGEventSetFlags(up, kCGEventFlagMaskControl);
+            CGEventPost(kCGHIDEventTap, up);
+            CFRelease(up);
+        }
+    });
 
     napi_value result;
     napi_create_int32(env, moved, &result);
@@ -446,24 +540,28 @@ static napi_value MoveWindowsToActiveSpace(napi_env env, napi_callback_info info
     napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, NULL, NULL);
 
-    int cid = CGSMainConnectionID();
-    uint64_t activeSpace = CGSGetActiveSpace(cid);
+    int cid = spaceCid();
+    uint64_t activeSpace = spaceGetActive(cid);
 
     uint32_t length;
     napi_get_array_length(env, args[0], &length);
     int moved = 0;
 
-    NSMutableArray *wins = [NSMutableArray new];
     for (uint32_t i = 0; i < length; i++) {
         napi_value item;
         napi_get_element(env, args[0], i, &item);
         int32_t wn;
         napi_get_value_int32(env, item, &wn);
-        [wins addObject:@((CGWindowID)wn)];
-    }
-    if (wins.count > 0) {
-        CGSMoveWindowsToManagedSpace(cid, (__bridge CFArrayRef)wins, activeSpace);
-        moved = (int)wins.count;
+        CGWindowID winId = (CGWindowID)wn;
+
+        int ownerCid = 0;
+        if (pfnSLSGetOwner) pfnSLSGetOwner(cid, winId, &ownerCid);
+        else CGSGetWindowOwner(cid, winId, &ownerCid);
+        int moveCid = (ownerCid > 0) ? ownerCid : cid;
+
+        NSArray *winArr = @[@(wn)];
+        spaceMoveWindows(moveCid, (__bridge CFArrayRef)winArr, activeSpace);
+        moved++;
     }
 
     napi_value result;
