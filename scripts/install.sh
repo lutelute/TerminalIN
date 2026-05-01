@@ -27,6 +27,8 @@ rm -rf "$APP_DST"
 cp -R "$APP_SRC" "$APP_DST"
 
 xattr -cr "$APP_DST"
+# ad-hoc 自己署名: 未署名だと macOS 26 beta が Accessibility 権限を毎回リセットする
+codesign --deep --force --sign - "$APP_DST" 2>/dev/null && echo "[install] codesign: ok" || echo "[install] codesign: skipped"
 echo "[install] TiN.app installed to $APP_DST"
 echo "[install] Starting TiN..."
 "$APP_DST/Contents/MacOS/TiN" > /tmp/tin-install-check.log 2>&1 &

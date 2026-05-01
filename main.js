@@ -407,7 +407,7 @@ async function restoreAllPending() {
       });
       snappedIndexAdd(live.windowNumber, ws);
       const pos = getSlotBounds(ws, slot);
-      if (pos) allMoveCmds.push({ windowNumber: live.windowNumber, pid: live.pid, app: live.app, title: live.title, ...pos });
+      if (pos) allMoveCmds.push({ windowNumber: live.windowNumber, pid: live.pid, app: live.app, title: live.title, windowIndex: live.windowIndex || 0, ...pos });
       restored.push({ app: live.app, title: live.title, slot });
     }
     // renderer に通知
@@ -421,7 +421,12 @@ async function restoreAllPending() {
   }
 
   // 全ウィンドウを1回の batchMove で移動
+  // moveWindowsToActiveSpace を先に呼び、ウィンドウを現在 Space に集合させてから AX 移動する
   if (allMoveCmds.length > 0) {
+    if (axHelper && axHelper.moveWindowsToActiveSpace) {
+      try { axHelper.moveWindowsToActiveSpace(allMoveCmds.map(c => c.windowNumber)); } catch {}
+      await new Promise(r => setTimeout(r, 80));
+    }
     await batchMove(allMoveCmds);
     console.log(`[tin] batch restore: moved ${allMoveCmds.length} windows in 1 call`);
   }
@@ -465,6 +470,7 @@ function listWindowsForUI() {
   }
   return Promise.resolve([]);
 }
+
 
 // Fire-and-forget: sidebar ドラッグ中のリアルタイム retile 用。応答待ちで
 // event loop をブロックしないので、次の move イベントをすぐ処理できる。
@@ -1001,8 +1007,9 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
     try {
       if (axHelper && axHelper.moveWindowsToActiveSpace) {
         axHelper.moveWindowsToActiveSpace([windowNumber]);
+        await new Promise(r => setTimeout(r, 80));
       }
-      if (pos) await batchMove([{ windowNumber, pid, app: appName, title, ...pos }]);
+      if (pos) await batchMove([{ windowNumber, pid, app: appName, title, windowIndex: windowIndex || 0, ...pos }]);
     } catch {}
   })();
   scheduleSaveWorkspaces();
@@ -1166,14 +1173,61 @@ ipcMain.handle('retile-now', async (event) => {
       wns.push(info.windowNumber);
     }
   }
-  if (wns.length && axHelper && axHelper.moveWindowsToActiveSpace) {
-    try { axHelper.moveWindowsToActiveSpace(wns); } catch {}
+  // snapped ウィンドウ + このワークスペースの TiN 全ウィンドウをまとめて現在 Space に引き寄せる
+  const sidebarWn = getElectronWinNumber(ws.win);
+  const allWns = [...new Set([...wns, ...(sidebarWn ? [sidebarWn] : [])])];
+  if (allWns.length && axHelper && axHelper.moveWindowsToActiveSpace) {
+    try { axHelper.moveWindowsToActiveSpace(allWns); } catch {}
   }
   if (cmds.length) {
     await batchMove(cmds);
     osascriptMove(cmds).catch(() => {});
   }
   return { ok: true };
+});
+
+// TiN サイドバー + snap 済みウィンドウを丸ごと次/前のデスクトップ (Space) に移動。
+// direction: +1 = 次, -1 = 前。移動後ユーザーがスワイプして確認する。
+// Electron BrowserWindow の CGWindowNumber を title でマッチして返す。
+function getElectronWinNumber(win) {
+  if (!axHelper || !win || win.isDestroyed()) return null;
+  try {
+    const myPid = process.pid;
+    const title = win.getTitle();
+    const match = axHelper.listWindows().find(w => w.pid === myPid && w.title === title);
+    return match ? match.windowNumber : null;
+  } catch { return null; }
+}
+
+ipcMain.handle('push-to-space', async (event, { direction }) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws || !axHelper || !axHelper.moveToSpace) return { ok: false };
+
+  // snapped 外部ウィンドウ
+  const wns = [...ws.snappedExternals.keys()];
+
+  // TiN 自身の Electron ウィンドウ群 (sidebar + grid terminals + overlay)
+  const electronWns = [];
+  const sidebarWn = getElectronWinNumber(ws.win);
+  if (sidebarWn) electronWns.push(sidebarWn);
+  for (const [, gw] of ws.gridWindows) {
+    const wn = getElectronWinNumber(gw.win);
+    if (wn) electronWns.push(wn);
+  }
+  if (ws.gridOverlay) {
+    const wn = getElectronWinNumber(ws.gridOverlay);
+    if (wn) electronWns.push(wn);
+  }
+
+  const allWns = [...new Set([...wns, ...electronWns])];
+  if (!allWns.length) return { ok: false, reason: 'no-windows' };
+  beginStabilize('push-to-space');
+  try {
+    const moved = axHelper.moveToSpace(allWns, direction);
+    return { ok: true, moved };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 });
 
 // slot の順序を並べ替え (line card の間にドロップする挿入操作)。

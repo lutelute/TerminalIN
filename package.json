@@ -45,6 +45,8 @@
       "extendInfo": {
         "NSAppleEventsUsageDescription": "TiN は Terminal / Finder など外部ウィンドウを snap / wobble / raise するために System Events を使用します。",
         "NSAccessibilityUsageDescription": "TiN は外部ウィンドウの位置とサイズを制御するためにアクセシビリティが必要です。",
+        "NSWindowManagementUsageDescription": "TiN は外部ウィンドウを別のデスクトップ（Space）に移動するためにウィンドウ管理権限が必要です。",
+        "NSScreenCaptureUsageDescription": "TiN は他のアプリのウィンドウをデスクトップ間で移動するために画面収録権限が必要です。",
         "NSSupportsAutomaticTermination": false,
         "NSSupportsSuddenTermination": false
       }
