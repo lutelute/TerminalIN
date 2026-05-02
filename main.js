@@ -56,6 +56,10 @@ const WORKSPACES_JSON = path.join(INTEGRATION_DIR, 'workspaces.json');
 const WORKSPACES_FORMAT_VERSION = 1;
 // 保存済みセッションが古すぎる場合は復元しない閾値 (24時間)
 const WORKSPACES_STALE_MS = 24 * 60 * 60 * 1000;
+// 統合ウィンドウのレイアウト定数
+const DEFAULT_SIDEBAR_W = 280;
+const SIDEBAR_DIVIDER_W = 6;
+const TITLEBAR_H = 68; // hiddenInset 2行
 // workspace プリセット (メモリ機能)
 const PRESETS_DIR = path.join(INTEGRATION_DIR, 'presets');
 const TIN_START_TIME = Date.now();
@@ -136,7 +140,7 @@ function buildSnappedPayload() {
   const focused = BrowserWindow.getFocusedWindow();
   for (const [, ws] of workspaces) {
     if (!ws || !ws.win || ws.win.isDestroyed()) continue;
-    if (focused && (ws.win === focused || ws.gridOverlay === focused)) {
+    if (focused && ws.win === focused) {
       activeWorkspaceId = String(ws.id);
     }
     for (const [, info] of ws.snappedExternals) {
@@ -203,7 +207,8 @@ async function writeWorkspacesJson() {
     payload.workspaces.push({
       name: ws.name,
       sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
-      grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800, height: ws.gridHeight || 0, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
+      sidebarWidth: ws.sidebarWidth || DEFAULT_SIDEBAR_W,
+      grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
       colorIndex: ws.colorIndex,
       snappedExternals: snapped,
     });
@@ -690,34 +695,16 @@ function isExternalSnapped(windowNumber) {
 }
 
 // ── Grid geometry ──
-// Never rely on overlay.getBounds() — transparent windows report wrong bounds on macOS multi-display.
-// Always calculate from workspace position + stored grid size.
-//
-// 以前は sidebar の置かれているディスプレイに grid area を強制 clamp していたが
-// これは cross-display snap を壊していた (ユーザー報告)。
-// 現在は raw 座標をそのまま返す。AX (System Events) はグローバル座標で動作するため
-// 境界をまたいでも正しく配置される。ディスプレイ外にはみ出しても macOS が適切に
-// ウィンドウを可視領域に寄せる。
+// 統合ウィンドウ方式: グリッドエリアはウィンドウの右パネル内。
+// タイトルバー(68px)を除いたコンテンツ領域の、サイドバー幅+ディバイダー幅 以降の部分。
 function getGridArea(ws) {
   if (!ws.win || ws.win.isDestroyed()) return null;
   const b = ws.win.getBounds();
-  let x = b.x + b.width + 12;
-  let y = b.y;
-  let width = ws.gridWidth || 800;
-  let height = ws.gridHeight || b.height;
-  // sidebar のあるディスプレイに grid 領域を収める (はみ出し防止)
-  try {
-    const d = screen.getDisplayMatching(b).workArea;
-    // 右にはみ出すなら sidebar の左側に配置、それでもダメなら幅を縮める
-    if (x + width > d.x + d.width) {
-      const leftX = b.x - 12 - width;
-      if (leftX >= d.x) x = leftX;
-      else width = Math.max(200, (d.x + d.width) - x - 4);
-    }
-    if (x < d.x) x = d.x;
-    if (y < d.y) y = d.y;
-    if (y + height > d.y + d.height) height = Math.max(200, (d.y + d.height) - y - 4);
-  } catch {}
+  const sidebarW = ws.sidebarWidth || DEFAULT_SIDEBAR_W;
+  const x = b.x + sidebarW + SIDEBAR_DIVIDER_W;
+  const y = b.y + TITLEBAR_H;
+  const width = Math.max(100, b.width - sidebarW - SIDEBAR_DIVIDER_W);
+  const height = Math.max(100, b.height - TITLEBAR_H);
   return { x, y, width, height };
 }
 
@@ -765,7 +752,6 @@ async function raiseAllWorkspaceWindows(ws, force = false) {
   for (const [, gw] of ws.gridWindows) {
     if (gw.win && !gw.win.isDestroyed()) gw.win.show();
   }
-  if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) ws.gridOverlay.show();
 
   // Snapped externals を daemon で一括 raise (非同期だが高速)
   if (ws.snappedExternals.size > 0) {
@@ -854,6 +840,7 @@ function createGridTerminal(ws, slot) {
 
   const gridWin = new BrowserWindow({
     ...b,
+    parent: ws.win,   // TiN ウィンドウの前面に表示 + Space 移動で一体化
     frame: false,
     acceptFirstMouse: true,
     skipTaskbar: true,
@@ -1217,10 +1204,6 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
     const wn = getElectronWinNumber(gw.win);
     if (wn) electronWns.push(wn);
   }
-  if (ws.gridOverlay) {
-    const wn = getElectronWinNumber(ws.gridOverlay);
-    if (wn) electronWns.push(wn);
-  }
   if (!electronWns.length) return { ok: false, reason: 'no-windows' };
 
   beginStabilize('push-to-space');
@@ -1310,8 +1293,8 @@ ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
   // grid サイズ変更時は ratio リセット
   ws.colRatios = null;
   ws.rowRatios = null;
-  if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) {
-    ws.gridOverlay.webContents.send('update-grid', { cols, rows, colRatios: null, rowRatios: null });
+  if (ws.win && !ws.win.isDestroyed()) {
+    ws.win.webContents.send('update-grid-panel', { cols, rows, colRatios: null, rowRatios: null });
   }
   retileAll(ws);
   scheduleSaveWorkspaces();
@@ -1322,7 +1305,6 @@ ipcMain.on('rename-workspace', (event, { name }) => {
   if (ws) {
     ws.name = name;
     if (ws.win && !ws.win.isDestroyed()) ws.win.setTitle(`TiN — ${name}`);
-    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) ws.gridOverlay.setTitle(`TiN — ${name} Grid`);
     for (const [slot, gw] of ws.gridWindows) {
       if (gw.win && !gw.win.isDestroyed()) gw.win.setTitle(`TiN — ${name} [${slot}]`);
     }
@@ -1353,19 +1335,33 @@ ipcMain.on('toggle-collapse', (event, { collapsed }) => {
 function createWorkspace(name, savedState) {
   const wsId = nextWsId++;
   const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize;
-  const ww = 300, wh = 650;
+  const wh = 650;
   const offset = (wsId - 1) * 30;
 
   // sidebar 位置: saved state があればそれを、なければデフォルト
   const savedSidebar = savedState && savedState.sidebar;
+  const savedGrid = savedState && savedState.grid;
   const winX = savedSidebar ? savedSidebar.x : 50 + offset;
   const winY = savedSidebar ? savedSidebar.y : Math.round((sh - wh) / 2) + offset;
-  const winW = savedSidebar && savedSidebar.width ? savedSidebar.width : ww;
+  // 統合ウィンドウ幅 = sidebarWidth + divider + gridWidth
+  // 旧フォーマット互換: sidebar.width が小さい (300以下) なら旧サイドバー幅なので gridWidth を補完
+  const savedSidebarW = (savedState && savedState.sidebarWidth) || DEFAULT_SIDEBAR_W;
+  const savedGridW = savedGrid && savedGrid.width ? savedGrid.width : 800;
+  let winW;
+  if (savedSidebar && savedSidebar.width) {
+    // 旧フォーマット: sidebar.width が sidebarWidth+gridWidth の合計か否かを判定
+    winW = savedSidebar.width > 600
+      ? savedSidebar.width  // 新フォーマット (統合ウィンドウ幅)
+      : savedSidebar.width + SIDEBAR_DIVIDER_W + savedGridW; // 旧フォーマット補完
+  } else {
+    winW = savedSidebarW + SIDEBAR_DIVIDER_W + savedGridW;
+  }
   const winH = savedSidebar && savedSidebar.height ? savedSidebar.height : wh;
 
   const win = new BrowserWindow({
     width: winW, height: winH,
-    minWidth: 200, maxWidth: 500, minHeight: 300,
+    minWidth: DEFAULT_SIDEBAR_W + SIDEBAR_DIVIDER_W + 200,
+    minHeight: 300,
     x: winX,
     y: winY,
     titleBarStyle: 'hiddenInset',
@@ -1378,7 +1374,6 @@ function createWorkspace(name, savedState) {
   });
 
   const wsName = name || (savedState && savedState.name) || `Workspace ${wsId}`;
-  const savedGrid = savedState && savedState.grid;
   // HTML <title> による上書きを防止 — CGWindowList でワークスペース名が見えるように
   win.on('page-title-updated', (e) => e.preventDefault());
   win.setTitle(`TiN — ${wsName}`);
@@ -1387,14 +1382,13 @@ function createWorkspace(name, savedState) {
     snappedExternals: new Map(),
     gridWindows: new Map(),    // slot -> { win, pty, ptyId }
     sidebarPtys: new Map(),    // ptyId -> pty (for sidebar embedded terms)
-    gridOverlay: null,
+    gridOverlay: null,         // 廃止済み (統合ウィンドウ方式)
     pollTimer: null,
     moveThrottle: null,
     overlayThrottle: null,
     gridCols: savedGrid ? (savedGrid.cols || 2) : (appSettings.defaultGridCols || 2),
     gridRows: savedGrid ? (savedGrid.rows || 2) : (appSettings.defaultGridRows || 2),
-    gridWidth: savedGrid ? (savedGrid.width || 800) : 800,
-    gridHeight: savedGrid ? (savedGrid.height || 0) : 0,
+    sidebarWidth: savedSidebarW,
     colRatios: savedGrid && savedGrid.colRatios ? savedGrid.colRatios : null,
     rowRatios: savedGrid && savedGrid.rowRatios ? savedGrid.rowRatios : null,
     color: (savedState && savedState.colorIndex != null) ? WS_COLORS[savedState.colorIndex % WS_COLORS.length] : WS_COLORS[(wsId - 1) % WS_COLORS.length],
@@ -1408,63 +1402,13 @@ function createWorkspace(name, savedState) {
   }
 
 
-  // ── Grid overlay (semi-transparent resizable area) ──
-  function createGridOverlay() {
-    const wb = win.getBounds();
-    const overlayX = wb.x + wb.width + 12;
-    const overlayY = wb.y;
-    const overlayW = ws.gridWidth || 800;
-    const overlayH = ws.gridHeight || wb.height;
-    const overlay = new BrowserWindow({
-      x: overlayX,
-      y: overlayY,
-      width: overlayW,
-      height: overlayH,
-      minWidth: 300, minHeight: 200,
-      frame: false,
-      transparent: true,
-      hasShadow: false,
-      resizable: true,
-      acceptFirstMouse: true,
-      skipTaskbar: true,
-      webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
-    });
-    // Hide from macOS native Window menu listing (must be set via property, not constructor)
-    overlay.excludedFromShownWindowsMenu = true;
-    overlay.setTitle(`TiN — ${wsName} Grid`);
-    overlay.loadFile('grid-overlay.html');
-    overlay.webContents.on('did-finish-load', () => {
-      overlay.webContents.send('update-grid', { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios });
-    });
-    // Force position after creation (transparent windows can drift)
-    overlay.setBounds({ x: overlayX, y: overlayY, width: overlayW, height: overlayH });
-    // Click-through by default — only handles are interactive
-    overlay.setIgnoreMouseEvents(true, { forward: true });
-    ws.gridOverlay = overlay;
-
-    // overlay resize: gridWidth/gridHeight を更新 + retile
-    overlay.on('resize', () => {
-      if (ws.overlayThrottle) return;
-      ws.overlayThrottle = setTimeout(async () => {
-        ws.overlayThrottle = null;
-        if (!overlay.isDestroyed()) {
-          const ob = overlay.getBounds();
-          ws.gridWidth = ob.width;
-          ws.gridHeight = ob.height;
-        }
-        await retileAll(ws);
-        scheduleSaveWorkspaces();
-      }, 16);
-    });
-    overlay.on('closed', () => { ws.gridOverlay = null; });
-  }
-
-  // Create overlay after workspace is shown
-  win.once('show', () => setTimeout(createGridOverlay, 100));
-
   win.loadFile('workspace.html');
   win.webContents.on('did-finish-load', () => {
     win.webContents.send('workspace-info', { id: wsId, name: wsName, color: ws.color });
+    // サイドバー幅を CSS 変数として通知
+    win.webContents.send('set-sidebar-width', { width: ws.sidebarWidth || DEFAULT_SIDEBAR_W });
+    // グリッドパネルを初期化
+    win.webContents.send('update-grid-panel', { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios });
     // リロード後も main 側の snappedExternals を renderer に同期
     if (ws.snappedExternals.size > 0) {
       const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({
@@ -1486,36 +1430,17 @@ function createWorkspace(name, savedState) {
   // drag 中は snapped 外部ウィンドウの AX 追従を停止し、主スレッドを空ける。
   // 外部ターミナルは drag 終了時の retileAll で一括配置する。
   let _dragging = false;
-  let _lastSidebarHeight = winH;
-  const syncOverlayPosition = () => {
-    if (!ws.gridOverlay || ws.gridOverlay.isDestroyed() || !ws.win || ws.win.isDestroyed()) return;
-    const sb = ws.win.getBounds();
-    const ob = ws.gridOverlay.getBounds();
-    // 位置だけ追従。サイズは overlay 独自管理。
-    // ただし sidebar の高さが変わり、gridHeight が未設定 (0) なら sidebar に連動。
-    let h = ob.height;
-    if (!ws.gridHeight) {
-      h = sb.height;
-    } else if (sb.height !== _lastSidebarHeight && !ws.gridHeight) {
-      h = sb.height;
-    }
-    _lastSidebarHeight = sb.height;
-    ws.gridOverlay.setBounds({ x: sb.x + sb.width + 12, y: sb.y, width: ws.gridWidth || ob.width, height: h });
-  };
-  const onSidebarMove = () => {
-    syncOverlayPosition();
-    // embedded grid windows を即座に同期 (Electron BrowserWindow.setBounds は ~1ms で軽量)
+  const onWinMove = () => {
+    // ウィンドウ移動時: embedded grid windows を即座に同期
     for (const [slot, gw] of ws.gridWindows) {
       if (gw.win && !gw.win.isDestroyed()) {
         const b = getSlotBounds(ws, slot);
         if (b) gw.win.setBounds(b);
       }
     }
-    // snapped externals は drag 中追従しない (AX 呼び出しが主スレッドをブロックするため)。
-    // drag 終了時 ('moved' event) の retileAll でまとめて配置する。
   };
-  win.on('move', onSidebarMove);
-  win.on('resize', onSidebarMove);
+  win.on('move', onWinMove);
+  win.on('resize', onWinMove);
   win.on('will-move', () => { if (!_dragging) { _dragging = true; } });
   win.on('moved', () => {
     _dragging = false;
@@ -1737,9 +1662,6 @@ function createWorkspace(name, savedState) {
     if (ws.pollTimer) clearInterval(ws.pollTimer);
     if (ws.moveThrottle) clearTimeout(ws.moveThrottle);
     if (ws.overlayThrottle) clearTimeout(ws.overlayThrottle);
-    // Close grid overlay
-    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed()) ws.gridOverlay.close();
-    ws.gridOverlay = null;
     // Close grid windows
     for (const [, gw] of ws.gridWindows) {
       try { gw.pty.kill(); } catch {}
@@ -1776,7 +1698,7 @@ function createWorkspace(name, savedState) {
 app.on('browser-window-focus', (_event, focusedWin) => {
   let ws = null;
   for (const [, w] of workspaces) {
-    if (w.win === focusedWin || w.gridOverlay === focusedWin) { ws = w; break; }
+    if (w.win === focusedWin) { ws = w; break; }
     for (const [, gw] of w.gridWindows) {
       if (gw.win === focusedWin) { ws = w; break; }
     }
@@ -1793,98 +1715,79 @@ ipcMain.on('raise-all', (event) => {
   if (ws) raiseAllWorkspaceWindows(ws, true);
 });
 
-ipcMain.on('raise-all-from-overlay', (event) => {
-  for (const [, ws] of workspaces) {
-    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
-      raiseAllWorkspaceWindows(ws, true);
-      return;
-    }
-  }
-});
-
-ipcMain.on('set-overlay-clickthrough', (event, clickthrough) => {
-  for (const [, ws] of workspaces) {
-    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
-      if (clickthrough) {
-        ws.gridOverlay.setIgnoreMouseEvents(true, { forward: true });
-      } else {
-        ws.gridOverlay.setIgnoreMouseEvents(false);
-      }
+// 統合ウィンドウ方式では raise-all-from-overlay / set-overlay-clickthrough は不要 (no-op)
+ipcMain.on('raise-all-from-overlay', () => {});
+ipcMain.on('set-overlay-clickthrough', () => {
+  {
+    if (false) {
       return;
     }
   }
 });
 
 ipcMain.handle('get-overlay-bounds', (event) => {
-  for (const [, ws] of workspaces) {
-    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
-      return getGridArea(ws); // use calculated bounds, not overlay.getBounds()
-    }
-  }
+  const ws = findWorkspace(event.sender);
+  if (ws) return getGridArea(ws);
   return null;
 });
 
 // Grid edit モード: ratio 更新 (ドラッグ中 fire-and-forget)
 ipcMain.on('update-grid-ratios', (event, { colRatios, rowRatios }) => {
-  for (const [, ws] of workspaces) {
-    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
-      ws.colRatios = colRatios;
-      ws.rowRatios = rowRatios;
-      // snapped windows を fire-and-forget で追従
-      const moveCmds = [];
-      for (const [, info] of ws.snappedExternals) {
-        const b = getSlotBounds(ws, info.slot);
-        if (b) moveCmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
-      }
-      // embedded grid 即座
-      for (const [slot, gw] of ws.gridWindows) {
-        if (gw.win && !gw.win.isDestroyed()) {
-          const b = getSlotBounds(ws, slot);
-          if (b) gw.win.setBounds(b);
-        }
-      }
-      // ratio 変更時は slot の size も変わるので positionOnly=false (サイズ追従)
-      if (moveCmds.length) fireAndForgetMove(moveCmds, false);
-      return;
+  const ws = findWorkspace(event.sender);
+  if (!ws) return;
+  ws.colRatios = colRatios;
+  ws.rowRatios = rowRatios;
+  // snapped windows を fire-and-forget で追従
+  const moveCmds = [];
+  for (const [, info] of ws.snappedExternals) {
+    const b = getSlotBounds(ws, info.slot);
+    if (b) moveCmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
+  }
+  // embedded grid 即座
+  for (const [slot, gw] of ws.gridWindows) {
+    if (gw.win && !gw.win.isDestroyed()) {
+      const b = getSlotBounds(ws, slot);
+      if (b) gw.win.setBounds(b);
     }
   }
+  if (moveCmds.length) fireAndForgetMove(moveCmds, false);
 });
 
 // Grid edit 確定
 ipcMain.on('commit-grid-ratios', async (event, { colRatios, rowRatios }) => {
-  for (const [, ws] of workspaces) {
-    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
-      ws.colRatios = colRatios;
-      ws.rowRatios = rowRatios;
-      await retileAll(ws);
-      scheduleSaveWorkspaces();
-      return;
-    }
-  }
+  const ws = findWorkspace(event.sender);
+  if (!ws) return;
+  ws.colRatios = colRatios;
+  ws.rowRatios = rowRatios;
+  await retileAll(ws);
+  scheduleSaveWorkspaces();
 });
 
 // Edit モード開始 (renderer からのリクエスト)
 ipcMain.on('enter-grid-edit', (event) => {
   const ws = findWorkspace(event.sender);
-  if (ws && ws.gridOverlay && !ws.gridOverlay.isDestroyed()) {
-    ws.gridOverlay.webContents.send('enter-grid-edit-mode');
+  if (ws && ws.win && !ws.win.isDestroyed()) {
+    ws.win.webContents.send('enter-grid-edit-mode');
   }
 });
 
-ipcMain.on('resize-overlay', (event, { width, height }) => {
-  for (const [, ws] of workspaces) {
-    if (ws.gridOverlay && !ws.gridOverlay.isDestroyed() && ws.gridOverlay.webContents === event.sender) {
-      // Use workspace position to calculate overlay position (not overlay.getBounds)
-      const sb = ws.win.getBounds();
-      ws.gridOverlay.setBounds({ x: sb.x + sb.width + 12, y: sb.y, width, height });
-      ws.gridWidth = width;
-      ws.gridHeight = height;
-      // overlay リサイズ後に snapped ターミナルのサイズも即座に反映
-      retileAll(ws);
-      scheduleSaveWorkspaces();
-      return;
+// resize-overlay は統合ウィンドウ方式では不要 (no-op)
+ipcMain.on('resize-overlay', () => {});
+
+// sidebar 幅変更 (divider ドラッグ)
+ipcMain.on('sidebar-width-changed', (event, { width }) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return;
+  ws.sidebarWidth = width;
+  // embedded grid windows を即座に再配置
+  for (const [slot, gw] of ws.gridWindows) {
+    if (gw.win && !gw.win.isDestroyed()) {
+      const b = getSlotBounds(ws, slot);
+      if (b) gw.win.setBounds(b);
     }
   }
+  retileAll(ws, false, true);
+  scheduleSaveWorkspaces();
 });
 
 // ── URL scheme handler (docs/PROTOCOL.md §5) ──
@@ -1960,7 +1863,7 @@ function handleTinUrl(rawUrl) {
           let target = null;
           for (const [, ws] of workspaces) {
             if (!ws.win || ws.win.isDestroyed()) continue;
-            if (focused && (ws.win === focused || ws.gridOverlay === focused)) { target = ws; break; }
+            if (focused && (ws.win === focused)) { target = ws; break; }
           }
           if (!target) {
             for (const [, ws] of workspaces) {
@@ -1985,7 +1888,7 @@ function handleTinUrl(rawUrl) {
           const focused = BrowserWindow.getFocusedWindow();
           for (const [, ws] of workspaces) {
             if (!ws.win || ws.win.isDestroyed()) continue;
-            if (focused && (ws.win === focused || ws.gridOverlay === focused)) { target = ws; break; }
+            if (focused && (ws.win === focused)) { target = ws; break; }
           }
           if (!target) {
             for (const [, ws] of workspaces) {
@@ -2006,7 +1909,7 @@ function handleTinUrl(rawUrl) {
           const focused = BrowserWindow.getFocusedWindow();
           for (const [, ws] of workspaces) {
             if (!ws.win || ws.win.isDestroyed()) continue;
-            if (focused && (ws.win === focused || ws.gridOverlay === focused)) { target = ws; break; }
+            if (focused && (ws.win === focused)) { target = ws; break; }
           }
           if (!target) {
             for (const [, ws] of workspaces) {
@@ -2093,7 +1996,8 @@ function savePreset(name) {
       data.workspaces.push({
         name: ws.name, colorIndex: ws.colorIndex,
         sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
-        grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800, height: ws.gridHeight || 0, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
+        sidebarWidth: ws.sidebarWidth || DEFAULT_SIDEBAR_W,
+        grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
         snappedExternals: snapped,
       });
     }
@@ -2356,7 +2260,7 @@ app.whenReady().then(() => {
         if (focused) {
           for (const [, ws] of workspaces) {
             if (!ws.win || ws.win.isDestroyed()) continue;
-            if (ws.win === focused || ws.gridOverlay === focused) { targets = [ws]; break; }
+            if (ws.win === focused) { targets = [ws]; break; }
             for (const [, gw] of ws.gridWindows) {
               if (gw.win === focused) { targets = [ws]; break; }
             }
@@ -2435,7 +2339,7 @@ app.whenReady().then(() => {
         let currentIdx = -1;
         for (let i = 0; i < wsList.length; i++) {
           const ws = wsList[i];
-          if (ws.win === focused || ws.gridOverlay === focused) { currentIdx = i; break; }
+          if (ws.win === focused) { currentIdx = i; break; }
           for (const [, gw] of ws.gridWindows) {
             if (gw.win === focused) { currentIdx = i; break; }
           }
@@ -2481,7 +2385,8 @@ function writeWorkspacesJsonSync() {
     payload.workspaces.push({
       name: ws.name,
       sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
-      grid: { cols: ws.gridCols, rows: ws.gridRows, width: ws.gridWidth || 800, height: ws.gridHeight || 0, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
+      sidebarWidth: ws.sidebarWidth || DEFAULT_SIDEBAR_W,
+      grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
       colorIndex: ws.colorIndex,
       snappedExternals: snapped,
     });
