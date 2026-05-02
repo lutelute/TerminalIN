@@ -864,17 +864,53 @@ function showToast(msg, kind = 'info') {
   }, 2200);
 }
 
+// renderer 側で空きスロットを推測する (楽観的更新用)
+function nextFreeSlotLocal(targetSlot) {
+  const total = gridCols * gridRows;
+  const used = new Set([
+    ...Object.keys(gridSlots).map(Number),
+    ...[...snappedExternals.values()].map(i => i.slot).filter(s => typeof s === 'number'),
+  ]);
+  if (typeof targetSlot === 'number' && targetSlot >= 0 && targetSlot < total && !used.has(targetSlot)) return targetSlot;
+  for (let i = 0; i < total; i++) if (!used.has(i)) return i;
+  return -1;
+}
+
+const _snapPending = new Set(); // 連打防止: 処理中の windowNumber
+
 async function snapExternal(w, targetSlot) {
-  const result = await ipcRenderer.invoke('snap-external', {
-    windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title,
-    x: w.x, y: w.y, width: w.width, height: w.height,
-    windowIndex: w.windowIndex,
-    targetSlot: (typeof targetSlot === 'number') ? targetSlot : undefined,
-  });
-  if (result.ok) { snappedExternals.set(w.windowNumber, { title: w.title, app: w.app }); render(); }
-  else if (result.reason === 'no-slot') showToast('空きスロットがありません。Grid を増やすか既存の snap を解除してください。', 'error');
-  else if (result.reason === 'snapped-elsewhere') showToast('他の workspace で既に snap されています。', 'error');
-  else if (!result.ok) showToast('snap に失敗しました。', 'error');
+  if (_snapPending.has(w.windowNumber)) return;
+  _snapPending.add(w.windowNumber);
+
+  // 楽観的更新: IPC 完了前に即座に grid に反映
+  const optimisticSlot = nextFreeSlotLocal(targetSlot);
+  if (optimisticSlot >= 0) {
+    snappedExternals.set(w.windowNumber, { title: w.title, app: w.app, slot: optimisticSlot });
+    render();
+  }
+
+  try {
+    const result = await ipcRenderer.invoke('snap-external', {
+      windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title,
+      x: w.x, y: w.y, width: w.width, height: w.height,
+      windowIndex: w.windowIndex,
+      targetSlot: (typeof targetSlot === 'number') ? targetSlot : undefined,
+    });
+    if (result.ok) {
+      // 確定した slot で更新
+      snappedExternals.set(w.windowNumber, { title: w.title, app: w.app, slot: result.slot });
+      render();
+    } else {
+      // 楽観的更新を取り消し
+      snappedExternals.delete(w.windowNumber);
+      render();
+      if (result.reason === 'no-slot') showToast('空きスロットがありません。Grid を増やすか既存の snap を解除してください。', 'error');
+      else if (result.reason === 'snapped-elsewhere') showToast('他の workspace で既に snap されています。', 'error');
+      else showToast('snap に失敗しました。', 'error');
+    }
+  } finally {
+    _snapPending.delete(w.windowNumber);
+  }
 }
 
 // ── Slot picker: Snap ボタンクリック時に浮かぶミニグリッド ──
@@ -980,9 +1016,16 @@ async function openSlotPicker(anchorBtn, w) {
 }
 
 async function unsnapExternal(windowNumber) {
-  await ipcRenderer.invoke('unsnap-external', { windowNumber });
+  if (_snapPending.has(windowNumber)) return;
+  _snapPending.add(windowNumber);
+  // 楽観的更新: 即座に削除して表示
   snappedExternals.delete(windowNumber);
   render();
+  try {
+    await ipcRenderer.invoke('unsnap-external', { windowNumber });
+  } finally {
+    _snapPending.delete(windowNumber);
+  }
 }
 
 // ── Grid size ──
