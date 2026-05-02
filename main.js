@@ -1203,10 +1203,7 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
   const ws = findWorkspace(event.sender);
   if (!ws || !axHelper || !axHelper.moveToSpace) return { ok: false };
 
-  // snapped 外部ウィンドウ
-  const wns = [...ws.snappedExternals.keys()];
-
-  // TiN 自身の Electron ウィンドウ群 (sidebar + grid terminals + overlay)
+  // TiN 自身の Electron ウィンドウ群を SLSMoveWindowsToManagedSpace で移動
   const electronWns = [];
   const sidebarWn = getElectronWinNumber(ws.win);
   if (sidebarWn) electronWns.push(sidebarWn);
@@ -1218,12 +1215,11 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
     const wn = getElectronWinNumber(ws.gridOverlay);
     if (wn) electronWns.push(wn);
   }
+  if (!electronWns.length) return { ok: false, reason: 'no-windows' };
 
-  const allWns = [...new Set([...wns, ...electronWns])];
-  if (!allWns.length) return { ok: false, reason: 'no-windows' };
   beginStabilize('push-to-space');
   try {
-    const moved = axHelper.moveToSpace(allWns, direction);
+    const moved = axHelper.moveToSpace(electronWns, direction);
     return { ok: true, moved };
   } catch (e) {
     return { ok: false, error: e.message };

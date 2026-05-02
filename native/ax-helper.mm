@@ -437,6 +437,7 @@ static void spaceMoveWindows(int cid, CFArrayRef windows, uint64_t spaceID) {
 }
 
 // moveToSpace(windowNumbers: number[], direction: number) → moved count
+// 指定ウィンドウを次/前の Space に移動する。自プロセスのウィンドウ (Electron) に有効。
 static napi_value MoveToSpace(napi_env env, napi_callback_info info) {
     size_t argc = 2;
     napi_value args[2];
@@ -448,32 +449,22 @@ static napi_value MoveToSpace(napi_env env, napi_callback_info info) {
     int cid = spaceCid();
     uint64_t currentSpace = spaceGetActive(cid);
 
-    // 全 Space を列挙
     CFArrayRef displays = spaceCopyDisplaySpaces(cid);
     if (!displays) {
-        napi_value result;
-        napi_create_int32(env, 0, &result);
-        return result;
+        napi_value result; napi_create_int32(env, 0, &result); return result;
     }
-
     NSMutableArray<NSNumber*> *allSpaces = [NSMutableArray new];
-    NSArray *displayArr = (__bridge NSArray *)displays;
-    for (NSDictionary *display in displayArr) {
-        NSArray *spaces = display[@"Spaces"];
-        for (NSDictionary *space in spaces) {
-            NSNumber *spaceId = space[@"id64"] ?: space[@"ManagedSpaceID"];
-            if (spaceId) [allSpaces addObject:spaceId];
+    for (NSDictionary *d in (__bridge NSArray *)displays) {
+        for (NSDictionary *s in d[@"Spaces"]) {
+            NSNumber *sid = s[@"id64"] ?: s[@"ManagedSpaceID"];
+            if (sid) [allSpaces addObject:sid];
         }
     }
     CFRelease(displays);
-
     if (allSpaces.count <= 1) {
-        napi_value result;
-        napi_create_int32(env, 0, &result);
-        return result;
+        napi_value result; napi_create_int32(env, 0, &result); return result;
     }
 
-    // 現在の Space のインデックスを見つけて次/前を計算
     NSInteger currentIdx = -1;
     for (NSUInteger i = 0; i < allSpaces.count; i++) {
         if ([allSpaces[i] unsignedLongLongValue] == currentSpace) { currentIdx = i; break; }
@@ -482,51 +473,17 @@ static napi_value MoveToSpace(napi_env env, napi_callback_info info) {
     NSInteger nextIdx = (currentIdx + direction + (NSInteger)allSpaces.count) % (NSInteger)allSpaces.count;
     uint64_t targetSpace = [allSpaces[nextIdx] unsignedLongLongValue];
 
-    // windowNumber 配列をまとめて移動
     uint32_t length;
     napi_get_array_length(env, args[0], &length);
-
-    // 各ウィンドウをオーナー Connection で個別に移動。
-    // 他プロセスのウィンドウは SLSMain connection では移動できないため、
-    // CGSGetWindowOwner でオーナーの connection を取得して使う。
     int moved = 0;
     for (uint32_t i = 0; i < length; i++) {
         napi_value item;
         napi_get_element(env, args[0], i, &item);
         int32_t wn;
         napi_get_value_int32(env, item, &wn);
-        CGWindowID winId = (CGWindowID)wn;
-
-        int ownerCid = 0;
-        if (pfnSLSGetOwner) {
-            pfnSLSGetOwner(cid, winId, &ownerCid);
-        } else {
-            CGSGetWindowOwner(cid, winId, &ownerCid);
-        }
-        int moveCid = (ownerCid > 0) ? ownerCid : cid;
-
-        spaceMoveWindows(moveCid, (__bridge CFArrayRef)@[@(wn)], targetSpace);
+        spaceMoveWindows(cid, (__bridge CFArrayRef)@[@(wn)], targetSpace);
         moved++;
     }
-
-    // ウィンドウ移動後に対象 Space へ切り替え (Ctrl+右/左矢印キーイベント送信)
-    // 100ms 待機して compositor が安定してから切り替える
-    int32_t dir = direction;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        CGKeyCode keyCode = (dir > 0) ? 124 : 123; // 124=right, 123=left
-        CGEventRef dn = CGEventCreateKeyboardEvent(NULL, keyCode, true);
-        if (dn) {
-            CGEventSetFlags(dn, kCGEventFlagMaskControl);
-            CGEventPost(kCGHIDEventTap, dn);
-            CFRelease(dn);
-        }
-        CGEventRef up = CGEventCreateKeyboardEvent(NULL, keyCode, false);
-        if (up) {
-            CGEventSetFlags(up, kCGEventFlagMaskControl);
-            CGEventPost(kCGHIDEventTap, up);
-            CFRelease(up);
-        }
-    });
 
     napi_value result;
     napi_create_int32(env, moved, &result);
