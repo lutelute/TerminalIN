@@ -903,6 +903,14 @@ async function snapExternal(w, targetSlot) {
     } else {
       // 楽観的更新を取り消し
       snappedExternals.delete(w.windowNumber);
+      // no-slot 時: main 側の実態で renderer を同期 (リロード等によるデシンク解消)
+      if (result.reason === 'no-slot' && Array.isArray(result.hydrate)) {
+        for (const entry of result.hydrate) {
+          if (!snappedExternals.has(entry.windowNumber)) {
+            snappedExternals.set(entry.windowNumber, { title: entry.title, app: entry.app, slot: entry.slot });
+          }
+        }
+      }
       render();
       if (result.reason === 'no-slot') showToast('空きスロットがありません。Grid を増やすか既存の snap を解除してください。', 'error');
       else if (result.reason === 'snapped-elsewhere') showToast('他の workspace で既に snap されています。', 'error');

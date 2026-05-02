@@ -992,7 +992,13 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
     if (!occupied) slot = targetSlot;
   }
   if (slot < 0) slot = nextFreeSlot(ws);
-  if (slot < 0) return { ok: false, reason: 'no-slot' };
+  if (slot < 0) {
+    // renderer の snappedExternals を main の実態に同期させる
+    const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({
+      windowNumber: wn, title: info.title, app: info.app, slot: info.slot,
+    }));
+    return { ok: false, reason: 'no-slot', hydrate };
+  }
   ws.snappedExternals.set(windowNumber, {
     app: appName, pid, title, windowNumber, windowIndex: windowIndex || 0, slot,
     origX: x, origY: y, origW: width, origH: height,
@@ -1459,6 +1465,13 @@ function createWorkspace(name, savedState) {
   win.loadFile('workspace.html');
   win.webContents.on('did-finish-load', () => {
     win.webContents.send('workspace-info', { id: wsId, name: wsName, color: ws.color });
+    // リロード後も main 側の snappedExternals を renderer に同期
+    if (ws.snappedExternals.size > 0) {
+      const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({
+        windowNumber: wn, title: info.title, app: info.app, slot: info.slot,
+      }));
+      win.webContents.send('hydrate-snapped', hydrate);
+    }
     // 復元は restoreAllPending() で一括実行 (個別ではなく全 workspace まとめて)
     if (ws._pendingRestore) scheduleRestoreAll();
   });
