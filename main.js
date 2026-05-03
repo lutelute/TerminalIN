@@ -1668,15 +1668,40 @@ function createWorkspace(name, savedState) {
           info._missCount = 0;
           continue;
         }
+        // space-absent 中は既に別 Space と判定済み → miss を数えない
+        if (info._spaceAbsent) continue;
         info._missCount = (info._missCount || 0) + 1;
-        // ターミナルが閉じたらその slot も即座に解放 (3 回 miss = poll 間隔 x 3)
         if (info._missCount >= 3) {
-          ws.snappedExternals.delete(k);
-          snappedIndexRemove(k);
-          compactSlots(ws);
-          snappedChanged = true;
+          // 別 Space に存在するか確認 (閉じた vs Space 移動の区別)
+          let foundElsewhere = false;
+          if (axHelper && axHelper.listWindowsAllSpaces) {
+            try {
+              const allWins = axHelper.listWindowsAllSpaces();
+              foundElsewhere = allWins.some(w => w.windowNumber === k);
+            } catch {}
+          }
+          if (foundElsewhere) {
+            // 別 Space にいる → ghost として保持、スロットは占有したまま
+            info._spaceAbsent = true;
+            info._missCount = 0;
+          } else {
+            // 本当に閉じた → 削除
+            ws.snappedExternals.delete(k);
+            ws._lastKnownSnappedWns.delete(k);
+            snappedIndexRemove(k);
+            compactSlots(ws);
+            snappedChanged = true;
+          }
         }
         continue;
+      }
+      // ウィンドウが現 Space に戻ってきた
+      if (info._spaceAbsent) {
+        info._spaceAbsent = false;
+        // 正しいスロット位置に再配置
+        const pos = getSlotBounds(ws, info.slot);
+        if (pos) fireAndForgetMove([{ windowNumber: live.windowNumber, pid: live.pid, app: info.app, title: info.title, ...pos }]);
+        snappedChanged = true;
       }
       info._missCount = 0;
       if (info.title !== live.title || info.pid !== live.pid) {

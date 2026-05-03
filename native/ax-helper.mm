@@ -19,12 +19,14 @@ typedef uint64_t (*PFN_SLSGetActiveSpace)(SLSCid cid);
 typedef void (*PFN_SLSMoveWindowsToManagedSpace)(SLSCid cid, CFArrayRef windows, uint64_t spaceID);
 typedef CFArrayRef (*PFN_SLSCopyManagedDisplaySpaces)(SLSCid cid);
 typedef CGError (*PFN_SLSGetWindowOwner)(SLSCid cid, CGWindowID wid, SLSCid *ownerCid);
+typedef CFArrayRef (*PFN_SLSCopySpacesForWindows)(SLSCid cid, int selector, CFArrayRef windows);
 
 static PFN_SLSMainConnectionID pfnSLSMain = NULL;
 static PFN_SLSGetActiveSpace pfnSLSGetActive = NULL;
 static PFN_SLSMoveWindowsToManagedSpace pfnSLSMove = NULL;
 static PFN_SLSCopyManagedDisplaySpaces pfnSLSCopySpaces = NULL;
 static PFN_SLSGetWindowOwner pfnSLSGetOwner = NULL;
+static PFN_SLSCopySpacesForWindows pfnSLSCopySpacesForWindows = NULL;
 
 static void initSkyLight() {
     static bool done = false;
@@ -40,6 +42,9 @@ static void initSkyLight() {
     pfnSLSGetOwner   = (PFN_SLSGetWindowOwner)dlsym(h, "SLSGetWindowOwner");
     if (!pfnSLSGetOwner)
         pfnSLSGetOwner = (PFN_SLSGetWindowOwner)dlsym(h, "CGSGetWindowOwner");
+    pfnSLSCopySpacesForWindows = (PFN_SLSCopySpacesForWindows)dlsym(h, "SLSCopySpacesForWindows");
+    if (!pfnSLSCopySpacesForWindows)
+        pfnSLSCopySpacesForWindows = (PFN_SLSCopySpacesForWindows)dlsym(h, "CGSCopySpacesForWindows");
 }
 
 static NSSet *terminalApps = nil;
@@ -476,17 +481,49 @@ static napi_value MoveToSpace(napi_env env, napi_callback_info info) {
     uint32_t length;
     napi_get_array_length(env, args[0], &length);
     int moved = 0;
+    // ウィンドウの現在 Space を取得するヘルパー
+    auto getWindowSpaceId = [&](CGWindowID wid) -> uint64_t {
+        initSkyLight();
+        if (!pfnSLSCopySpacesForWindows) return 0;
+        CFArrayRef spaces = pfnSLSCopySpacesForWindows(cid, 7, (__bridge CFArrayRef)@[@(wid)]);
+        if (!spaces) return 0;
+        uint64_t spaceId = 0;
+        if (CFArrayGetCount(spaces) > 0) {
+            CFNumberRef n = (CFNumberRef)CFArrayGetValueAtIndex(spaces, 0);
+            CFNumberGetValue(n, kCFNumberSInt64Type, &spaceId);
+        }
+        CFRelease(spaces);
+        return spaceId;
+    };
+
     for (uint32_t i = 0; i < length; i++) {
         napi_value item;
         napi_get_element(env, args[0], i, &item);
         int32_t wn;
         napi_get_value_int32(env, item, &wn);
-        // 外部プロセスのウィンドウはオーナーCIDで移動する
+
+        uint64_t spaceBefore = getWindowSpaceId((CGWindowID)wn);
+
+        // まず ownerCid で試みる
         int ownerCid = 0;
-        CGError ownerErr = CGSGetWindowOwner(cid, (CGWindowID)wn, &ownerCid);
-        NSLog(@"[tin] wn=%d ownerErr=%d ownerCid=%d myCid=%d", wn, ownerErr, ownerCid, cid);
+        CGSGetWindowOwner(cid, (CGWindowID)wn, &ownerCid);
         int moveCid = (ownerCid > 0) ? ownerCid : cid;
         spaceMoveWindows(moveCid, (__bridge CFArrayRef)@[@(wn)], targetSpace);
+
+        // 移動確認 (小さい遅延で Space 反映を待つ)
+        usleep(20000); // 20ms
+        uint64_t spaceAfter = getWindowSpaceId((CGWindowID)wn);
+
+        if (spaceAfter != targetSpace && spaceAfter == spaceBefore) {
+            // ownerCid では動かなかった → myCid で再試行
+            spaceMoveWindows(cid, (__bridge CFArrayRef)@[@(wn)], targetSpace);
+            usleep(20000);
+            spaceAfter = getWindowSpaceId((CGWindowID)wn);
+        }
+
+        if (spaceAfter != targetSpace)
+            NSLog(@"[tin] moveToSpace wn=%d before=%llu after=%llu target=%llu FAILED (SIP?)",
+                  wn, (unsigned long long)spaceBefore, (unsigned long long)spaceAfter, (unsigned long long)targetSpace);
         moved++;
     }
 
@@ -521,8 +558,42 @@ static napi_value MoveWindowsToActiveSpace(napi_env env, napi_callback_info info
         else CGSGetWindowOwner(cid, winId, &ownerCid);
         int moveCid = (ownerCid > 0) ? ownerCid : cid;
 
+        // Space 前確認
+        uint64_t spaceBefore = 0;
+        if (pfnSLSCopySpacesForWindows) {
+            CFArrayRef sp = pfnSLSCopySpacesForWindows(cid, 7, (__bridge CFArrayRef)@[@(wn)]);
+            if (sp && CFArrayGetCount(sp) > 0) {
+                CFNumberGetValue((CFNumberRef)CFArrayGetValueAtIndex(sp, 0), kCFNumberSInt64Type, &spaceBefore);
+                CFRelease(sp);
+            }
+        }
+
         NSArray *winArr = @[@(wn)];
         spaceMoveWindows(moveCid, (__bridge CFArrayRef)winArr, activeSpace);
+        usleep(20000);
+
+        uint64_t spaceAfter = 0;
+        if (pfnSLSCopySpacesForWindows) {
+            CFArrayRef sp = pfnSLSCopySpacesForWindows(cid, 7, (__bridge CFArrayRef)@[@(wn)]);
+            if (sp && CFArrayGetCount(sp) > 0) {
+                CFNumberGetValue((CFNumberRef)CFArrayGetValueAtIndex(sp, 0), kCFNumberSInt64Type, &spaceAfter);
+                CFRelease(sp);
+            }
+        }
+
+        // 失敗時 myCid で再試行
+        if (spaceAfter != activeSpace && spaceAfter == spaceBefore) {
+            spaceMoveWindows(cid, (__bridge CFArrayRef)winArr, activeSpace);
+            usleep(20000);
+            if (pfnSLSCopySpacesForWindows) {
+                CFArrayRef sp = pfnSLSCopySpacesForWindows(cid, 7, (__bridge CFArrayRef)@[@(wn)]);
+                if (sp && CFArrayGetCount(sp) > 0) { CFNumberGetValue((CFNumberRef)CFArrayGetValueAtIndex(sp, 0), kCFNumberSInt64Type, &spaceAfter); CFRelease(sp); }
+            }
+        }
+
+        if (spaceAfter != activeSpace)
+            NSLog(@"[tin] moveToActiveSpace wn=%d before=%llu after=%llu target=%llu FAILED",
+                  wn, (unsigned long long)spaceBefore, (unsigned long long)spaceAfter, (unsigned long long)activeSpace);
         moved++;
     }
 
