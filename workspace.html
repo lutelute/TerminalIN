@@ -12,7 +12,7 @@
     font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif;
     color: #1a1a2e;
     display: flex; flex-direction: row;
-    background: #ffffff;
+    background: transparent;  /* ウィンドウ全体は透明 — サイドバーのみ不透明 */
     transition: opacity 0.15s;
   }
 
@@ -24,6 +24,7 @@
     display: flex; flex-direction: column;
     overflow: hidden;
     position: relative;
+    background: #ffffff;  /* サイドバーのみ不透明 */
   }
 
   /* ── Sidebar divider ── */
@@ -48,22 +49,26 @@
     min-width: 100px;
     position: relative;
     overflow: hidden;
-    background: rgba(30,30,50,0.05);
+    background: transparent;  /* 透明 — スナップウィンドウが下から見える */
+    pointer-events: none;     /* グリッド格子部分はクリックスルー */
   }
+  /* edit mode / toolbar はクリック可能に */
+  body.gp-edit #grid-panel { pointer-events: auto; }
+  #gp-toolbar { pointer-events: auto; }
   body.collapsed #grid-panel { display: none; }
 
   .gp-frame {
     position: absolute; inset: 0;
-    border: 2px solid rgba(100,120,180,0.2);
+    border: 1px solid rgba(100,120,180,0.15);
     border-radius: 0;
     pointer-events: none;
   }
   .gp-grid-container {
-    position: absolute; inset: 2px;
+    position: absolute; inset: 1px;
     display: grid; pointer-events: none;
   }
   .gp-cell {
-    border: 1px dashed rgba(100,120,180,0.2);
+    border: 1px dashed rgba(100,120,180,0.15);
   }
   body.gp-edit .gp-cell {
     border-color: rgba(60,130,230,0.4);
@@ -105,16 +110,17 @@
   /* ── Active / Inactive 状態 ── */
   /* アクティブ: クリアで明るい (vibrancy: active で常時明るい背景)
      非アクティブ: 灰色マスクで少し沈んだ見た目に */
-  body::after {
+  /* inactive overlay はサイドバーのみに適用 */
+  #sidebar::after {
     content: '';
-    position: fixed; inset: 0;
+    position: absolute; inset: 0;
     background: rgba(120,120,130,0.18);
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.2s;
     z-index: 9999;
   }
-  body.window-inactive::after {
+  body.window-inactive #sidebar::after {
     opacity: 1;
   }
   body.window-inactive {

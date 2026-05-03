@@ -1370,8 +1370,9 @@ function createWorkspace(name, savedState) {
     y: winY,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 12, y: 10 },
-    transparent: false,
-    backgroundColor: '#ffffff',
+    transparent: true,        // グリッドパネル部分を透過させスナップウィンドウを表示
+    backgroundColor: '#00000000',
+    hasShadow: true,
     alwaysOnTop: false,
     acceptFirstMouse: true,
     webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false, backgroundThrottling: false },
