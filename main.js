@@ -701,10 +701,11 @@ function getGridArea(ws) {
   if (!ws.win || ws.win.isDestroyed()) return null;
   const b = ws.win.getBounds();
   const sidebarW = ws.sidebarWidth || DEFAULT_SIDEBAR_W;
+  // グリッドパネルはサイドバーと横並び (y はウィンドウ上端と同じ)
   const x = b.x + sidebarW + SIDEBAR_DIVIDER_W;
-  const y = b.y + TITLEBAR_H;
+  const y = b.y;
   const width = Math.max(100, b.width - sidebarW - SIDEBAR_DIVIDER_W);
-  const height = Math.max(100, b.height - TITLEBAR_H);
+  const height = b.height;
   return { x, y, width, height };
 }
 

@@ -50,16 +50,21 @@
     position: relative;
     overflow: hidden;
     background: transparent;  /* 透明 — スナップウィンドウが下から見える */
-    pointer-events: none;     /* グリッド格子部分はクリックスルー */
+    pointer-events: none;     /* 基本クリックスルー */
   }
-  /* edit mode / toolbar はクリック可能に */
+  /* edit mode / toolbar のみクリック可能 (空セルも常にクリックスルー) */
   body.gp-edit #grid-panel { pointer-events: auto; }
   #gp-toolbar { pointer-events: auto; }
+
+  /* 空スロットは薄い背景色で視認性を上げる (pointer-events は grid-panel の none を継承) */
+  .gp-cell-empty {
+    background: rgba(80,110,220,0.04);
+  }
   body.collapsed #grid-panel { display: none; }
 
   .gp-frame {
     position: absolute; inset: 0;
-    border: 1px solid rgba(100,120,180,0.15);
+    border: 1px solid rgba(100,120,200,0.35);
     border-radius: 0;
     pointer-events: none;
   }
@@ -68,7 +73,7 @@
     display: grid; pointer-events: none;
   }
   .gp-cell {
-    border: 1px dashed rgba(100,120,180,0.15);
+    border: 1px dashed rgba(100,120,200,0.3);
   }
   body.gp-edit .gp-cell {
     border-color: rgba(60,130,230,0.4);
@@ -1899,6 +1904,12 @@ ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snapped
   gridSlots = gridInfo || {};
   externalWindows = windows;
   frontmostWindowNumber = frontmostWn || 0;
+  // グリッドパネルの占有スロットを更新
+  gpOccupiedSlots = new Set([
+    ...Object.keys(gridSlots).map(Number),
+    ...Object.values(snappedSlots || {}).map(Number),
+  ]);
+  gpRender(gridCols, gridRows);
   // slot 情報を snappedExternals に反映 (dots/cards 可視化用)
   if (snappedSlots) {
     for (const [wn, slot] of Object.entries(snappedSlots)) {
@@ -2010,13 +2021,18 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
     container.style.gridTemplateRows = rowSizes.join(' ');
     container.style.gap = '4px';
     container.innerHTML = '';
-    for (let i = 0; i < cols * rows; i++) {
+    const total = cols * rows;
+    for (let i = 0; i < total; i++) {
       const cell = document.createElement('div');
-      cell.className = 'gp-cell';
+      const isOccupied = gpOccupiedSlots.has(i);
+      cell.className = isOccupied ? 'gp-cell' : 'gp-cell gp-cell-empty';
       container.appendChild(cell);
     }
     if (gpEditMode) gpRenderEditLines();
   }
+
+  // main の poll から snapped/grid 情報を受け取って occupied slots を更新
+  let gpOccupiedSlots = new Set();
 
   function gpRenderEditLines() {
     document.querySelectorAll('.gp-col-line, .gp-row-line').forEach(el => el.remove());
