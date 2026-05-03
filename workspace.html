@@ -58,30 +58,28 @@
 
   /* 空スロットは薄い背景色で視認性を上げる (pointer-events は grid-panel の none を継承) */
   .gp-cell-empty {
-    background: rgba(80,110,220,0.04);
+    background: rgba(0,0,0,0.018);
   }
   body.collapsed #grid-panel { display: none; }
 
-  .gp-frame {
-    display: none; /* 外枠不要、セルの border で表現 */
-  }
+  .gp-frame { display: none; }
   .gp-grid-container {
     position: absolute; inset: 0;
     display: grid; pointer-events: none;
-    border-top: 1px solid rgba(100,120,200,0.25);
-    border-left: 1px solid rgba(100,120,200,0.25);
+    border-top: 1px solid rgba(0,0,0,0.07);
+    border-left: 1px solid rgba(0,0,0,0.07);
   }
   .gp-cell {
-    border-right: 1px solid rgba(100,120,200,0.25);
-    border-bottom: 1px solid rgba(100,120,200,0.25);
+    border-right: 1px solid rgba(0,0,0,0.07);
+    border-bottom: 1px solid rgba(0,0,0,0.07);
   }
   body.gp-edit .gp-cell {
-    border-color: rgba(60,130,230,0.5);
-    background: rgba(60,130,230,0.04);
+    border-color: rgba(0,0,0,0.15);
+    background: rgba(0,0,0,0.03);
   }
   .gp-col-line, .gp-row-line {
     position: absolute;
-    background: rgba(60,130,230,0.3);
+    background: rgba(0,0,0,0.15);
     z-index: 20;
     transition: background 0.15s;
   }
@@ -91,7 +89,7 @@
   .gp-row-line {
     left: 2px; right: 2px; height: 8px; margin-top: -4px; cursor: ns-resize;
   }
-  .gp-col-line:hover, .gp-row-line:hover { background: rgba(60,130,230,0.7); }
+  .gp-col-line:hover, .gp-row-line:hover { background: rgba(0,0,0,0.3); }
   .gp-col-line.dragging, .gp-row-line.dragging { background: rgba(60,130,230,0.9); }
   #gp-toolbar {
     position: absolute;
