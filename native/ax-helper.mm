@@ -481,7 +481,11 @@ static napi_value MoveToSpace(napi_env env, napi_callback_info info) {
         napi_get_element(env, args[0], i, &item);
         int32_t wn;
         napi_get_value_int32(env, item, &wn);
-        spaceMoveWindows(cid, (__bridge CFArrayRef)@[@(wn)], targetSpace);
+        // 外部プロセスのウィンドウはオーナーCIDで移動する (SIP有効環境での試み)
+        int ownerCid = 0;
+        CGSGetWindowOwner(cid, (CGWindowID)wn, &ownerCid);
+        int moveCid = (ownerCid > 0) ? ownerCid : cid;
+        spaceMoveWindows(moveCid, (__bridge CFArrayRef)@[@(wn)], targetSpace);
         moved++;
     }
 
