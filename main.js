@@ -1273,8 +1273,26 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
 
   beginStabilize('push-to-space');
   try {
+    // sticky 戦略: snapped terminal を先に全 Space 表示にしてから TiN を移動、
+    // 移動後に unsticky → ターミナルが新 Space に固定される (SIP 迂回)
+    let usedSticky = false;
+    if (snappedWns.length > 0 && axHelper.setWindowSticky) {
+      try {
+        axHelper.setWindowSticky(snappedWns, true);
+        usedSticky = true;
+      } catch {}
+    }
+
+    // TiN 自身を移動 (+ 通常の snappedWns move も試みる)
     const moved = axHelper.moveToSpace(allWns, direction);
-    console.log(`[tin] push-to-space moved=${moved}`);
+    console.log(`[tin] push-to-space moved=${moved} usedSticky=${usedSticky}`);
+
+    // sticky を解除 → 現在アクティブな Space (新 Space) に固定
+    if (usedSticky && snappedWns.length > 0) {
+      await new Promise(r => setTimeout(r, 350)); // Space アニメーション待ち
+      try { axHelper.setWindowSticky(snappedWns, false); } catch {}
+    }
+
     return { ok: true, moved };
   } catch (e) {
     console.log(`[tin] push-to-space error: ${e.message}`);

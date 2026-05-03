@@ -421,8 +421,12 @@ extern "C" {
     CFArrayRef CGSCopyManagedDisplaySpaces(int cid);
     void CGSMoveWindowsToManagedSpace(int cid, CFArrayRef windows, uint64_t space);
     uint64_t CGSGetActiveSpace(int cid);
-    // 各ウィンドウのオーナー connection を取得 (他プロセスのウィンドウ移動に必要)
     CGError CGSGetWindowOwner(int cid, CGWindowID wid, int *ownerCid);
+    void CGSAddWindowsToSpaces(int cid, CFArrayRef windows, CFArrayRef spaces);
+    void CGSRemoveWindowsFromSpaces(int cid, CFArrayRef windows, CFArrayRef spaces);
+    // sticky = "visible on all Spaces" タグ操作
+    CGError CGSSetWindowTags(int cid, CGWindowID wid, int *tags, int tagSize);
+    CGError CGSClearWindowTags(int cid, CGWindowID wid, int *tags, int tagSize);
 }
 
 // SLS or CGS を統一的に呼ぶヘルパー
@@ -521,9 +525,36 @@ static napi_value MoveToSpace(napi_env env, napi_callback_info info) {
             spaceAfter = getWindowSpaceId((CGWindowID)wn);
         }
 
+        if (spaceAfter != targetSpace && spaceAfter == spaceBefore) {
+            // SLS/Move 系が全滅 → Add/Remove 分割で再試行 (認証モデルが異なる可能性)
+            CFArrayRef winArr  = (__bridge CFArrayRef)@[@(wn)];
+            CFArrayRef toArr   = (__bridge CFArrayRef)@[@(targetSpace)];
+            CFArrayRef fromArr = (__bridge CFArrayRef)@[@(spaceBefore)];
+            // myCid で Add
+            CGSAddWindowsToSpaces(cid, winArr, toArr);
+            usleep(30000);
+            spaceAfter = getWindowSpaceId((CGWindowID)wn);
+            if (spaceAfter == targetSpace) {
+                // Add 成功 → 旧 Space から Remove
+                CGSRemoveWindowsFromSpaces(cid, winArr, fromArr);
+                usleep(20000);
+            } else {
+                // ownerCid で Add
+                CFArrayRef winArrOwner = (__bridge CFArrayRef)@[@(wn)];
+                CGSAddWindowsToSpaces(ownerCid > 0 ? ownerCid : cid, winArrOwner, toArr);
+                usleep(30000);
+                spaceAfter = getWindowSpaceId((CGWindowID)wn);
+                if (spaceAfter == targetSpace)
+                    CGSRemoveWindowsFromSpaces(ownerCid > 0 ? ownerCid : cid, winArrOwner, fromArr);
+            }
+        }
+
         if (spaceAfter != targetSpace)
-            NSLog(@"[tin] moveToSpace wn=%d before=%llu after=%llu target=%llu FAILED (SIP?)",
+            NSLog(@"[tin] moveToSpace wn=%d before=%llu after=%llu target=%llu FAILED (all methods)",
                   wn, (unsigned long long)spaceBefore, (unsigned long long)spaceAfter, (unsigned long long)targetSpace);
+        else if (spaceAfter != spaceBefore)
+            NSLog(@"[tin] moveToSpace wn=%d %llu→%llu OK", wn,
+                  (unsigned long long)spaceBefore, (unsigned long long)targetSpace);
         moved++;
     }
 
@@ -633,6 +664,47 @@ static napi_value GetFrontmostWindowNumber(napi_env env, napi_callback_info info
     napi_value ret;
     napi_create_int32(env, result, &ret);
     return ret;
+}
+
+// ── ウィンドウの sticky (全 Space 表示) フラグを操作 ──
+// sticky にすると全 Space で見える→TiN 移動後 unsticky で現 Space に固定される。
+// kCGSTagSticky = 0x0800
+static napi_value SetWindowSticky(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+    // args[0]: windowNumbers (Array<number>)
+    // args[1]: sticky (boolean)
+    bool sticky = false;
+    napi_get_value_bool(env, args[1], &sticky);
+
+    int cid = CGSMainConnectionID();
+    int stickyTag = 0x0800; // kCGSTagSticky
+
+    uint32_t length;
+    napi_get_array_length(env, args[0], &length);
+    int count = 0;
+    for (uint32_t i = 0; i < length; i++) {
+        napi_value item;
+        napi_get_element(env, args[0], i, &item);
+        int32_t wn;
+        napi_get_value_int32(env, item, &wn);
+        CGWindowID wid = (CGWindowID)wn;
+
+        CGError err;
+        if (sticky) {
+            err = CGSSetWindowTags(cid, wid, &stickyTag, 32);
+        } else {
+            err = CGSClearWindowTags(cid, wid, &stickyTag, 32);
+        }
+        NSLog(@"[tin] setSticky wn=%d sticky=%d err=%d", wn, sticky, err);
+        if (err == 0) count++;
+    }
+
+    napi_value result;
+    napi_create_int32(env, count, &result);
+    return result;
 }
 
 // ── NSWindow ポインタから CGWindowID を取得 ──
@@ -783,6 +855,9 @@ static napi_value Init(napi_env env, napi_value exports) {
 
     napi_create_function(env, NULL, 0, GetWindowIdFromHandle, NULL, &fn);
     napi_set_named_property(env, exports, "getWindowIdFromHandle", fn);
+
+    napi_create_function(env, NULL, 0, SetWindowSticky, NULL, &fn);
+    napi_set_named_property(env, exports, "setWindowSticky", fn);
 
     napi_create_function(env, NULL, 0, ListWindowsAllSpaces, NULL, &fn);
     napi_set_named_property(env, exports, "listWindowsAllSpaces", fn);
