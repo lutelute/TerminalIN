@@ -63,20 +63,20 @@
   body.collapsed #grid-panel { display: none; }
 
   .gp-frame {
-    position: absolute; inset: 0;
-    border: 1px solid rgba(100,120,200,0.35);
-    border-radius: 0;
-    pointer-events: none;
+    display: none; /* 外枠不要、セルの border で表現 */
   }
   .gp-grid-container {
-    position: absolute; inset: 1px;
+    position: absolute; inset: 0;
     display: grid; pointer-events: none;
+    border-top: 1px solid rgba(100,120,200,0.25);
+    border-left: 1px solid rgba(100,120,200,0.25);
   }
   .gp-cell {
-    border: 1px dashed rgba(100,120,200,0.3);
+    border-right: 1px solid rgba(100,120,200,0.25);
+    border-bottom: 1px solid rgba(100,120,200,0.25);
   }
   body.gp-edit .gp-cell {
-    border-color: rgba(60,130,230,0.4);
+    border-color: rgba(60,130,230,0.5);
     background: rgba(60,130,230,0.04);
   }
   .gp-col-line, .gp-row-line {
