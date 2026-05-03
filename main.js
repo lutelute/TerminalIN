@@ -1209,11 +1209,17 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
     const wn = getElectronWinNumber(gw.win);
     if (wn) electronWns.push(wn);
   }
-  if (!electronWns.length) return { ok: false, reason: 'no-windows' };
+  // snapped externals の windowNumber も収集
+  const snappedWns = [...ws.snappedExternals.values()]
+    .map(info => info.windowNumber)
+    .filter(wn => typeof wn === 'number' && wn > 0);
+
+  const allWns = [...electronWns, ...snappedWns];
+  if (!allWns.length) return { ok: false, reason: 'no-windows' };
 
   beginStabilize('push-to-space');
   try {
-    const moved = axHelper.moveToSpace(electronWns, direction);
+    const moved = axHelper.moveToSpace(allWns, direction);
     return { ok: true, moved };
   } catch (e) {
     return { ok: false, error: e.message };
