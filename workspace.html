@@ -11,24 +11,121 @@
     overflow: hidden;
     font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif;
     color: #1a1a2e;
-    display: flex; flex-direction: column;
-    background: #ffffff;
+    display: flex; flex-direction: row;
+    background: transparent;  /* ウィンドウ全体は透明 — サイドバーのみ不透明 */
     transition: opacity 0.15s;
   }
+
+  /* ── Sidebar panel ── */
+  #sidebar {
+    width: var(--sidebar-w, 280px);
+    min-width: 160px;
+    flex-shrink: 0;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    position: relative;
+    background: #ffffff;  /* サイドバーのみ不透明 */
+  }
+
+  /* ── Sidebar divider ── */
+  #sidebar-divider {
+    width: 6px;
+    flex-shrink: 0;
+    cursor: col-resize;
+    background: rgba(0,0,0,0.04);
+    border-left: 1px solid rgba(0,0,0,0.07);
+    transition: background 0.15s;
+    position: relative; z-index: 10;
+  }
+  #sidebar-divider:hover, #sidebar-divider.dragging {
+    background: rgba(60,120,230,0.18);
+    border-left-color: rgba(60,120,230,0.35);
+  }
+  body.collapsed #sidebar-divider { display: none; }
+
+  /* ── Grid panel (右) ── */
+  #grid-panel {
+    flex: 1;
+    min-width: 100px;
+    position: relative;
+    overflow: hidden;
+    background: transparent;  /* 透明 — スナップウィンドウが下から見える */
+    pointer-events: none;     /* 基本クリックスルー */
+  }
+  /* edit mode / toolbar のみクリック可能 (空セルも常にクリックスルー) */
+  body.gp-edit #grid-panel { pointer-events: auto; }
+  #gp-toolbar { pointer-events: auto; }
+
+  /* 空スロットは薄い背景色で視認性を上げる (pointer-events は grid-panel の none を継承) */
+  .gp-cell-empty {
+    background: rgba(80,110,220,0.04);
+  }
+  body.collapsed #grid-panel { display: none; }
+
+  .gp-frame {
+    position: absolute; inset: 0;
+    border: 1px solid rgba(100,120,200,0.35);
+    border-radius: 0;
+    pointer-events: none;
+  }
+  .gp-grid-container {
+    position: absolute; inset: 1px;
+    display: grid; pointer-events: none;
+  }
+  .gp-cell {
+    border: 1px dashed rgba(100,120,200,0.3);
+  }
+  body.gp-edit .gp-cell {
+    border-color: rgba(60,130,230,0.4);
+    background: rgba(60,130,230,0.04);
+  }
+  .gp-col-line, .gp-row-line {
+    position: absolute;
+    background: rgba(60,130,230,0.3);
+    z-index: 20;
+    transition: background 0.15s;
+  }
+  .gp-col-line {
+    top: 2px; bottom: 2px; width: 8px; margin-left: -4px; cursor: ew-resize;
+  }
+  .gp-row-line {
+    left: 2px; right: 2px; height: 8px; margin-top: -4px; cursor: ns-resize;
+  }
+  .gp-col-line:hover, .gp-row-line:hover { background: rgba(60,130,230,0.7); }
+  .gp-col-line.dragging, .gp-row-line.dragging { background: rgba(60,130,230,0.9); }
+  #gp-toolbar {
+    position: absolute;
+    top: 8px; left: 50%; transform: translateX(-50%);
+    background: rgba(255,255,255,0.95);
+    border: 1px solid rgba(0,0,0,0.15);
+    border-radius: 8px; padding: 6px 10px;
+    display: none; gap: 6px; align-items: center;
+    z-index: 30; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+  body.gp-edit #gp-toolbar { display: flex; }
+  #gp-toolbar button {
+    padding: 4px 10px; border-radius: 5px; font-size: 11px; font-weight: 600;
+    cursor: pointer; border: 1px solid rgba(0,0,0,0.1); background: #f5f5f5;
+  }
+  #gp-toolbar button.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+  #gp-toolbar button.primary:hover { background: #1d4ed8; }
+  #gp-toolbar button:hover { background: #eee; }
+  #gp-toolbar span { font-size: 11px; color: #666; margin-right: 4px; }
 
   /* ── Active / Inactive 状態 ── */
   /* アクティブ: クリアで明るい (vibrancy: active で常時明るい背景)
      非アクティブ: 灰色マスクで少し沈んだ見た目に */
-  body::after {
+  /* inactive overlay はサイドバーのみに適用 */
+  #sidebar::after {
     content: '';
-    position: fixed; inset: 0;
+    position: absolute; inset: 0;
     background: rgba(120,120,130,0.18);
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.2s;
     z-index: 9999;
   }
-  body.window-inactive::after {
+  body.window-inactive #sidebar::after {
     opacity: 1;
   }
   body.window-inactive {
@@ -97,6 +194,7 @@
   #titlebar-grid .grid-size-cycle { min-width: 38px; }
 
   body.collapsed #content, body.collapsed #status { display: none; }
+  body.collapsed #sidebar { width: 40px; min-width: 40px; }
   body.collapsed #titlebar {
     flex-direction: column; height: 100%; padding: 42px 0 8px; align-items: center; gap: 6px;
     -webkit-app-region: drag;
@@ -120,6 +218,7 @@
     padding: 6px 8px 4px;
     max-height: 40%;
     overflow-y: auto;
+    overflow-x: hidden;
   }
   body.collapsed #console-fixed { display: none; }
 
@@ -576,20 +675,32 @@
 </head>
 <body>
 
-<div id="titlebar">
-  <div id="titlebar-row1">
-    <span id="title">TiN</span>
-    <input id="title-input" type="text" />
-    <div style="flex:1"></div>
-    <div id="collapse-btn" title="Collapse sidebar (Cmd+B)">‹</div>
+<div id="sidebar">
+  <div id="titlebar">
+    <div id="titlebar-row1">
+      <span id="title">TiN</span>
+      <input id="title-input" type="text" />
+      <div style="flex:1"></div>
+      <div id="collapse-btn" title="Collapse sidebar (Cmd+B)">‹</div>
+    </div>
+    <div id="titlebar-row2">
+      <div id="titlebar-grid"></div>
+    </div>
   </div>
-  <div id="titlebar-row2">
-    <div id="titlebar-grid"></div>
+  <div id="content"></div>
+  <div id="console-fixed"></div>
+  <div id="status">Starting...</div>
+</div>
+<div id="sidebar-divider"></div>
+<div id="grid-panel">
+  <div class="gp-frame"></div>
+  <div class="gp-grid-container" id="gp-grid"></div>
+  <div id="gp-toolbar">
+    <span>Grid Edit</span>
+    <button onclick="gpResetRatios()">Reset</button>
+    <button class="primary" onclick="gpExitEditMode()">Done</button>
   </div>
 </div>
-<div id="content"></div>
-<div id="console-fixed"></div>
-<div id="status">Starting...</div>
 
 <script>
 const { ipcRenderer } = require('electron');
@@ -652,10 +763,13 @@ ipcRenderer.on('workspace-info', (_e, info) => {
   wsName = info.name;
   wsColor = info.color || null;
   titleEl.textContent = wsName;
-  // titlebar にワークスペース色のアクセント線を表示
   if (wsColor) {
     document.getElementById('titlebar').style.borderBottomColor = wsColor.accent;
   }
+});
+
+ipcRenderer.on('set-sidebar-width', (_e, { width }) => {
+  document.documentElement.style.setProperty('--sidebar-w', width + 'px');
 });
 
 // 復元時の snapped Map 初期化 (main 側で既に配置済みの窓を renderer に知らせる)
@@ -1790,6 +1904,12 @@ ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snapped
   gridSlots = gridInfo || {};
   externalWindows = windows;
   frontmostWindowNumber = frontmostWn || 0;
+  // グリッドパネルの占有スロットを更新
+  gpOccupiedSlots = new Set([
+    ...Object.keys(gridSlots).map(Number),
+    ...Object.values(snappedSlots || {}).map(Number),
+  ]);
+  gpRender(gridCols, gridRows);
   // slot 情報を snappedExternals に反映 (dots/cards 可視化用)
   if (snappedSlots) {
     for (const [wn, slot] of Object.entries(snappedSlots)) {
@@ -1827,6 +1947,30 @@ document.getElementById('content').addEventListener('mousedown', (e) => {
   triggerRaiseAll();
 });
 
+// ── Grid panel click-through (ウィンドウレベル) ──
+// pointer-events:none はCSS内のみ。実際のクリックスルーには setIgnoreMouseEvents が必要。
+let gpEditMode = false; // グリッドJSブロックとこのブロックで共有
+{
+  const gridPanel = document.getElementById('grid-panel');
+  let _ctState = false;
+
+  function setClickthrough(on) {
+    if (_ctState === on) return;
+    _ctState = on;
+    ipcRenderer.send('set-win-clickthrough', on);
+  }
+
+  window.addEventListener('mousemove', (e) => {
+    if (gpEditMode) { setClickthrough(false); return; }
+    const rect = gridPanel.getBoundingClientRect();
+    const onGrid = e.clientX >= rect.left && e.clientX <= rect.right
+                && e.clientY >= rect.top  && e.clientY <= rect.bottom;
+    setClickthrough(onGrid);
+  });
+
+  window.addEventListener('mouseleave', () => setClickthrough(false));
+}
+
 // ── Collapse ──
 let isCollapsed = false;
 const collapseBtn = document.getElementById('collapse-btn');
@@ -1841,6 +1985,160 @@ ipcRenderer.on('toggle-compact', toggleCollapse);
 // ── Window active/inactive state ──
 window.addEventListener('focus', () => document.body.classList.remove('window-inactive'));
 window.addEventListener('blur', () => document.body.classList.add('window-inactive'));
+
+// ── Sidebar divider drag ──
+{
+  const divider = document.getElementById('sidebar-divider');
+  const sidebar = document.getElementById('sidebar');
+  let divDragging = false;
+  let divStartX = 0, divStartW = 0;
+  divider.addEventListener('mousedown', (e) => {
+    divDragging = true;
+    divStartX = e.screenX;
+    divStartW = sidebar.getBoundingClientRect().width;
+    divider.classList.add('dragging');
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!divDragging) return;
+    const newW = Math.max(160, Math.min(500, divStartW + (e.screenX - divStartX)));
+    document.documentElement.style.setProperty('--sidebar-w', newW + 'px');
+    ipcRenderer.send('sidebar-width-changed', { width: Math.round(newW) });
+  });
+  window.addEventListener('mouseup', () => {
+    if (!divDragging) return;
+    divDragging = false;
+    divider.classList.remove('dragging');
+    const w = Math.round(sidebar.getBoundingClientRect().width);
+    ipcRenderer.send('sidebar-width-changed', { width: w });
+  });
+}
+
+// ── Grid panel (right side) ──
+{
+  let gpCols = 2, gpRows = 2;
+  let gpColRatios = null, gpRowRatios = null;
+  // gpEditMode はグローバルスコープで宣言済み
+
+  function gpGetCumulative(ratios, n) {
+    const cum = [0];
+    if (!ratios || ratios.length !== n) {
+      for (let i = 1; i <= n; i++) cum.push(i / n);
+    } else {
+      let s = 0;
+      for (let i = 0; i < n; i++) { s += ratios[i]; cum.push(s); }
+    }
+    return cum;
+  }
+
+  function gpRender(cols, rows) {
+    gpCols = cols; gpRows = rows;
+    const container = document.getElementById('gp-grid');
+    if (!container) return;
+    const cumC = gpGetCumulative(gpColRatios, cols);
+    const cumR = gpGetCumulative(gpRowRatios, rows);
+    const colSizes = [];
+    for (let i = 0; i < cols; i++) colSizes.push(`${(cumC[i+1] - cumC[i]) * 100}%`);
+    const rowSizes = [];
+    for (let i = 0; i < rows; i++) rowSizes.push(`${(cumR[i+1] - cumR[i]) * 100}%`);
+    container.style.gridTemplateColumns = colSizes.join(' ');
+    container.style.gridTemplateRows = rowSizes.join(' ');
+    container.style.gap = '4px';
+    container.innerHTML = '';
+    const total = cols * rows;
+    for (let i = 0; i < total; i++) {
+      const cell = document.createElement('div');
+      const isOccupied = gpOccupiedSlots.has(i);
+      cell.className = isOccupied ? 'gp-cell' : 'gp-cell gp-cell-empty';
+      container.appendChild(cell);
+    }
+    if (gpEditMode) gpRenderEditLines();
+  }
+
+  // main の poll から snapped/grid 情報を受け取って occupied slots を更新
+  let gpOccupiedSlots = new Set();
+
+  function gpRenderEditLines() {
+    document.querySelectorAll('.gp-col-line, .gp-row-line').forEach(el => el.remove());
+    if (!gpEditMode) return;
+    const panel = document.getElementById('grid-panel');
+    if (!panel) return;
+    const cumC = gpGetCumulative(gpColRatios, gpCols);
+    const cumR = gpGetCumulative(gpRowRatios, gpRows);
+    for (let i = 1; i < gpCols; i++) {
+      const line = document.createElement('div');
+      line.className = 'gp-col-line';
+      line.style.left = `${cumC[i] * 100}%`;
+      line.addEventListener('mousedown', (e) => gpStartLineDrag(e, 'col', i));
+      panel.appendChild(line);
+    }
+    for (let i = 1; i < gpRows; i++) {
+      const line = document.createElement('div');
+      line.className = 'gp-row-line';
+      line.style.top = `${cumR[i] * 100}%`;
+      line.addEventListener('mousedown', (e) => gpStartLineDrag(e, 'row', i));
+      panel.appendChild(line);
+    }
+  }
+
+  function gpStartLineDrag(e, type, index) {
+    e.preventDefault(); e.stopPropagation();
+    const target = e.currentTarget;
+    target.classList.add('dragging');
+    const panel = document.getElementById('grid-panel');
+    const rect = panel.getBoundingClientRect();
+    const totalSize = type === 'col' ? rect.width : rect.height;
+    const onMove = (ev) => {
+      const pos = type === 'col' ? (ev.clientX - rect.left) : (ev.clientY - rect.top);
+      const ratio = Math.max(0.05, Math.min(0.95, pos / totalSize));
+      const cum = type === 'col' ? gpGetCumulative(gpColRatios, gpCols) : gpGetCumulative(gpRowRatios, gpRows);
+      const minR = cum[index - 1] + 0.05;
+      const maxR = cum[index + 1] - 0.05;
+      const clamped = Math.max(minR, Math.min(maxR, ratio));
+      if (!gpColRatios) gpColRatios = Array(gpCols).fill(1/gpCols);
+      if (!gpRowRatios) gpRowRatios = Array(gpRows).fill(1/gpRows);
+      const arr = type === 'col' ? gpColRatios : gpRowRatios;
+      const prev = cum[index - 1]; const next = cum[index + 1];
+      arr[index - 1] = clamped - prev;
+      arr[index] = next - clamped;
+      gpRender(gpCols, gpRows);
+      ipcRenderer.send('update-grid-ratios', { colRatios: gpColRatios, rowRatios: gpRowRatios });
+    };
+    const onUp = () => {
+      target.classList.remove('dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      ipcRenderer.send('commit-grid-ratios', { colRatios: gpColRatios, rowRatios: gpRowRatios });
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  window.gpResetRatios = function() {
+    gpColRatios = null; gpRowRatios = null;
+    gpRender(gpCols, gpRows);
+    ipcRenderer.send('commit-grid-ratios', { colRatios: null, rowRatios: null });
+  };
+  window.gpExitEditMode = function() {
+    gpEditMode = false;
+    document.body.classList.remove('gp-edit');
+    document.querySelectorAll('.gp-col-line, .gp-row-line').forEach(el => el.remove());
+  };
+
+  ipcRenderer.on('update-grid-panel', (_e, { cols, rows, colRatios: cr, rowRatios: rr }) => {
+    gpColRatios = cr || null;
+    gpRowRatios = rr || null;
+    gpRender(cols, rows);
+  });
+
+  ipcRenderer.on('enter-grid-edit-mode', () => {
+    gpEditMode = true;
+    document.body.classList.add('gp-edit');
+    gpRenderEditLines();
+  });
+
+  gpRender(2, 2);
+}
 
 // Start with one sidebar terminal
 addEmbedded('main');
