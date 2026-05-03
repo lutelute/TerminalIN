@@ -748,12 +748,18 @@ async function raiseAllWorkspaceWindows(ws, force = false) {
   //    daemon に raise コマンドを送り、同時に grid windows を show する。
   //    await しないと z-order が崩れるが、grid show は同期なので先に実行。
 
-  // Grid BrowserWindows を先に show (同期、即座)
+  // z-order (下→上): TiN → grid terminals → snapped externals
+  // TiN を先に show
+  if (ws.win && !ws.win.isDestroyed()) {
+    ws.win.show();
+  }
+
+  // Grid BrowserWindows を show (TiN の上)
   for (const [, gw] of ws.gridWindows) {
     if (gw.win && !gw.win.isDestroyed()) gw.win.show();
   }
 
-  // Snapped externals を daemon で一括 raise (非同期だが高速)
+  // Snapped externals を最前面に raise (grid terminals より上に来る)
   if (ws.snappedExternals.size > 0) {
     const cmds = [...ws.snappedExternals.values()].map(info => ({
       windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
@@ -761,11 +767,10 @@ async function raiseAllWorkspaceWindows(ws, force = false) {
     await raiseSpecificWindows(cmds);
   }
 
-  // TiN sidebar を最前面に (既にフォーカス中なら steal 不要)
+  // TiN に focus (ユーザー操作を受け付けるため、steal しない)
   if (ws.win && !ws.win.isDestroyed()) {
     const focused = BrowserWindow.getFocusedWindow();
     if (!focused) app.focus({ steal: true });
-    ws.win.show();
     ws.win.focus();
   }
   const dt = Date.now() - t0;
@@ -840,7 +845,6 @@ function createGridTerminal(ws, slot) {
 
   const gridWin = new BrowserWindow({
     ...b,
-    parent: ws.win,   // TiN ウィンドウの前面に表示 + Space 移動で一体化
     frame: false,
     acceptFirstMouse: true,
     skipTaskbar: true,
