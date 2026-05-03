@@ -768,8 +768,10 @@ async function raiseAllWorkspaceWindows(ws, force = false) {
     await raiseSpecificWindows(cmds);
   }
 
-  // TiN に focus (ユーザー操作を受け付けるため、steal しない)
-  if (ws.win && !ws.win.isDestroyed()) {
+  // force=true (サイドバー明示クリック) の場合のみ TiN にフォーカス
+  // 通常の browser-window-focus では snapped ウィンドウをクリックするたびに
+  // TiN が割り込まないよう focus しない
+  if (force && ws.win && !ws.win.isDestroyed()) {
     const focused = BrowserWindow.getFocusedWindow();
     if (!focused) app.focus({ steal: true });
     ws.win.focus();
