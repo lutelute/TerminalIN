@@ -1947,6 +1947,30 @@ document.getElementById('content').addEventListener('mousedown', (e) => {
   triggerRaiseAll();
 });
 
+// ── Grid panel click-through (ウィンドウレベル) ──
+// pointer-events:none はCSS内のみ。実際のクリックスルーには setIgnoreMouseEvents が必要。
+{
+  const gridPanel = document.getElementById('grid-panel');
+  let _ctState = false; // 現在のクリックスルー状態
+
+  function setClickthrough(on) {
+    if (_ctState === on) return;
+    _ctState = on;
+    ipcRenderer.send('set-win-clickthrough', on);
+  }
+
+  window.addEventListener('mousemove', (e) => {
+    if (gpEditMode) { setClickthrough(false); return; }
+    const rect = gridPanel.getBoundingClientRect();
+    const onGrid = e.clientX >= rect.left && e.clientX <= rect.right
+                && e.clientY >= rect.top  && e.clientY <= rect.bottom;
+    setClickthrough(onGrid);
+  });
+
+  // ウィンドウからマウスが出たら必ずオフ
+  window.addEventListener('mouseleave', () => setClickthrough(false));
+}
+
 // ── Collapse ──
 let isCollapsed = false;
 const collapseBtn = document.getElementById('collapse-btn');

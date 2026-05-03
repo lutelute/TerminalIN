@@ -1721,6 +1721,13 @@ ipcMain.on('raise-all', (event) => {
   if (ws) raiseAllWorkspaceWindows(ws, true);
 });
 
+// グリッドパネル上でウィンドウレベルのクリックスルーを切り替える
+ipcMain.on('set-win-clickthrough', (event, on) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws || !ws.win || ws.win.isDestroyed()) return;
+  ws.win.setIgnoreMouseEvents(on, { forward: true });
+});
+
 // 統合ウィンドウ方式では raise-all-from-overlay / set-overlay-clickthrough は不要 (no-op)
 ipcMain.on('raise-all-from-overlay', () => {});
 ipcMain.on('set-overlay-clickthrough', () => {
