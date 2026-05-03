@@ -325,6 +325,7 @@ async function restoreSnappedWindows(ws, persistedList) {
       origX: p.origX, origY: p.origY, origW: p.origW, origH: p.origH,
       snappedAt: p.snappedAt || Date.now(),
     });
+    ws._lastKnownSnappedWns.add(live.windowNumber);
     snappedIndexAdd(live.windowNumber, ws);
     const pos = getSlotBounds(ws, slot);
     if (pos) {
@@ -410,6 +411,7 @@ async function restoreAllPending() {
         origX: p.origX, origY: p.origY, origW: p.origW, origH: p.origH,
         snappedAt: p.snappedAt || Date.now(),
       });
+      ws._lastKnownSnappedWns.add(live.windowNumber);
       snappedIndexAdd(live.windowNumber, ws);
       const pos = getSlotBounds(ws, slot);
       if (pos) allMoveCmds.push({ windowNumber: live.windowNumber, pid: live.pid, app: live.app, title: live.title, windowIndex: live.windowIndex || 0, ...pos });
@@ -518,11 +520,13 @@ async function recoverSnappedWindows() {
     // 再リンク実行
     for (const { oldKey, info, live } of toRelink) {
       ws.snappedExternals.delete(oldKey);
+      ws._lastKnownSnappedWns.delete(oldKey);
       snappedIndexRemove(oldKey);
       info.windowNumber = live.windowNumber;
       info.pid = live.pid;
       info._missCount = 0;
       ws.snappedExternals.set(live.windowNumber, info);
+      ws._lastKnownSnappedWns.add(live.windowNumber);
       snappedIndexAdd(live.windowNumber, ws);
     }
     if (toRelink.length > 0) console.log(`[tin] recovered ${toRelink.length} snapped in "${ws.name}"`);
@@ -998,6 +1002,7 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
     origX: x, origY: y, origW: width, origH: height,
     snappedAt: Date.now(),
   });
+  ws._lastKnownSnappedWns.add(windowNumber);
   snappedIndexAdd(windowNumber, ws);
   // snapped.json: 非同期で書き出し (AtelierX 競合は許容)
   scheduleSyncSnapped(0);
@@ -1024,6 +1029,7 @@ ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
   const info = ws.snappedExternals.get(windowNumber);
   if (!info) return { ok: false };
   ws.snappedExternals.delete(windowNumber);
+  ws._lastKnownSnappedWns.delete(windowNumber);
   snappedIndexRemove(windowNumber);
   compactSlots(ws);
   // 元の位置・サイズに戻す。AX expansion は Terminal.app silent fail するので osascript 補完。
@@ -1189,13 +1195,37 @@ ipcMain.handle('retile-now', async (event) => {
 // TiN サイドバー + snap 済みウィンドウを丸ごと次/前のデスクトップ (Space) に移動。
 // direction: +1 = 次, -1 = 前。移動後ユーザーがスワイプして確認する。
 // Electron BrowserWindow の CGWindowNumber を title でマッチして返す。
+// transparent ウィンドウは CGWindowList に出ないため AX 経由でウィンドウ番号を取得。
+// AX から取得した windowNumber[] を pid のタイトルでマッチせずそのまま返す。
+// 各 BrowserWindow は AX の window 配列の先頭から順に対応するが、
+// ここでは pid の全 wn を返して呼び出し側で使う。
+const _electronWnCache = new WeakMap();
 function getElectronWinNumber(win) {
   if (!axHelper || !win || win.isDestroyed()) return null;
+  if (!axHelper.getWindowNumbersByPid) {
+    // fallback: CGWindowList
+    try {
+      const myPid = process.pid;
+      const title = win.getTitle();
+      const match = axHelper.listWindows().find(w => w.pid === myPid && w.title === title);
+      return match ? match.windowNumber : null;
+    } catch { return null; }
+  }
   try {
-    const myPid = process.pid;
-    const title = win.getTitle();
-    const match = axHelper.listWindows().find(w => w.pid === myPid && w.title === title);
-    return match ? match.windowNumber : null;
+    const wns = axHelper.getWindowNumbersByPid(process.pid);
+    if (!wns || wns.length === 0) return null;
+    // BrowserWindow の index を bounds で近似マッチ
+    const b = win.getBounds();
+    const cgWins = axHelper.listWindows().filter(w => w.pid === process.pid);
+    if (cgWins.length > 0) {
+      // CGWindowList に出ていれば title マッチ
+      const title = win.getTitle();
+      const m = cgWins.find(w => w.title === title);
+      if (m) return m.windowNumber;
+    }
+    // transparent 等で CGWindowList に出ない場合: AX wns の最初を返す
+    // (複数ウィンドウがある場合は全部渡して moveToSpace で一括処理するため問題なし)
+    return wns[0] || null;
   } catch { return null; }
 }
 
@@ -1203,27 +1233,51 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
   const ws = findWorkspace(event.sender);
   if (!ws || !axHelper || !axHelper.moveToSpace) return { ok: false };
 
-  // TiN 自身の Electron ウィンドウ群を SLSMoveWindowsToManagedSpace で移動
-  const electronWns = [];
-  const sidebarWn = getElectronWinNumber(ws.win);
-  if (sidebarWn) electronWns.push(sidebarWn);
-  for (const [, gw] of ws.gridWindows) {
-    const wn = getElectronWinNumber(gw.win);
-    if (wn) electronWns.push(wn);
+  // TiN 自身のウィンドウ番号を getNativeWindowHandle で確実に取得
+  // (transparent: true ウィンドウは CGWindowList/AX には出ない)
+  let electronWns = [];
+  if (ws.win && !ws.win.isDestroyed() && axHelper.getWindowIdFromHandle) {
+    try {
+      const handle = ws.win.getNativeWindowHandle();
+      const ptr = handle.readBigUInt64LE(0);
+      const wid = axHelper.getWindowIdFromHandle(ptr);
+      if (wid > 0) electronWns.push(wid);
+    } catch (e) {
+      console.log(`[tin] getWindowIdFromHandle error: ${e.message}`);
+    }
   }
-  // snapped externals の windowNumber も収集
-  const snappedWns = [...ws.snappedExternals.values()]
+
+  // snapped externals: 現 Space の snappedExternals を優先
+  let snappedWns = [...ws.snappedExternals.values()]
     .map(info => info.windowNumber)
     .filter(wn => typeof wn === 'number' && wn > 0);
 
-  const allWns = [...electronWns, ...snappedWns];
+  // TiN が別 Space に移動済みで snappedExternals が空の場合は
+  // _lastKnownSnappedWns + listWindowsAllSpaces() でウィンドウを探す
+  if (snappedWns.length === 0 && ws._lastKnownSnappedWns.size > 0 && axHelper.listWindowsAllSpaces) {
+    try {
+      const allWinsList = axHelper.listWindowsAllSpaces();
+      const allWnSet = new Set(allWinsList.map(w => w.windowNumber));
+      for (const wn of ws._lastKnownSnappedWns) {
+        if (allWnSet.has(wn)) snappedWns.push(wn);
+        else ws._lastKnownSnappedWns.delete(wn); // 本当に閉じた
+      }
+    } catch (e) {
+      console.log(`[tin] listWindowsAllSpaces error: ${e.message}`);
+    }
+  }
+
+  const allWns = [...new Set([...electronWns, ...snappedWns])];
+  console.log(`[tin] push-to-space dir=${direction} electronWns=[${electronWns}] snappedWns=[${snappedWns}]`);
   if (!allWns.length) return { ok: false, reason: 'no-windows' };
 
   beginStabilize('push-to-space');
   try {
     const moved = axHelper.moveToSpace(allWns, direction);
+    console.log(`[tin] push-to-space moved=${moved}`);
     return { ok: true, moved };
   } catch (e) {
+    console.log(`[tin] push-to-space error: ${e.message}`);
     return { ok: false, error: e.message };
   }
 });
@@ -1394,6 +1448,7 @@ function createWorkspace(name, savedState) {
   const ws = {
     id: wsId, win, name: wsName,
     snappedExternals: new Map(),
+    _lastKnownSnappedWns: new Set(), // Space 移動後も snapped wn を保持 (miss で消えない)
     gridWindows: new Map(),    // slot -> { win, pty, ptyId }
     sidebarPtys: new Map(),    // ptyId -> pty (for sidebar embedded terms)
     gridOverlay: null,         // 廃止済み (統合ウィンドウ方式)
@@ -1593,10 +1648,12 @@ function createWorkspace(name, savedState) {
         if (live) {
           // windowNumber を更新して再リンク
           ws.snappedExternals.delete(k);
+          ws._lastKnownSnappedWns.delete(k);
           snappedIndexRemove(k);
           info.windowNumber = live.windowNumber;
           info.pid = live.pid;
           ws.snappedExternals.set(live.windowNumber, info);
+          ws._lastKnownSnappedWns.add(live.windowNumber);
           snappedIndexAdd(live.windowNumber, ws);
           snappedChanged = true;
           // 復元位置に再 snap (fire-and-forget で event loop ブロックしない)
@@ -1696,6 +1753,7 @@ function createWorkspace(name, savedState) {
     }
     for (const k of ws.snappedExternals.keys()) snappedIndexRemove(k);
     ws.snappedExternals.clear();
+    ws._lastKnownSnappedWns.clear();
     // Kill sidebar PTYs
     for (const [, p] of ws.sidebarPtys) { try { p.kill(); } catch {} }
     ws.sidebarPtys.clear();
@@ -1947,6 +2005,7 @@ function handleTinUrl(rawUrl) {
           const match = findInfoByKey(params);
           if (match) {
             match.ws.snappedExternals.delete(match.info.windowNumber);
+            match.ws._lastKnownSnappedWns.delete(match.info.windowNumber);
             snappedIndexRemove(match.info.windowNumber);
             compactSlots(match.ws);
             try {
@@ -2152,6 +2211,7 @@ async function triggerAutoSnap(opts = {}) {
         origX: w.x, origY: w.y, origW: w.width, origH: w.height,
         snappedAt: Date.now(),
       });
+      ws._lastKnownSnappedWns.add(w.windowNumber);
       snappedIndexAdd(w.windowNumber, ws);
       const pos = getSlotBounds(ws, slot);
       if (pos) await batchMove([{ windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title, ...pos }]);

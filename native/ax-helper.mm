@@ -481,9 +481,10 @@ static napi_value MoveToSpace(napi_env env, napi_callback_info info) {
         napi_get_element(env, args[0], i, &item);
         int32_t wn;
         napi_get_value_int32(env, item, &wn);
-        // 外部プロセスのウィンドウはオーナーCIDで移動する (SIP有効環境での試み)
+        // 外部プロセスのウィンドウはオーナーCIDで移動する
         int ownerCid = 0;
-        CGSGetWindowOwner(cid, (CGWindowID)wn, &ownerCid);
+        CGError ownerErr = CGSGetWindowOwner(cid, (CGWindowID)wn, &ownerCid);
+        NSLog(@"[tin] wn=%d ownerErr=%d ownerCid=%d myCid=%d", wn, ownerErr, ownerCid, cid);
         int moveCid = (ownerCid > 0) ? ownerCid : cid;
         spaceMoveWindows(moveCid, (__bridge CFArrayRef)@[@(wn)], targetSpace);
         moved++;
@@ -563,6 +564,137 @@ static napi_value GetFrontmostWindowNumber(napi_env env, napi_callback_info info
     return ret;
 }
 
+// ── NSWindow ポインタから CGWindowID を取得 ──
+// win.getNativeWindowHandle() で得た Buffer の先頭 8 バイトをそのまま BigInt で渡す。
+// transparent ウィンドウも CGWindowList に依存しないため確実に取得できる。
+static napi_value GetWindowIdFromHandle(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+    uint64_t ptrVal = 0;
+    napi_valuetype vtype;
+    napi_typeof(env, args[0], &vtype);
+    if (vtype == napi_bigint) {
+        bool lossless;
+        napi_get_value_bigint_uint64(env, args[0], &ptrVal, &lossless);
+    } else {
+        double d;
+        napi_get_value_double(env, args[0], &d);
+        ptrVal = (uint64_t)(int64_t)d;
+    }
+
+    CGWindowID wid = 0;
+    if (ptrVal) {
+        @try {
+            // macOS では getNativeWindowHandle() は NSView* を返す
+            id obj = (__bridge id)(void *)ptrVal;
+            NSWindow *nsWin = nil;
+            if ([obj isKindOfClass:[NSView class]]) {
+                nsWin = [(NSView *)obj window];
+            } else if ([obj isKindOfClass:[NSWindow class]]) {
+                nsWin = (NSWindow *)obj;
+            }
+            if (nsWin) {
+                int wn = [nsWin windowNumber];
+                if (wn > 0) wid = (CGWindowID)wn;
+            }
+        } @catch (NSException *e) {
+            NSLog(@"[tin] getWindowIdFromHandle exception: %@", e);
+        }
+    }
+    NSLog(@"[tin] getWindowIdFromHandle ptr=0x%llx wid=%u", ptrVal, wid);
+
+    napi_value result;
+    napi_create_uint32(env, wid, &result);
+    return result;
+}
+
+// ── 全 Space の対象アプリウィンドウを列挙 ──
+// push-to-space 時に snapped terminals が別 Space にある場合でも windowNumber を取得できる。
+// ListWindows と同じ構造だが kCGWindowListOptionOnScreenOnly を外している。
+static napi_value ListWindowsAllSpaces(napi_env env, napi_callback_info info) {
+    ensureTerminalApps();
+
+    CFArrayRef windowList = CGWindowListCopyWindowInfo(
+        kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID);
+
+    napi_value result;
+    napi_create_array(env, &result);
+    if (!windowList) return result;
+
+    uint32_t idx = 0;
+    for (NSDictionary *win in (__bridge NSArray *)windowList) {
+        NSString *ownerName = win[(__bridge NSString *)kCGWindowOwnerName];
+        if (!ownerName || ![terminalApps containsObject:ownerName]) continue;
+
+        NSDictionary *bounds = win[(__bridge NSString *)kCGWindowBounds];
+        if (!bounds) continue;
+        CGFloat w = [bounds[@"Width"] floatValue];
+        CGFloat h = [bounds[@"Height"] floatValue];
+        if (w <= 50 || h <= 50) continue;
+
+        NSString *title = win[(__bridge NSString *)kCGWindowName] ?: @"";
+        NSNumber *wn  = win[(__bridge NSString *)kCGWindowNumber];
+        NSNumber *pid = win[(__bridge NSString *)kCGWindowOwnerPID];
+
+        napi_value obj;
+        napi_create_object(env, &obj);
+        napi_value v;
+        napi_create_string_utf8(env, [ownerName UTF8String], NAPI_AUTO_LENGTH, &v);
+        napi_set_named_property(env, obj, "app", v);
+        napi_create_string_utf8(env, [title UTF8String], NAPI_AUTO_LENGTH, &v);
+        napi_set_named_property(env, obj, "title", v);
+        napi_create_int32(env, [wn intValue], &v);
+        napi_set_named_property(env, obj, "windowNumber", v);
+        napi_create_int32(env, [pid intValue], &v);
+        napi_set_named_property(env, obj, "pid", v);
+
+        napi_set_element(env, result, idx++, obj);
+    }
+
+    CFRelease(windowList);
+    return result;
+}
+
+// ── AX 経由で PID のウィンドウ番号一覧を取得 ──
+// transparent ウィンドウは CGWindowList に出ないため AXUIElement で取得する。
+static napi_value GetWindowNumbersByPid(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+    int32_t pid;
+    napi_get_value_int32(env, args[0], &pid);
+
+    napi_value result;
+    napi_create_array(env, &result);
+    uint32_t idx = 0;
+
+    AXUIElementRef app = AXUIElementCreateApplication(pid);
+    CFArrayRef windows = NULL;
+    AXError axErr = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute, (CFTypeRef *)&windows);
+    NSLog(@"[tin] getWindowNumbersByPid pid=%d axErr=%d windows=%@", pid, axErr, windows ? @"ok" : @"nil");
+    if (windows) {
+        CFIndex count = CFArrayGetCount(windows);
+        NSLog(@"[tin] window count=%ld", (long)count);
+        for (CFIndex i = 0; i < count; i++) {
+            AXUIElementRef win = (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
+            CGWindowID wid = 0;
+            AXError widErr = _AXUIElementGetWindow(win, &wid);
+            NSLog(@"[tin]   win[%ld] widErr=%d wid=%u", (long)i, widErr, wid);
+            if (wid > 0) {
+                napi_value numVal;
+                napi_create_int32(env, (int32_t)wid, &numVal);
+                napi_set_element(env, result, idx++, numVal);
+            }
+        }
+        CFRelease(windows);
+    }
+    CFRelease(app);
+    return result;
+}
+
 // ── Module init ──
 static napi_value Init(napi_env env, napi_value exports) {
     napi_value fn;
@@ -574,6 +706,15 @@ static napi_value Init(napi_env env, napi_value exports) {
 
     napi_create_function(env, NULL, 0, RaiseWindows, NULL, &fn);
     napi_set_named_property(env, exports, "raiseWindows", fn);
+
+    napi_create_function(env, NULL, 0, GetWindowNumbersByPid, NULL, &fn);
+    napi_set_named_property(env, exports, "getWindowNumbersByPid", fn);
+
+    napi_create_function(env, NULL, 0, GetWindowIdFromHandle, NULL, &fn);
+    napi_set_named_property(env, exports, "getWindowIdFromHandle", fn);
+
+    napi_create_function(env, NULL, 0, ListWindowsAllSpaces, NULL, &fn);
+    napi_set_named_property(env, exports, "listWindowsAllSpaces", fn);
 
     napi_create_function(env, NULL, 0, IsAXTrusted, NULL, &fn);
     napi_set_named_property(env, exports, "isAXTrusted", fn);
