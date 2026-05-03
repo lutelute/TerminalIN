@@ -2,7 +2,9 @@ const { app, BrowserWindow, ipcMain, screen, Menu, powerMonitor, dialog, shell }
 const path = require('path');
 const fs = require('fs');
 const pty = require('node-pty');
-const { spawn, exec, execFile } = require('child_process');
+const { spawn, exec, execFile, execSync } = require('child_process');
+const { promisify } = require('util');
+const execAsync = promisify(exec);
 const autoSnap = require('./auto-snap');
 
 // N-API native addon: AXUIElement 操作を Electron main process 内で直接実行。
@@ -13,6 +15,45 @@ try {
   console.log('[tin] ax_helper loaded — native AX mode');
 } catch (e) {
   console.warn('[tin] ax_helper not available, falling back to osascript:', e.message);
+}
+
+// ── yabai 統合: Space 移動 ──
+// yabai の window id = CGWindowID のため直接使用可能。
+// SIP 部分無効 + `sudo yabai --load-sa` が必要。
+let _yabaiPath = null;
+function getYabaiPath() {
+  if (_yabaiPath !== null) return _yabaiPath;
+  try {
+    _yabaiPath = execSync('which yabai', { timeout: 2000 }).toString().trim();
+  } catch { _yabaiPath = ''; }
+  return _yabaiPath;
+}
+
+async function yabaiIsRunning() {
+  const p = getYabaiPath();
+  if (!p) return false;
+  try {
+    await execAsync(`${p} -m query --windows`, { timeout: 2000 });
+    return true;
+  } catch { return false; }
+}
+
+// yabai で windowNumbers を next/prev Space に移動。
+// 成功した wn のリストを返す。
+async function moveWindowsViaYabai(windowNumbers, direction) {
+  const p = getYabaiPath();
+  if (!p || !windowNumbers.length) return [];
+  const spaceArg = direction > 0 ? 'next' : 'prev';
+  const succeeded = [];
+  await Promise.all(windowNumbers.map(async wn => {
+    try {
+      await execAsync(`${p} -m window ${wn} --space ${spaceArg}`, { timeout: 3000 });
+      succeeded.push(wn);
+    } catch (e) {
+      console.log(`[tin] yabai wn=${wn} --space ${spaceArg} failed: ${e.stderr?.trim() || e.message}`);
+    }
+  }));
+  return succeeded;
 }
 
 // 非同期 osascript 実行。execSync だと main process が完全にブロックされ
@@ -1267,33 +1308,34 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
     }
   }
 
-  const allWns = [...new Set([...electronWns, ...snappedWns])];
   console.log(`[tin] push-to-space dir=${direction} electronWns=[${electronWns}] snappedWns=[${snappedWns}]`);
-  if (!allWns.length) return { ok: false, reason: 'no-windows' };
+  if (!electronWns.length) return { ok: false, reason: 'no-tin-window' };
 
   beginStabilize('push-to-space');
   try {
-    // sticky 戦略: snapped terminal を先に全 Space 表示にしてから TiN を移動、
-    // 移動後に unsticky → ターミナルが新 Space に固定される (SIP 迂回)
-    let usedSticky = false;
-    if (snappedWns.length > 0 && axHelper.setWindowSticky) {
+    // スナップ済みターミナルを yabai で先に移動 (yabai は SA 有効時のみ機能)
+    let yabaiMoved = [];
+    if (snappedWns.length > 0) {
+      yabaiMoved = await moveWindowsViaYabai(snappedWns, direction);
+      if (yabaiMoved.length > 0)
+        console.log(`[tin] yabai moved=[${yabaiMoved}]`);
+    }
+
+    // TiN 自身を CGS で移動
+    const tinMoved = axHelper.moveToSpace(electronWns, direction);
+    console.log(`[tin] push-to-space tinMoved=${tinMoved}`);
+
+    // yabai で動かなかった残りを sticky 方式で試みる (SIP 無効時の副作用なし)
+    const notMovedByYabai = snappedWns.filter(wn => !yabaiMoved.includes(wn));
+    if (notMovedByYabai.length > 0 && axHelper.setWindowSticky) {
       try {
-        axHelper.setWindowSticky(snappedWns, true);
-        usedSticky = true;
+        axHelper.setWindowSticky(notMovedByYabai, true);
+        await new Promise(r => setTimeout(r, 350));
+        axHelper.setWindowSticky(notMovedByYabai, false);
       } catch {}
     }
 
-    // TiN 自身を移動 (+ 通常の snappedWns move も試みる)
-    const moved = axHelper.moveToSpace(allWns, direction);
-    console.log(`[tin] push-to-space moved=${moved} usedSticky=${usedSticky}`);
-
-    // sticky を解除 → 現在アクティブな Space (新 Space) に固定
-    if (usedSticky && snappedWns.length > 0) {
-      await new Promise(r => setTimeout(r, 350)); // Space アニメーション待ち
-      try { axHelper.setWindowSticky(snappedWns, false); } catch {}
-    }
-
-    return { ok: true, moved };
+    return { ok: true, moved: tinMoved + yabaiMoved.length, yabai: yabaiMoved.length };
   } catch (e) {
     console.log(`[tin] push-to-space error: ${e.message}`);
     return { ok: false, error: e.message };
