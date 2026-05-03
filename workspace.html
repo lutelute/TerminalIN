@@ -1949,9 +1949,10 @@ document.getElementById('content').addEventListener('mousedown', (e) => {
 
 // ── Grid panel click-through (ウィンドウレベル) ──
 // pointer-events:none はCSS内のみ。実際のクリックスルーには setIgnoreMouseEvents が必要。
+let gpEditMode = false; // グリッドJSブロックとこのブロックで共有
 {
   const gridPanel = document.getElementById('grid-panel');
-  let _ctState = false; // 現在のクリックスルー状態
+  let _ctState = false;
 
   function setClickthrough(on) {
     if (_ctState === on) return;
@@ -1967,7 +1968,6 @@ document.getElementById('content').addEventListener('mousedown', (e) => {
     setClickthrough(onGrid);
   });
 
-  // ウィンドウからマウスが出たら必ずオフ
   window.addEventListener('mouseleave', () => setClickthrough(false));
 }
 
@@ -2018,7 +2018,7 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
 {
   let gpCols = 2, gpRows = 2;
   let gpColRatios = null, gpRowRatios = null;
-  let gpEditMode = false;
+  // gpEditMode はグローバルスコープで宣言済み
 
   function gpGetCumulative(ratios, n) {
     const cum = [0];
