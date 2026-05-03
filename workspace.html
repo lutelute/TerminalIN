@@ -51,28 +51,63 @@
     overflow: hidden;
     background: transparent;
     pointer-events: none;
-    /* 外枠: 半透明の box-shadow でパネル全体を囲む */
-    box-shadow: inset 0 0 0 1px rgba(0,0,0,0.1);
   }
   body.gp-edit #grid-panel { pointer-events: auto; }
   #gp-toolbar { pointer-events: auto; }
-
-  .gp-cell-empty {
-    background: rgba(255,255,255,0.08);
-  }
   body.collapsed #grid-panel { display: none; }
 
+  /* C案: セルのborderは使わず、コンテナ側に中央線を疑似要素で描く */
   .gp-frame { display: none; }
   .gp-grid-container {
-    position: absolute; inset: 0;
+    position: absolute; inset: 10px;
     display: grid; pointer-events: none;
-    gap: 1px;
-    background: rgba(0,0,0,0.06); /* gap の色 = 分割線として機能 */
+    gap: 0;
+    background: transparent;
   }
-  .gp-cell {
-    background: transparent; /* セル自体は透明、gapが線に見える */
+  .gp-cell { background: transparent; }
+  .gp-cell-empty { background: transparent; }
+
+  /* 中央の縦横線を #grid-panel の疑似要素で描く */
+  #grid-panel::before {
+    content: '';
+    position: absolute;
+    top: 10px; bottom: 10px;
+    left: 50%; width: 1px; margin-left: -0.5px;
+    background: rgba(0,0,0,0.1);
+    pointer-events: none;
   }
-  body.gp-edit .gp-grid-container { background: rgba(0,0,0,0.1); }
+  #grid-panel::after {
+    content: '';
+    position: absolute;
+    left: 10px; right: 10px;
+    top: 50%; height: 1px; margin-top: -0.5px;
+    background: rgba(0,0,0,0.1);
+    pointer-events: none;
+  }
+  body.gp-edit #grid-panel::before,
+  body.gp-edit #grid-panel::after { background: rgba(0,0,0,0.2); }
+
+  /* 四隅のコーナーマーク */
+  .gp-grid-container::before,
+  .gp-grid-container::after {
+    content: ''; position: absolute;
+    width: 8px; height: 8px;
+    pointer-events: none;
+  }
+  .gp-grid-container::before {
+    top: 0; left: 0;
+    border-top: 1px solid rgba(0,0,0,0.15);
+    border-left: 1px solid rgba(0,0,0,0.15);
+  }
+  .gp-grid-container::after {
+    bottom: 0; right: 0;
+    border-bottom: 1px solid rgba(0,0,0,0.15);
+    border-right: 1px solid rgba(0,0,0,0.15);
+  }
+  body.gp-edit .gp-grid-container::before,
+  body.gp-edit .gp-grid-container::after {
+    border-color: rgba(0,0,0,0.25);
+  }
   body.gp-edit .gp-cell { background: rgba(0,0,0,0.03); }
   .gp-col-line, .gp-row-line {
     position: absolute;
@@ -2038,16 +2073,35 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
     for (let i = 0; i < rows; i++) rowSizes.push(`${(cumR[i+1] - cumR[i]) * 100}%`);
     container.style.gridTemplateColumns = colSizes.join(' ');
     container.style.gridTemplateRows = rowSizes.join(' ');
-    container.style.gap = '4px';
+    container.style.gap = '0';
     container.innerHTML = '';
     const total = cols * rows;
     for (let i = 0; i < total; i++) {
       const cell = document.createElement('div');
-      const isOccupied = gpOccupiedSlots.has(i);
-      cell.className = isOccupied ? 'gp-cell' : 'gp-cell gp-cell-empty';
+      cell.className = 'gp-cell';
       container.appendChild(cell);
     }
+    gpRenderDividers(cols, rows, cumC, cumR);
     if (gpEditMode) gpRenderEditLines();
+  }
+
+  // C案: 内側の分割線のみ (外枠なし)
+  function gpRenderDividers(cols, rows, cumC, cumR) {
+    const panel = document.getElementById('grid-panel');
+    document.querySelectorAll('.gp-divider').forEach(el => el.remove());
+    const PAD = 10;
+    for (let i = 1; i < cols; i++) {
+      const line = document.createElement('div');
+      line.className = 'gp-divider';
+      line.style.cssText = `position:absolute;top:${PAD}px;bottom:${PAD}px;left:calc(${cumC[i]*100}%);width:1px;background:rgba(0,0,0,0.1);pointer-events:none;`;
+      panel.appendChild(line);
+    }
+    for (let i = 1; i < rows; i++) {
+      const line = document.createElement('div');
+      line.className = 'gp-divider';
+      line.style.cssText = `position:absolute;left:${PAD}px;right:${PAD}px;top:calc(${cumR[i]*100}%);height:1px;background:rgba(0,0,0,0.1);pointer-events:none;`;
+      panel.appendChild(line);
+    }
   }
 
   // main の poll から snapped/grid 情報を受け取って occupied slots を更新
