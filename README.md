@@ -1,79 +1,240 @@
-![TerminalIN Banner](assets/banner.png)
+# TiN — TerminalIN
 
-# TerminalIN
+macOS 向け Groupy スタイルのウィンドウコンテナ。Terminal.app・Finder・各種アプリを 1 つのタブ付きウィンドウにまとめて管理し、デスクトップ間・ディスプレイ間を一体で移動できます。
 
-macOS terminal workspace manager. Group, snap, and manage multiple terminal windows as a unified workspace.
+---
 
-## Features
+## 概要
 
-- **Snap & Release** — Snap external Terminal.app / iTerm2 windows into a 2x2 or 3x3 grid
-- **Workspace Focus** — Click the workspace sidebar to bring all snapped terminals to front
-- **Grid Terminals** — Embedded Electron terminal windows (xterm.js + node-pty) alongside external terminals
-- **Sidebar Control** — Compact, always-on-top sidebar with workspace management
-- **Multi-Display** — Adaptive grid sizing based on your display configuration
+TiN は「アプリを 1 つのウィンドウに収める」ためのツールです。
 
-## Quick Start
+- **タブバー** — snapped アプリがタブとして並ぶ。クリックで切り替え
+- **グリッド** — 複数アプリを同時に並べて表示（1×2, 2×2 など）
+- **一体移動** — TiN を動かすだけで snapped アプリが全部ついてくる
+- **デスクトップ追従** — ◀▶ ボタンで TiN と全 snapped アプリがまとめて Space 移動
+
+---
+
+## インストール
+
+### 必要環境
+
+- macOS 15 (Sequoia) 以降
+- Node.js 20 以上
+- **Accessibility 権限** — システム設定 > プライバシーとセキュリティ > アクセシビリティ に TiN を追加
+
+### ビルド
 
 ```bash
-# Install dependencies
+git clone https://github.com/lutelute/TerminalIN
+cd TerminalIN
 npm install
-
-# Run in development mode
-npx electron .
-
-# Build for macOS
-npm run build
+npm run dist          # dist/ に TiN-*.zip が生成される
+bash scripts/install.sh  # /Applications/TiN.app にインストール
 ```
 
-## Architecture
+### 開発モード
 
-```
-Sidebar (Electron, alwaysOnTop)
-├── Embedded terminals (xterm.js)
-├── Snapped external terminals (Terminal.app, iTerm2, etc.)
-└── Grid terminals (Electron BrowserWindows)
-
-Swift Daemon (background process)
-├── Window enumeration (CGWindowList)
-├── Window positioning (AXUIElement)
-└── Window raising (activate + AXRaise)
+```bash
+npx electron . --dev  # DevTools 付きで起動
 ```
 
-## Requirements
+---
 
-- macOS 14+
-- Node.js 20+
-- Accessibility permission (System Settings > Privacy > Accessibility)
+## SIP 設定（Space 移動を使う場合）
 
-## Integration with Other Tools
+Space 間移動には macOS の SIP を部分的に無効化する必要があります。
 
-TiN v1.2.0+ exposes a public integration protocol for third-party tools to
-read TiN's state and send commands.
+**Recovery Mode で実行：**
+1. Mac を再起動 → 電源ボタン長押し → オプション → ターミナル
 
-- **State files** (read-only, `~/Library/Application Support/TiN/`):
-  - `info.json` — TiN process info and capability list
-  - `snapped.json` — currently snapped windows
-- **URL scheme** (fire-and-forget):
-  - `tin://raise?app=X&windowNumber=Y` — raise a specific window
-  - `tin://workspace/focus` — raise active workspace
-  - `tin://workspace/switch?id=N` — switch workspace
-  - `tin://terminal/new?cwd=X` — create grid terminal
+```bash
+csrutil enable --without debug --without fs
+```
 
-See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the full specification.
+2. 通常起動後：
 
-### AtelierX Integration
+```bash
+brew install koekeishiya/formulae/yabai
+yabai --start-service
+sudo yabai --load-sa   # Scripting Addition ロード
+```
 
-If you use [AtelierX](https://github.com/lutelute/AtelierX) (window kanban
-board), install the companion plugin to have AtelierX automatically exclude
-TiN-managed terminals from its Grid arrangement:
+> **注意:** Darwin 25 (macOS 16) では追加で `nvram boot-args="-arm64e_preview_abi"` が必要な場合があります（Recovery Mode で設定）。
 
-1. In AtelierX: **Settings → Plugins → Install from GitHub**
-2. Enter `lutelute/TerminalIN:atelierx-plugin`
-3. Enable the plugin
+---
 
-The plugin lives in this repository under [`atelierx-plugin/`](atelierx-plugin/).
-It is **not** bundled into the TiN.app DMG — TiN works fully standalone.
+## 基本操作
 
-## License
+### ヘッダーバー（上部 68px）
+
+```
+☰  ワークスペース名  ────────────────────────────  ⊞  ‹
+│                   タブ1  タブ2  +    2×2  ↺  ←  →  ↗  ✓
+└ドロワー            └─────── タブバー ─────────────────────
+```
+
+| ボタン | 機能 |
+|--------|------|
+| **☰** | サイドパネル（ドロワー）を開く／閉じる |
+| **⊞ / ⊡** | グリッドモード ⇔ タブモード 切り替え |
+| **タブ** | snapped アプリのタブ。クリックでそのアプリを前面化 |
+| **×** | タブの × でそのアプリを unsnap |
+| **+** | 新しい PTY ターミナルを追加 |
+| **2×2** | グリッドサイズを変更（クリックで選択、スクロールで順送り） |
+| **↺** | Retile — すべての snapped アプリを現在の Space に集めて再配置 |
+| **◀ ▶** | TiN と全 snapped アプリを前／次のデスクトップへ移動 |
+| **↗** | デスクトップを選んで移動（ピッカーポップアップ） |
+| **✓ / !** | yabai SA 状態インジケーター（✓ = 有効、! = 無効） |
+
+---
+
+## ウィンドウのスナップ
+
+### 手順
+
+1. **☰** をクリックしてドロワーを開く
+2. **TERMINAL** / **FINDER** リストに開いているウィンドウが表示される
+3. **Snap** ボタンをクリック → TiN のグリッドに配置される
+
+### スナップ中の動作
+
+- snapped ウィンドウは自動的に **sticky（全デスクトップ表示）** になる
+- TiN をドラッグすると snapped ウィンドウが 50ms 以内に追従
+- TiN をデスクトップ間移動すると snapped ウィンドウも新しいデスクトップに表示される
+
+### スナップ解除
+
+- タブの **×** ボタンをクリック
+- ドロワーの **Release** ボタンをクリック
+- 解除されたウィンドウは元の位置・サイズに戻り、sticky も解除される
+
+---
+
+## 表示モード
+
+### グリッドモード（デフォルト ⊞）
+
+複数の snapped アプリを同時に並べて表示します。
+
+- **2×2**: 4 つのウィンドウを 2 列 2 行に並べる
+- **1×2**: 2 つのウィンドウを左右に並べる
+- **1×1**: 1 つのウィンドウを全画面表示
+
+グリッドサイズは **2×2** ボタンのクリック（メニュー）またはスクロールで変更できます。
+
+### タブモード（⊡）
+
+タブをクリックすると、そのアプリだけが全画面表示され、他のアプリはバックグラウンドに退避します。ブラウザのタブのような感覚で複数アプリを切り替えられます。
+
+**グリッド ⇔ タブ** の切り替えは **⊞ / ⊡** ボタンで行います。
+
+---
+
+## デスクトップ間の移動
+
+### ボタンで移動（◀ ▶）
+
+TiN ヘッダーの ◀ / ▶ ボタンを押すと、TiN と全 snapped アプリが前後のデスクトップに移動します。
+
+**動作の仕組み（sticky 方式）：**
+1. snapped アプリは sticky（全デスクトップ表示）になっている
+2. TiN が新しいデスクトップに移動
+3. 約 200ms 後に retileAll が走り、sticky アプリが TiN の新位置に揃う
+
+### デスクトップを指定して移動（↗）
+
+↗ ボタンでデスクトップ一覧のポップアップが開きます。目的のデスクトップをクリックすると移動します。
+
+### Mission Control 経由の移動
+
+Mission Control（F3 または Control + ↑）で TiN ウィンドウを別のデスクトップにドラッグしても、ポーリング（約 4 秒ごと）が変化を検知して retileAll を実行します。
+
+> **注意:** Space 移動には yabai と SIP 設定が必要です（上記参照）。未設定の場合、TiN 本体のみが移動し snapped アプリは元のデスクトップに残ります。
+
+---
+
+## PTY ターミナル（組み込みターミナル）
+
+TiN はグリッド内に Electron 組み込みの PTY ターミナルを持てます。これは真に 1 つのウィンドウ内に埋め込まれるため、Space 移動を含め全ての操作が確実に同期します。
+
+- **+** ボタンで新しいターミナルを追加
+- タブの × で削除
+- シェル・CWD・サイズは通常のターミナルと同様
+
+---
+
+## ワークスペース管理
+
+TiN は複数のワークスペース（ウィンドウ）を持てます。各ワークスペースは独立した snapped アプリのセットを管理します。
+
+- ワークスペース名をクリックして編集
+- 再起動後も snap 状態・グリッドサイズ・ウィンドウサイズが自動復元される
+
+---
+
+## アーキテクチャ
+
+```
+TiN.app (Electron)
+├── main.js              — メインプロセス
+│   ├── workspace 管理
+│   ├── IPC ハンドラ
+│   └── pollFn (4 秒ごとにウィンドウ状態を更新)
+├── workspace.html       — レンダラー (Groupy UI)
+│   ├── タブバー
+│   ├── ドロワーパネル
+│   └── グリッドパネル（透明、外部アプリが透けて見える）
+└── native/ax-helper.mm  — N-API native addon
+    ├── AXUIElement 操作 (位置・サイズ・raise)
+    ├── CGS API (Space 情報・sticky)
+    └── CGWindowList (ウィンドウ一覧)
+```
+
+**daemon バイナリなし** — AX 操作はすべて TiN 本体プロセス内で実行するため、TCC (Accessibility) 権限の管理が不要です。
+
+---
+
+## 統合プロトコル
+
+外部ツールとの連携用に状態ファイルと URL スキームを公開しています。
+
+**状態ファイル** (`~/Library/Application Support/TiN/`):
+- `info.json` — TiN バージョン・capabilities
+- `snapped.json` — 現在 snapped 中のウィンドウ一覧
+
+**URL スキーム:**
+```
+tin://raise?app=ターミナル&windowNumber=145
+tin://workspace/focus
+tin://terminal/new?cwd=/path/to/dir
+```
+
+---
+
+## トラブルシューティング
+
+### Snap ボタンが見つからない
+
+☰ をクリックしてドロワーを開いてください。TERMINAL または FINDER タブにウィンドウが一覧表示されます。
+
+### ウィンドウが Grid に配置されない
+
+- グリッドサイズ（2×2 等）の空きスロットがあるか確認
+- Retile（↺）ボタンをクリックして強制再配置
+
+### Space 移動で一部のウィンドウが残る
+
+- ヘッダーの ✓ / ! インジケーターを確認。! の場合は yabai SA が未設定
+- SIP 設定と `sudo yabai --load-sa` を確認
+
+### タブ名が消える・認識がおかしい
+
+- Retile（↺）で強制同期
+- TiN を再起動（snap 状態は自動復元されます）
+
+---
+
+## ライセンス
 
 ISC
