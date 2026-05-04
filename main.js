@@ -844,22 +844,13 @@ function getGridArea(ws) {
   };
 }
 
-// タブモードのパーキング座標 (画面外に退避)
-const PARKED_X = -9999;
-const PARKED_Y = -9999;
-
 function getSlotBounds(ws, slot) {
   const area = getGridArea(ws);
   if (!area) return null;
 
-  // ── Tab モード: アクティブスロットのみ全画面、それ以外はパーク ──
+  // ── Tab モード: 全スロットを同じ全画面位置に配置、AX raise でアクティブを前面に ──
+  // オフスクリーンパーキング不可（CGWindowList の OnScreenOnly から消える → unsnap 誤発火）
   if (ws.viewMode === 'tab') {
-    const activeSlot = ws.activeTabSlot ?? 0;
-    if (Number(slot) !== activeSlot) {
-      // 非アクティブ: 画面外に退避
-      return { x: PARKED_X, y: PARKED_Y, width: 100, height: 100 };
-    }
-    // アクティブ: コンテンツエリア全体
     return { x: area.x, y: area.y, width: area.width, height: area.height };
   }
 
@@ -1675,12 +1666,12 @@ ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
   if (!ws) return;
   ws.gridCols = cols;
   ws.gridRows = rows;
-  // grid サイズ変更時は ratio リセット
   ws.colRatios = null;
   ws.rowRatios = null;
   if (ws.win && !ws.win.isDestroyed()) {
     ws.win.webContents.send('update-grid-panel', { cols, rows, colRatios: null, rowRatios: null });
   }
+  beginStabilize('set-grid-size', ws); // リサイズ中の watchdog 誤発火を抑制
   retileAll(ws);
   scheduleSaveWorkspaces();
 });
@@ -1689,17 +1680,28 @@ ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
 ipcMain.handle('set-view-mode', (event, { mode }) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return;
-  ws.viewMode = mode; // 'grid' | 'tab'
+  ws.viewMode = mode;
+  beginStabilize('set-view-mode', ws); // retile 中の watchdog 誤発火を抑制
   retileAll(ws);
 });
 
-// Tab モードでアクティブなスロットを変更し retile
+// Tab モードでアクティブなスロットを変更し retile + AX raise
 ipcMain.handle('set-active-tab', (event, { slot }) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return;
   ws.activeTabSlot = Number(slot);
   ws.viewMode = 'tab';
-  retileAll(ws);
+  beginStabilize('set-active-tab', ws);
+  retileAll(ws).then(() => {
+    // アクティブスロットのウィンドウを前面に上げる
+    const activeWns = [];
+    for (const [wn, info] of ws.snappedExternals) {
+      if (info.slot === Number(slot)) activeWns.push({ windowNumber: wn, pid: info.pid, app: info.app, title: info.title });
+    }
+    if (activeWns.length > 0 && axHelper && axHelper.raiseWindows) {
+      axHelper.raiseWindows(activeWns);
+    }
+  }).catch(() => {});
 });
 
 ipcMain.on('rename-workspace', (event, { name }) => {
@@ -2122,15 +2124,17 @@ function createWorkspace(name, savedState) {
     ownTitles.add(`TiN — ${ws.name} Grid`);
     for (const [slot] of ws.gridWindows) ownTitles.add(`TiN — ${ws.name} [${slot}]`);
     const windowsForUI = windowsAll.filter(w => !(w.app === 'TiN' && ownTitles.has(w.title)));
-    // snapped ext の slot 情報も renderer に送る (dots/cards の slot 可視化用)
+    // snapped ext の完全リスト（空間的に見えなくても権威あるリスト）
     const snappedSlots = {};
+    const snappedList = []; // renderer の snappedExternals を authoritative に同期するため
     for (const [wn, info] of ws.snappedExternals) {
       if (typeof info.slot === 'number') snappedSlots[wn] = info.slot;
+      snappedList.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
     }
     // 最前面 window (focused slot ハイライト用)
     let frontmostWn = 0;
     try { if (axHelper && axHelper.getFrontmostWindowNumber) frontmostWn = axHelper.getFrontmostWindowNumber() || 0; } catch {}
-    ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots, snappedSlots, frontmostWn);
+    ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots, snappedSlots, frontmostWn, snappedList);
   };
   ws.pollTimer = setInterval(pollFn, appSettings.pollIntervalMs || 4000);
   ws._pollRestart = () => {

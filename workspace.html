@@ -2187,33 +2187,46 @@ ipcRenderer.on('frontmost-update', (_e, wn) => {
   render();
 });
 
-ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snappedSlots, frontmostWn) => {
+ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snappedSlots, frontmostWn, snappedList) => {
   snappedByOther = otherSnapped || {};
   gridSlots = gridInfo || {};
   externalWindows = windows;
   frontmostWindowNumber = frontmostWn || 0;
-  // グリッドパネルの占有スロットを更新
   gpOccupiedSlots = new Set([
     ...Object.keys(gridSlots).map(Number),
     ...Object.values(snappedSlots || {}).map(Number),
   ]);
   gpRender(gridCols, gridRows);
-  // slot 情報を snappedExternals に反映 (dots/cards 可視化用)
-  if (snappedSlots) {
-    for (const [wn, slot] of Object.entries(snappedSlots)) {
-      const info = snappedExternals.get(Number(wn));
-      if (info) info.slot = slot;
+
+  // snappedList が届いた場合は authoritative sync (main.js の状態を正とする)
+  if (snappedList) {
+    const authoritative = new Map(snappedList.map(e => [e.windowNumber, e]));
+    // main にいないエントリを削除
+    for (const [k] of snappedExternals) {
+      if (!authoritative.has(k)) snappedExternals.delete(k);
     }
-  }
-  // live window のタイトル/app で snappedExternals を同期更新
-  // (復元時やパッケージ版で初期タイトルが空の場合にここで補完される)
-  for (const [k, info] of snappedExternals) {
-    const live = windows.find(w => w.windowNumber === k);
-    if (live) {
-      if (live.title) info.title = live.title;
-      if (live.app) info.app = live.app;
-    } else {
-      snappedExternals.delete(k);
+    // main のエントリを追加・更新
+    for (const [k, entry] of authoritative) {
+      const existing = snappedExternals.get(k);
+      if (existing) {
+        // live window があればタイトル補完
+        const live = windows.find(w => w.windowNumber === k);
+        if (live && live.title) existing.title = live.title;
+        if (live && live.app) existing.app = live.app;
+        existing.slot = entry.slot;
+      } else {
+        snappedExternals.set(k, { title: entry.title, app: entry.app, slot: entry.slot });
+      }
+    }
+  } else {
+    // snappedList なし (旧バージョン互換): live のみでタイトル補完
+    for (const [k, info] of snappedExternals) {
+      const live = windows.find(w => w.windowNumber === k);
+      if (live) {
+        if (live.title) info.title = live.title;
+        if (live.app) info.app = live.app;
+      }
+      // 削除しない — main.js が unsnap したタイミングで hydrate-snapped が来る
     }
   }
   scheduleRender();
