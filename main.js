@@ -166,8 +166,9 @@ const WORKSPACES_FORMAT_VERSION = 1;
 const WORKSPACES_STALE_MS = 24 * 60 * 60 * 1000;
 // Groupy コンテナモード定数
 const TITLEBAR_H = 68;        // TiN ヘッダー高さ (hiddenInset 2行)
-const NATIVE_TITLEBAR_H = 28; // macOS ネイティブタイトルバー高さ
-const GROUPY_Y_OFFSET = TITLEBAR_H - NATIVE_TITLEBAR_H; // 40px: 外部アプリの Y オフセット
+const NATIVE_TITLEBAR_H = 28; // macOS ネイティブタイトルバー高さ (参考値)
+// 外部アプリは TiN ヘッダーの直下に配置 — タイトルバーを完全に表示する
+const GROUPY_Y_OFFSET = TITLEBAR_H; // 68px: 外部アプリは TiN ヘッダーの下から
 // 旧レイアウト定数 (後方互換)
 const DEFAULT_SIDEBAR_W = 280;
 const SIDEBAR_DIVIDER_W = 6;
@@ -831,9 +832,7 @@ function isExternalSnapped(windowNumber) {
 }
 
 // ── Grid geometry (Groupy コンテナモード) ──
-// 外部アプリはウィンドウ全幅を使い、TiN ヘッダーの下から配置される。
-// GROUPY_Y_OFFSET (40px) だけ下にずらすことで外部アプリのネイティブタイトルバーが
-// TiN ヘッダーの後ろに隠れ、視覚的に「1つのウィンドウ」に見える。
+// TiN ヘッダー (68px) の直下にアプリを配置。タイトルバーは完全に表示される。
 function getGridArea(ws) {
   if (!ws.win || ws.win.isDestroyed()) return null;
   const b = ws.win.getBounds();
@@ -845,14 +844,30 @@ function getGridArea(ws) {
   };
 }
 
+// タブモードのパーキング座標 (画面外に退避)
+const PARKED_X = -9999;
+const PARKED_Y = -9999;
+
 function getSlotBounds(ws, slot) {
   const area = getGridArea(ws);
   if (!area) return null;
+
+  // ── Tab モード: アクティブスロットのみ全画面、それ以外はパーク ──
+  if (ws.viewMode === 'tab') {
+    const activeSlot = ws.activeTabSlot ?? 0;
+    if (Number(slot) !== activeSlot) {
+      // 非アクティブ: 画面外に退避
+      return { x: PARKED_X, y: PARKED_Y, width: 100, height: 100 };
+    }
+    // アクティブ: コンテンツエリア全体
+    return { x: area.x, y: area.y, width: area.width, height: area.height };
+  }
+
+  // ── Grid モード: 通常のグリッドレイアウト ──
   const cols = ws.gridCols, rows = ws.gridRows;
   const gap = 4;
   const col = slot % cols, row = Math.floor(slot / cols);
 
-  // ratio ベースの計算 (未設定なら均等分割)
   const colRatios = (ws.colRatios && ws.colRatios.length === cols) ? ws.colRatios : Array(cols).fill(1/cols);
   const rowRatios = (ws.rowRatios && ws.rowRatios.length === rows) ? ws.rowRatios : Array(rows).fill(1/rows);
 
@@ -1670,6 +1685,23 @@ ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
   scheduleSaveWorkspaces();
 });
 
+// ── Tab / Grid モード切り替え ──
+ipcMain.handle('set-view-mode', (event, { mode }) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return;
+  ws.viewMode = mode; // 'grid' | 'tab'
+  retileAll(ws);
+});
+
+// Tab モードでアクティブなスロットを変更し retile
+ipcMain.handle('set-active-tab', (event, { slot }) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return;
+  ws.activeTabSlot = Number(slot);
+  ws.viewMode = 'tab';
+  retileAll(ws);
+});
+
 ipcMain.on('rename-workspace', (event, { name }) => {
   const ws = findWorkspace(event.sender);
   if (ws) {
@@ -1857,6 +1889,8 @@ function createWorkspace(name, savedState) {
   ws._titleCache = new Map();
   ws._titleCacheRefreshAt = 0;
   ws._lastPollIdentity = '';  // fast-path: skip IPC when nothing changed
+  ws.viewMode = 'grid';       // 'grid' | 'tab' — Groupy 表示モード
+  ws.activeTabSlot = 0;       // Tab モードでアクティブなスロット番号
   // Poll external windows
   // pollTimer: 2000ms。Available リスト更新は 2 秒遅延するが
   // snap/unsnap の即時操作には影響しない。snapped の grace period は 8 回 = ~16s。

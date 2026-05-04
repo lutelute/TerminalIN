@@ -21,16 +21,61 @@
     width: 100%;
     flex-shrink: 0;
     display: flex; flex-direction: column;
-    overflow: hidden;
+    overflow: visible;   /* ドロワーが下にはみ出るため */
     position: relative;
     background: #ffffff;
     border-bottom: 1px solid rgba(0,0,0,0.1);
     z-index: 100;
   }
-  /* サイドバーリスト・コンソール・ステータスは非表示 (タブに移行) */
+  /* サイドバーリスト・コンソール・ステータスは通常は非表示 */
   #content, #console-fixed, #status { display: none !important; }
   /* サイドバー分割線も不要 */
   #sidebar-divider { display: none !important; }
+
+  /* ── ドロワーパネル (サイドバートグル時に表示) ── */
+  #drawer-panel {
+    position: fixed;
+    top: 68px; left: 0;
+    width: 280px;
+    max-height: calc(100vh - 68px);
+    background: #ffffff;
+    border-right: 1px solid rgba(0,0,0,0.1);
+    border-bottom: 1px solid rgba(0,0,0,0.1);
+    border-radius: 0 0 10px 0;
+    box-shadow: 4px 4px 16px rgba(0,0,0,0.12);
+    z-index: 9000;
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+    transform: translateX(-100%);
+    transition: transform 0.18s cubic-bezier(0.4,0,0.2,1);
+  }
+  body.drawer-open #drawer-panel {
+    display: flex;
+    transform: translateX(0);
+  }
+  #drawer-content { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 5px; }
+  #drawer-content::-webkit-scrollbar { width: 5px; }
+  #drawer-content::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 3px; }
+  /* ドロワー外クリックで閉じる用オーバーレイ */
+  #drawer-overlay {
+    position: fixed; inset: 0;
+    z-index: 8999;
+    display: none;
+  }
+  body.drawer-open #drawer-overlay { display: block; }
+
+  /* ドロワーボタン */
+  .drawer-btn {
+    width: 26px; height: 26px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; color: rgba(40,40,80,0.4);
+    cursor: pointer; flex-shrink: 0;
+    -webkit-app-region: no-drag;
+    transition: background 0.12s, color 0.12s;
+  }
+  .drawer-btn:hover { background: rgba(0,0,0,0.06); color: rgba(40,40,80,0.8); }
+  body.drawer-open .drawer-btn { color: rgba(60,120,230,0.7); background: rgba(60,120,230,0.08); }
 
   /* ── コンテンツエリア (全幅、透明、外部アプリが透けて見える) ── */
   #grid-panel {
@@ -744,13 +789,25 @@
 </head>
 <body>
 
+<!-- ドロワー外クリック用オーバーレイ -->
+<div id="drawer-overlay" onclick="toggleDrawer(false)"></div>
+
+<!-- ドロワーパネル (サイドバーリスト) -->
+<div id="drawer-panel">
+  <div id="drawer-content"></div>
+</div>
+
 <div id="sidebar">
   <div id="titlebar">
     <div id="titlebar-row1">
+      <!-- ドロワートグルボタン -->
+      <div class="drawer-btn" id="drawer-toggle-btn" title="パネルを表示/非表示 (ターミナル・Finder リスト)" onclick="toggleDrawer()">☰</div>
       <span id="title">TiN</span>
       <input id="title-input" type="text" />
       <div style="flex:1"></div>
-      <div id="collapse-btn" title="Collapse sidebar (Cmd+B)">‹</div>
+      <!-- モード切り替えボタン -->
+      <div id="view-mode-btn" class="drawer-btn" title="グリッド / フルスクリーンタブ 切り替え" onclick="toggleViewMode()">⊞</div>
+      <div id="collapse-btn" title="Collapse sidebar (Cmd+B)" style="display:none">‹</div>
     </div>
     <div id="titlebar-row2">
       <div id="titlebar-grid"></div>
@@ -777,9 +834,37 @@ const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 
 const content = document.getElementById('content');
+const drawerContent = document.getElementById('drawer-content');
 const statusEl = document.getElementById('status');
 const titleEl = document.getElementById('title');
 const titleInput = document.getElementById('title-input');
+
+// ── ドロワー表示/非表示 ──
+function toggleDrawer(forceState) {
+  const open = forceState !== undefined ? forceState : !document.body.classList.contains('drawer-open');
+  document.body.classList.toggle('drawer-open', open);
+}
+
+// ── グリッド / Tab モード切り替え ──
+let currentViewMode = 'grid';
+function toggleViewMode() {
+  currentViewMode = currentViewMode === 'grid' ? 'tab' : 'grid';
+  const btn = document.getElementById('view-mode-btn');
+  if (btn) btn.textContent = currentViewMode === 'tab' ? '⊡' : '⊞';
+  ipcRenderer.invoke('set-view-mode', { mode: currentViewMode });
+  render();
+}
+
+// Tab モードでタブをクリックしてアクティブスロット切り替え
+function activateTab(slot) {
+  if (currentViewMode !== 'tab') {
+    currentViewMode = 'tab';
+    const btn = document.getElementById('view-mode-btn');
+    if (btn) btn.textContent = '⊡';
+  }
+  ipcRenderer.invoke('set-active-tab', { slot });
+  render();
+}
 
 let wsId = null;
 let wsName = 'TiN';
@@ -1681,8 +1766,13 @@ function render() {
       tab.addEventListener('click', e => {
         if (e.target.closest('.tab-close')) return;
         frontmostWindowNumber = wn;
-        render();
-        ipcRenderer.invoke('raise-snapped', { windowNumber: wn });
+        // Tab モードならこのスロットをアクティブに
+        if (currentViewMode === 'tab') {
+          activateTab(info.slot ?? 0);
+        } else {
+          render();
+          ipcRenderer.invoke('raise-snapped', { windowNumber: wn });
+        }
       });
       tab.querySelector('.tab-close').addEventListener('click', e => {
         e.stopPropagation();
@@ -2056,10 +2146,10 @@ function render() {
     _sideSection.appendChild(addBtn);
   }
 
-  // Attach persistent sections (console は content 外の固定領域)
+  // Attach persistent sections — ドロワーコンテンツに配置
   if (!_sectionsAttached) {
-    content.appendChild(_gridSection);
-    content.appendChild(_availSection);
+    drawerContent.appendChild(_gridSection);
+    drawerContent.appendChild(_availSection);
     document.getElementById('console-fixed').appendChild(_sideSection);
     _sectionsAttached = true;
   }
