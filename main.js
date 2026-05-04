@@ -164,10 +164,13 @@ const WORKSPACES_JSON = path.join(INTEGRATION_DIR, 'workspaces.json');
 const WORKSPACES_FORMAT_VERSION = 1;
 // 保存済みセッションが古すぎる場合は復元しない閾値 (24時間)
 const WORKSPACES_STALE_MS = 24 * 60 * 60 * 1000;
-// 統合ウィンドウのレイアウト定数
+// Groupy コンテナモード定数
+const TITLEBAR_H = 68;        // TiN ヘッダー高さ (hiddenInset 2行)
+const NATIVE_TITLEBAR_H = 28; // macOS ネイティブタイトルバー高さ
+const GROUPY_Y_OFFSET = TITLEBAR_H - NATIVE_TITLEBAR_H; // 40px: 外部アプリの Y オフセット
+// 旧レイアウト定数 (後方互換)
 const DEFAULT_SIDEBAR_W = 280;
 const SIDEBAR_DIVIDER_W = 6;
-const TITLEBAR_H = 68; // hiddenInset 2行
 // workspace プリセット (メモリ機能)
 const PRESETS_DIR = path.join(INTEGRATION_DIR, 'presets');
 const TIN_START_TIME = Date.now();
@@ -827,19 +830,19 @@ function isExternalSnapped(windowNumber) {
   return _globalSnappedIndex.get(windowNumber) || null;
 }
 
-// ── Grid geometry ──
-// 統合ウィンドウ方式: グリッドエリアはウィンドウの右パネル内。
-// タイトルバー(68px)を除いたコンテンツ領域の、サイドバー幅+ディバイダー幅 以降の部分。
+// ── Grid geometry (Groupy コンテナモード) ──
+// 外部アプリはウィンドウ全幅を使い、TiN ヘッダーの下から配置される。
+// GROUPY_Y_OFFSET (40px) だけ下にずらすことで外部アプリのネイティブタイトルバーが
+// TiN ヘッダーの後ろに隠れ、視覚的に「1つのウィンドウ」に見える。
 function getGridArea(ws) {
   if (!ws.win || ws.win.isDestroyed()) return null;
   const b = ws.win.getBounds();
-  const sidebarW = ws.sidebarWidth || DEFAULT_SIDEBAR_W;
-  // グリッドパネルはサイドバーと横並び (y はウィンドウ上端と同じ)
-  const x = b.x + sidebarW + SIDEBAR_DIVIDER_W;
-  const y = b.y;
-  const width = Math.max(100, b.width - sidebarW - SIDEBAR_DIVIDER_W);
-  const height = b.height;
-  return { x, y, width, height };
+  return {
+    x: b.x,
+    y: b.y + GROUPY_Y_OFFSET,
+    width: Math.max(200, b.width),
+    height: Math.max(100, b.height - GROUPY_Y_OFFSET),
+  };
 }
 
 function getSlotBounds(ws, slot) {
@@ -1414,105 +1417,31 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
 
   beginStabilize('push-to-space', ws);
   try {
-    // ── 移動戦略 ──
-    // 1. yabai SA が有効: yabai で確実に移動（検証済み）
-    // 2. yabai SA 無効: sticky → TiN 移動 → Space 切り替わり後に unsticky
-    //    CGS は他プロセスのウィンドウを直接移動できないため、
-    //    sticky (全 Space 表示) にしておき TiN 移動後の自動 Space 切り替えで追従させる
-
-    // 1. yabai で移動を試みる（偽陽性を検証）
-    let yabaiMoved = [];
-    if (snappedWns.length > 0) {
-      yabaiMoved = await moveWindowsViaYabai(snappedWns, direction, targetSpaceId);
-      if (yabaiMoved.length > 0)
-        console.log(`[tin] yabai moved=[${yabaiMoved}]`);
-    }
-
-    // 2. yabai が動かなかった分: sticky → TiN 移動 → yabai Space focus → unsticky
-    const notMovedByYabai = snappedWns.filter(wn => !yabaiMoved.includes(wn));
-    if (notMovedByYabai.length > 0 && axHelper.setWindowSticky) {
-      axHelper.setWindowSticky(notMovedByYabai, true);
-    }
-
-    // 3. TiN を移動
-    const tinMoved = axHelper.moveToSpace(electronWns, direction);
+    // TiN 自身を移動（CGS、自プロセスなので確実）
+    const tinMoved = axHelper.moveToSpace ? axHelper.moveToSpace(electronWns, direction) : 0;
     console.log(`[tin] push-to-space tinMoved=${tinMoved}`);
 
-    // 4. 目標 Space に強制切り替えしてから unsticky
-    //    yabai -m space --focus <index> は SA 不要で動作する
-    let cgsFallbackMoved = 0;
-    if (notMovedByYabai.length > 0 && axHelper.setWindowSticky) {
-      let switched = false;
-
-      // targetIndex を取得（getSpacesList の index フィールド）
-      let targetIndex = null;
-      if (targetSpaceId && axHelper.getSpacesList) {
-        try {
-          const sp = axHelper.getSpacesList().find(s => Number(s.id) === Number(targetSpaceId));
-          if (sp) targetIndex = sp.index;
-        } catch {}
-      }
-
-      // yabai -m space --focus で target Space に強制切り替え（SA 不要）
-      if (targetIndex) {
-        const p = getYabaiPath();
-        if (p) {
-          try {
-            await execAsync(`${p} -m space --focus ${targetIndex}`, { timeout: 2000 });
-            switched = true;
-            console.log(`[tin] yabai space focus ${targetIndex} OK`);
-          } catch (e) {
-            const msg = e.stderr?.trim() || e.message;
-            // "already focused" は目標 Space に既にいる = 成功扱い
-            if (msg.includes('already focused')) switched = true;
-            console.log(`[tin] yabai space focus ${targetIndex}: ${msg}`);
-          }
-        }
-      }
-
-      // macOS の自動切り替えを待つ（yabai なしのフォールバック）
-      if (!switched && targetSpaceId && axHelper.getSpacesList) {
-        for (let i = 0; i < 20; i++) {
-          await new Promise(r => setTimeout(r, 50));
-          try {
-            const cur = axHelper.getSpacesList().find(s => s.isCurrent);
-            if (cur && Number(cur.id) === Number(targetSpaceId)) { switched = true; break; }
-          } catch {}
-        }
-      }
-
-      // target Space に切り替わった状態で CGS 移動を再試行
-      // ユーザーが target Space にいるとき、CGS の Space 操作権限が変わる可能性がある
-      if (switched && targetSpaceId && axHelper.moveWindowsToSpaceId) {
-        await new Promise(r => setTimeout(r, 150)); // Space アニメーション待機
-        try {
-          const cgsRetry = axHelper.moveWindowsToSpaceId(notMovedByYabai, targetSpaceId);
-          console.log(`[tin] cgs retry on target space: ${cgsRetry}/${notMovedByYabai.length}`);
-          cgsFallbackMoved = cgsRetry;
-        } catch {}
-      }
-
-      // sticky 解除（window が target Space に移動済みならそこに留まる）
-      await new Promise(r => setTimeout(r, 50));
-      axHelper.setWindowSticky(notMovedByYabai, false);
-      if (!cgsFallbackMoved) cgsFallbackMoved = notMovedByYabai.length;
-      console.log(`[tin] sticky→unsticky: ${notMovedByYabai.length} windows, switched=${switched}`);
+    // 外部スナップ済みウィンドウ: CGS でベストエフォート移動
+    // 注: Darwin 25 + SA なし環境では他プロセスの Space 移動は制限される
+    if (snappedWns.length > 0 && axHelper.moveWindowsToSpaceId && targetSpaceId) {
+      const moved = axHelper.moveWindowsToSpaceId(snappedWns, targetSpaceId);
+      console.log(`[tin] push-to-space cgs snapped: ${moved}/${snappedWns.length}`);
     }
 
-    // 移動後、TiN を主ディスプレイ中央に再配置して retile
-    // getDisplayNearestPoint はマルチモニター環境で間違ったディスプレイを選ぶ場合があるため
-    // getPrimaryDisplay を使用する
+    // TiN を新 Space のディスプレイ中央に配置して retile
     if (ws.win && !ws.win.isDestroyed()) {
       const b = ws.win.getBounds();
-      const wa = screen.getPrimaryDisplay().workArea;
-      const cx = wa.x + Math.round((wa.width - b.width) / 2);
-      const cy = wa.y + Math.round((wa.height - b.height) / 2);
-      ws.win.setBounds({ x: cx, y: cy, width: b.width, height: b.height });
+      const disp = screen.getPrimaryDisplay();
+      const wa = disp.workArea;
+      ws.win.setBounds({
+        x: wa.x + Math.round((wa.width - b.width) / 2),
+        y: wa.y + Math.round((wa.height - b.height) / 2),
+        width: b.width, height: b.height,
+      });
       retileAll(ws, true).catch(() => {});
-      console.log(`[tin] push-to-space centered to (${cx},${cy})`);
     }
 
-    // _tinSpaceId を新 Space に更新して pollFn の誤検知を防ぐ
+    // _tinSpaceId 更新
     if (electronWns.length > 0 && axHelper.getSpaceForWindows) {
       try {
         const spaces = axHelper.getSpaceForWindows([electronWns[0]]);
@@ -1521,7 +1450,7 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
       } catch {}
     }
 
-    return { ok: true, moved: tinMoved + yabaiMoved.length + cgsFallbackMoved, yabai: yabaiMoved.length, cgs: cgsFallbackMoved };
+    return { ok: true, moved: tinMoved };
   } catch (e) {
     console.log(`[tin] push-to-space error: ${e.message}`);
     return { ok: false, error: e.message };
@@ -1810,7 +1739,7 @@ function createWorkspace(name, savedState) {
     transparent: true,        // グリッドパネル部分を透過させスナップウィンドウを表示
     backgroundColor: '#00000000',
     hasShadow: true,
-    alwaysOnTop: false,
+    alwaysOnTop: true,   // Groupy: TiN ヘッダーが外部アプリのタイトルバーの上に常時表示
     acceptFirstMouse: true,
     webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false, backgroundThrottling: false },
   });
@@ -1874,13 +1803,27 @@ function createWorkspace(name, savedState) {
   // drag 中は snapped 外部ウィンドウの AX 追従を停止し、主スレッドを空ける。
   // 外部ターミナルは drag 終了時の retileAll で一括配置する。
   let _dragging = false;
+  let _lastMoveMs = 0;
   const onWinMove = () => {
-    // ウィンドウ移動時: embedded grid windows を即座に同期
+    // 1. embedded grid windows (Electron BrowserWindow) — 即座に同期
     for (const [slot, gw] of ws.gridWindows) {
       if (gw.win && !gw.win.isDestroyed()) {
         const b = getSlotBounds(ws, slot);
         if (b) gw.win.setBounds(b);
       }
+    }
+    // 2. 外部スナップ済みウィンドウ — Groupy リアルタイム追従 (16ms throttle)
+    if (ws.snappedExternals.size > 0 && axHelper) {
+      const now = Date.now();
+      if (now - _lastMoveMs < 16) return;
+      _lastMoveMs = now;
+      const cmds = [];
+      for (const [, info] of ws.snappedExternals) {
+        const b = getSlotBounds(ws, info.slot);
+        if (b) cmds.push({ windowNumber: info.windowNumber, pid: info.pid,
+          app: info.app, title: info.title, windowIndex: info.windowIndex || 0, ...b });
+      }
+      if (cmds.length) fireAndForgetMove(cmds, true); // positionOnly=true でドラッグ中は位置のみ
     }
   };
   win.on('move', onWinMove);

@@ -11,42 +11,31 @@
     overflow: hidden;
     font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif;
     color: #1a1a2e;
-    display: flex; flex-direction: row;
-    background: transparent;  /* ウィンドウ全体は透明 — サイドバーのみ不透明 */
+    display: flex; flex-direction: column;  /* Groupy: 縦積み (header + content) */
+    background: transparent;
     transition: opacity 0.15s;
   }
 
-  /* ── Sidebar panel ── */
+  /* ── Groupy ヘッダー (全幅 68px) ── */
   #sidebar {
-    width: var(--sidebar-w, 280px);
-    min-width: 160px;
+    width: 100%;
     flex-shrink: 0;
     display: flex; flex-direction: column;
     overflow: hidden;
     position: relative;
-    background: #ffffff;  /* サイドバーのみ不透明 */
+    background: #ffffff;
+    border-bottom: 1px solid rgba(0,0,0,0.1);
+    z-index: 100;
   }
+  /* サイドバーリスト・コンソール・ステータスは非表示 (タブに移行) */
+  #content, #console-fixed, #status { display: none !important; }
+  /* サイドバー分割線も不要 */
+  #sidebar-divider { display: none !important; }
 
-  /* ── Sidebar divider ── */
-  #sidebar-divider {
-    width: 6px;
-    flex-shrink: 0;
-    cursor: col-resize;
-    background: rgba(0,0,0,0.04);
-    border-left: 1px solid rgba(0,0,0,0.07);
-    transition: background 0.15s;
-    position: relative; z-index: 10;
-  }
-  #sidebar-divider:hover, #sidebar-divider.dragging {
-    background: rgba(60,120,230,0.18);
-    border-left-color: rgba(60,120,230,0.35);
-  }
-  body.collapsed #sidebar-divider { display: none; }
-
-  /* ── Grid panel (右) ── */
+  /* ── コンテンツエリア (全幅、透明、外部アプリが透けて見える) ── */
   #grid-panel {
     flex: 1;
-    min-width: 100px;
+    width: 100%;
     position: relative;
     overflow: hidden;
     background: transparent;
@@ -54,7 +43,6 @@
   }
   body.gp-edit #grid-panel { pointer-events: auto; }
   #gp-toolbar { pointer-events: auto; }
-  body.collapsed #grid-panel { display: none; }
 
   /* C案: セルのborderは使わず、コンテナ側に中央線を疑似要素で描く */
   .gp-frame { display: none; }
@@ -143,11 +131,68 @@
     display: flex; align-items: center;
     height: 38px; width: 100%;
   }
+  /* ── Groupy タブバー (row2) ── */
   #titlebar-row2 {
-    display: flex; align-items: center;
+    display: flex; align-items: flex-end;
     height: 28px; width: 100%;
-    padding-left: 2px;
+    padding: 0 8px 0 4px;
+    overflow-x: auto; overflow-y: hidden;
+    gap: 2px;
   }
+  #titlebar-row2::-webkit-scrollbar { display: none; }
+
+  /* タブアイテム */
+  .groupy-tab {
+    display: flex; align-items: center; gap: 5px;
+    height: 24px; padding: 0 8px 0 7px;
+    border-radius: 5px 5px 0 0;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+    font-size: 11px; font-weight: 500;
+    color: rgba(40,40,80,0.55);
+    background: rgba(0,0,0,0.04);
+    border: 1px solid rgba(0,0,0,0.07);
+    border-bottom: none;
+    user-select: none; white-space: nowrap;
+    flex-shrink: 0; max-width: 160px;
+    overflow: hidden; text-overflow: ellipsis;
+    transition: background 0.1s, color 0.1s;
+  }
+  .groupy-tab:hover { background: rgba(0,0,0,0.08); color: rgba(40,40,80,0.8); }
+  .groupy-tab.active {
+    background: rgba(255,255,255,0.92);
+    color: rgba(20,20,60,0.9);
+    border-color: rgba(0,0,0,0.12);
+    font-weight: 600;
+  }
+  body.window-inactive .groupy-tab.active { background: rgba(230,230,240,0.9); }
+  .groupy-tab .tab-icon {
+    width: 13px; height: 13px; border-radius: 3px;
+    font-size: 8px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; opacity: 0.7;
+  }
+  .groupy-tab .tab-icon.term { background: rgba(40,180,100,0.2); color: #28b464; }
+  .groupy-tab .tab-icon.finder { background: rgba(30,120,255,0.15); color: #1e78ff; }
+  .groupy-tab .tab-icon.app { background: rgba(120,80,200,0.15); color: #7850c8; }
+  .groupy-tab .tab-title { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .groupy-tab .tab-close {
+    width: 14px; height: 14px; border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; color: rgba(0,0,0,0.25); flex-shrink: 0;
+    margin-left: 2px; transition: background 0.1s, color 0.1s;
+  }
+  .groupy-tab .tab-close:hover { background: rgba(220,50,50,0.15); color: rgba(200,40,40,0.8); }
+  .groupy-tab-add {
+    height: 20px; width: 20px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px; color: rgba(0,0,0,0.25);
+    cursor: pointer; flex-shrink: 0;
+    -webkit-app-region: no-drag;
+    border-radius: 4px; margin-bottom: 2px;
+    transition: color 0.1s, background 0.1s;
+  }
+  .groupy-tab-add:hover { color: rgba(0,0,0,0.6); background: rgba(0,0,0,0.06); }
   #title {
     font-size: 14px; font-weight: 700; color: rgba(30,30,60,0.85);
     cursor: text; user-select: none;
@@ -180,10 +225,14 @@
   #collapse-btn:hover { background: rgba(0,0,0,0.06); color: rgba(40,40,70,0.6); }
 
   #titlebar-grid {
-    display: flex; align-items: center; gap: 3px;
-    height: 22px;
+    display: flex; align-items: flex-end; gap: 2px;
+    height: 100%; flex: 1;
     -webkit-app-region: no-drag;
+    overflow-x: auto; overflow-y: hidden;
   }
+  #titlebar-grid::-webkit-scrollbar { display: none; }
+  /* grid-selector をタブの後ろ (右側) に配置 */
+  #titlebar-grid .grid-selector { margin-left: auto; display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
   #titlebar-grid .grid-opt {
     -webkit-app-region: no-drag;
     padding: 4px 9px; font-size: 11px; min-width: 26px;
@@ -1601,7 +1650,54 @@ function render() {
     } catch {}
   })();
 
+  // ── Groupy タブバー (row2) ──
   if (_titlebarGrid) {
+    // PTY ターミナルタブ
+    for (const [slot, data] of Object.entries(gridSlots)) {
+      const tab = document.createElement('div');
+      const isActive = frontmostWindowNumber === 0 && Number(slot) === 0;
+      tab.className = 'groupy-tab' + (isActive ? ' active' : '');
+      tab.innerHTML = `<span class="tab-icon term">T</span>`
+        + `<span class="tab-title">${data.title || `Terminal ${Number(slot)+1}`}</span>`
+        + `<span class="tab-close" data-slot="${slot}">×</span>`;
+      tab.querySelector('.tab-close').addEventListener('click', e => {
+        e.stopPropagation();
+        ipcRenderer.invoke('remove-grid-terminal', { slot: Number(slot) });
+      });
+      _titlebarGrid.appendChild(tab);
+    }
+    // 外部スナップ済みタブ
+    for (const [wn, info] of snappedExternals) {
+      const isActive = wn === frontmostWindowNumber;
+      const tab = document.createElement('div');
+      tab.className = 'groupy-tab' + (isActive ? ' active' : '');
+      const isFinder = (info.app||'').toLowerCase().includes('finder');
+      const iconClass = isFinder ? 'finder' : 'app';
+      const iconLabel = isFinder ? 'F' : (info.app||'A').charAt(0).toUpperCase();
+      const shortTitle = (info.title || info.app || 'Window').slice(0, 22);
+      tab.innerHTML = `<span class="tab-icon ${iconClass}">${iconLabel}</span>`
+        + `<span class="tab-title" title="${info.title||''}">${shortTitle}</span>`
+        + `<span class="tab-close" data-wn="${wn}">×</span>`;
+      tab.addEventListener('click', e => {
+        if (e.target.closest('.tab-close')) return;
+        frontmostWindowNumber = wn;
+        render();
+        ipcRenderer.invoke('raise-snapped', { windowNumber: wn });
+      });
+      tab.querySelector('.tab-close').addEventListener('click', e => {
+        e.stopPropagation();
+        ipcRenderer.invoke('unsnap-external', { windowNumber: wn });
+      });
+      _titlebarGrid.appendChild(tab);
+    }
+    // + ボタン (新しい PTY ターミナル)
+    const addTabBtn = document.createElement('div');
+    addTabBtn.className = 'groupy-tab-add';
+    addTabBtn.title = '新しいターミナルを追加';
+    addTabBtn.textContent = '+';
+    addTabBtn.addEventListener('click', () => ipcRenderer.invoke('add-grid-terminal'));
+    _titlebarGrid.appendChild(addTabBtn);
+    // コントロールは row1 の右側ボタン群に移動済み (コンパクト)
     _titlebarGrid.appendChild(selector);
   } else {
     gridTitle.appendChild(selector);
