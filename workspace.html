@@ -24,7 +24,6 @@
     overflow: visible;   /* ドロワーが下にはみ出るため */
     position: relative;
     background: #ffffff;
-    border-bottom: 1px solid rgba(0,0,0,0.1);
     z-index: 100;
   }
   /* サイドバーリスト・コンソール・ステータスは通常は非表示 */
@@ -364,7 +363,42 @@
     border-radius: 8px; padding: 5px;
     box-shadow: 0 4px 20px rgba(0,0,0,0.18);
     display: grid; grid-template-columns: repeat(2, 1fr); gap: 2px;
+    min-width: 160px;
   }
+  .grid-size-custom-row {
+    grid-column: 1 / -1;
+    display: flex; flex-direction: column; gap: 5px;
+    padding: 6px 4px 3px;
+    border-top: 1px solid rgba(0,0,0,0.07);
+    margin-top: 2px;
+  }
+  .grid-size-custom-inputs {
+    display: flex; align-items: center; gap: 4px;
+  }
+  .grid-size-custom-row input {
+    width: 38px; text-align: center;
+    font-size: 11px; font-family: 'SF Mono','Menlo',monospace;
+    border: 1px solid rgba(0,0,0,0.2); border-radius: 4px;
+    padding: 3px 4px; outline: none;
+    color: rgba(0,0,0,0.75);
+  }
+  .grid-size-custom-row input:focus { border-color: rgba(60,120,230,0.6); }
+  .grid-size-custom-row .sep { font-size: 11px; color: rgba(0,0,0,0.4); }
+  .grid-size-custom-btn {
+    flex: 1; font-size: 10px; font-weight: 600;
+    border: none; border-radius: 4px; padding: 3px 6px;
+    background: rgba(60,120,230,0.12); color: rgba(40,90,200,0.85);
+    cursor: pointer;
+  }
+  .grid-size-custom-btn:hover { background: rgba(60,120,230,0.22); }
+  /* カスタムプレビュー: SVG グリッドをスクロール可能なエリアに表示 */
+  .grid-size-custom-preview {
+    width: 100%; overflow-x: auto; overflow-y: hidden;
+    display: flex; align-items: center; justify-content: center;
+    padding: 3px 0;
+    color: rgba(0,0,0,0.5);
+  }
+  .grid-size-custom-preview svg { flex-shrink: 0; }
   .grid-size-item {
     display: flex; flex-direction: column; align-items: center; gap: 2px;
     padding: 5px 7px; border: none; background: transparent;
@@ -429,6 +463,7 @@
   .badge-term { background: rgba(40,120,210,0.12); color: rgba(20,90,180,0.85); }
   .badge-finder { background: rgba(255,170,40,0.15); color: rgba(200,120,0,0.9); }
   .badge-tin { background: rgba(130,70,220,0.14); color: rgba(100,50,180,0.9); }
+  .badge-app { background: rgba(0,145,80,0.11); color: rgba(0,115,60,0.9); }
 
   /* ── Segmented Tabs (AVAILABLE) — v1.3.4 B 案 ── */
   .avail-tabs {
@@ -467,6 +502,8 @@
   .avail-tab.finder.active .tab-count { background: rgba(200,120,0,0.15); color: rgba(200,120,0,0.95); }
   .avail-tab.tin.active { color: rgba(100,50,180,0.95); border-bottom-color: rgba(100,50,180,0.85); }
   .avail-tab.tin.active .tab-count { background: rgba(100,50,180,0.14); color: rgba(100,50,180,0.95); }
+  .avail-tab.apps.active { color: rgba(0,145,80,0.95); border-bottom-color: rgba(0,145,80,0.85); }
+  .avail-tab.apps.active .tab-count { background: rgba(0,145,80,0.12); color: rgba(0,145,80,0.95); }
   .avail-tab .tab-ai {
     font-size: 8px; font-weight: 700;
     padding: 1px 4px; border-radius: 3px;
@@ -882,7 +919,7 @@ let snappedByOther = {};
 let gridSlots = {};
 let gridCols = 2, gridRows = 2;
 // B案: AVAILABLE タブ切替 state
-let activeAvailTab = 'term'; // 'term' | 'finder' | 'tin'
+let activeAvailTab = 'term'; // 'term' | 'finder' | 'apps' | 'tin'
 let availSearchText = '';
 // input 要素を render 跨ぎで保持 (focus / 入力値維持)
 let _availSearchInput = null;
@@ -1260,10 +1297,11 @@ async function openSlotPicker(anchorBtn, w) {
   picker.appendChild(grid);
   document.body.appendChild(picker);
 
-  // viewport 内に必ず収める (上部アイテム時も menu bar / 端クリップ回避)
+  // viewport 内に必ず収める (ヘッダー68px + margin でクリップ回避)
   const r = anchorBtn.getBoundingClientRect();
   const pw = picker.offsetWidth, ph = picker.offsetHeight;
-  const margin = 12;
+  const margin = 8;
+  const topMin = 68 + margin; // ヘッダー(68px)の下に必ず収める
   // 横: 左側優先、入らなければ右、それでもダメなら画面端に貼る
   let left = r.left - pw - 10;
   if (left < margin) left = r.right + 10;
@@ -1271,13 +1309,13 @@ async function openSlotPicker(anchorBtn, w) {
   if (left < margin) left = margin;
   // 縦: anchor 中央に合わせる → 上下にはみ出たら anchor の下/上へフォールバック
   let top = r.top + r.height / 2 - ph / 2;
-  if (top < margin) {
+  if (top < topMin) {
     top = r.bottom + 6;  // anchor の下に置く
-    if (top + ph + margin > window.innerHeight) top = margin;
+    if (top + ph + margin > window.innerHeight) top = topMin;
   }
   if (top + ph + margin > window.innerHeight) {
     top = r.top - ph - 6;  // anchor の上に置く
-    if (top < margin) top = Math.max(margin, window.innerHeight - ph - margin);
+    if (top < topMin) top = Math.max(topMin, window.innerHeight - ph - margin);
   }
   picker.style.left = `${left}px`; picker.style.top = `${top}px`;
   requestAnimationFrame(() => { picker.style.opacity = '1'; picker.style.transform = 'scale(1)'; });
@@ -1355,10 +1393,76 @@ function openGridSizePopup(anchorEl) {
     });
     popup.appendChild(item);
   }
+  // カスタムサイズ入力行
+  const customRow = document.createElement('div');
+  customRow.className = 'grid-size-custom-row';
+  const colInput = document.createElement('input');
+  colInput.type = 'number'; colInput.min = '1'; colInput.max = '20';
+  colInput.value = gridCols; colInput.placeholder = 'C';
+  colInput.title = '列数 (1〜20)';
+  const sep = document.createElement('span');
+  sep.textContent = '×';
+  const rowInput = document.createElement('input');
+  rowInput.type = 'number'; rowInput.min = '1'; rowInput.max = '20';
+  rowInput.value = gridRows; rowInput.placeholder = 'R';
+  rowInput.title = '行数 (1〜20)';
+  const applyBtn = document.createElement('button');
+  applyBtn.className = 'grid-size-custom-btn';
+  applyBtn.textContent = 'OK';
+  const applyCustom = (ev) => {
+    ev?.stopPropagation?.();
+    const c = Math.max(1, Math.min(20, parseInt(colInput.value, 10) || 1));
+    const r = Math.max(1, Math.min(20, parseInt(rowInput.value, 10) || 1));
+    setGridSize(c, r);
+    popup.remove();
+    document.removeEventListener('click', closePopup);
+  };
+  applyBtn.addEventListener('click', applyCustom);
+  // Enter で確定
+  [colInput, rowInput].forEach(inp => {
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') applyCustom();
+      e.stopPropagation();
+    });
+    inp.addEventListener('click', (e) => e.stopPropagation());
+  });
+  customRow.appendChild(colInput);
+  customRow.appendChild(sep);
+  customRow.appendChild(rowInput);
+  customRow.appendChild(applyBtn);
+  popup.appendChild(customRow);
+
+  // ライブプレビュー
+  const previewDiv = document.createElement('div');
+  previewDiv.className = 'grid-size-custom-preview';
+  const updatePreview = () => {
+    const c = Math.max(1, Math.min(20, parseInt(colInput.value, 10) || 1));
+    const r = Math.max(1, Math.min(20, parseInt(rowInput.value, 10) || 1));
+    const W = 120, H = 80, gap = 2;
+    const cw = (W - gap * (c - 1)) / c;
+    const rh = (H - gap * (r - 1)) / r;
+    let rects = '';
+    for (let ci = 0; ci < c; ci++) {
+      for (let ri = 0; ri < r; ri++) {
+        const x = (ci * (cw + gap)).toFixed(1);
+        const y = (ri * (rh + gap)).toFixed(1);
+        rects += `<rect x="${x}" y="${y}" width="${cw.toFixed(1)}" height="${rh.toFixed(1)}" rx="2"/>`;
+      }
+    }
+    previewDiv.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="rgba(60,120,230,0.25)" stroke="rgba(60,120,230,0.6)" stroke-width="0.5">${rects}</svg>`;
+  };
+  [colInput, rowInput].forEach(inp => inp.addEventListener('input', updatePreview));
+  updatePreview();
+  popup.appendChild(previewDiv);
+
   const rect = anchorEl.getBoundingClientRect();
+  // 右端がはみ出ないよう調整
   popup.style.top = (rect.bottom + 2) + 'px';
   popup.style.left = rect.left + 'px';
   document.body.appendChild(popup);
+  // ポップアップ表示後に cols 入力にフォーカス
+  setTimeout(() => { colInput.select(); }, 30);
+
   const closePopup = (ev) => {
     if (!popup.contains(ev.target) && ev.target !== anchorEl) {
       popup.remove();
@@ -1376,17 +1480,25 @@ const FINDER_APPS = new Set(['Finder', 'ファインダー']);
 function isFinderApp(appName) {
   return !!appName && FINDER_APPS.has(appName);
 }
+const TERMINAL_APPS = new Set(['Terminal', 'iTerm2', 'iTerm', 'Alacritty', 'Hyper', 'WezTerm', 'Kitty', 'ターミナル', 'Warp']);
+function isTerminalApp(appName) {
+  return !!appName && TERMINAL_APPS.has(appName);
+}
 function isTiNApp(appName) {
   return appName === 'TiN';
 }
 function appBadgeHtml(appName) {
   if (isTiNApp(appName)) return '<span class="card-badge badge-tin">TiN</span>';
   if (isFinderApp(appName)) return '<span class="card-badge badge-finder">F</span>';
-  return '<span class="card-badge badge-term">T</span>';
+  if (isTerminalApp(appName)) return '<span class="card-badge badge-term">T</span>';
+  const label = (appName || '?').charAt(0).toUpperCase();
+  return `<span class="card-badge badge-app">${label}</span>`;
 }
 // GRID 内の snapped バッジ: workspace 固有色を使用
 function snappedBadgeHtml(appName) {
-  const label = isFinderApp(appName) ? 'F' : 'T';
+  const isF = isFinderApp(appName);
+  const isT = isTerminalApp(appName);
+  const label = isF ? 'F' : isT ? 'T' : (appName || '?').charAt(0).toUpperCase();
   if (wsColor) {
     return `<span class="card-badge" style="background:${wsColor.bg};color:${wsColor.fg}">${label}</span>`;
   }
@@ -1402,7 +1514,7 @@ function renderAvailRow(w, type) {
   // icon
   const icon = document.createElement('div');
   icon.className = 'row-icon';
-  icon.textContent = type === 'term' ? 'T' : type === 'finder' ? 'F' : '\u25C6';
+  icon.textContent = type === 'term' ? 'T' : type === 'finder' ? 'F' : type === 'apps' ? (w.app || '?').charAt(0).toUpperCase() : '\u25C6';
   row.appendChild(icon);
 
   // title / subtitle 分割
@@ -1504,11 +1616,12 @@ function filterAvailByQ(items, q) {
   );
 }
 
-function populateAvailList(container, terminal, finder, tin) {
+function populateAvailList(container, terminal, finder, apps, tin) {
   container.innerHTML = '';
   let items, type;
   if (activeAvailTab === 'term') { items = terminal; type = 'term'; }
   else if (activeAvailTab === 'finder') { items = finder; type = 'finder'; }
+  else if (activeAvailTab === 'apps') { items = apps; type = 'apps'; }
   else { items = tin; type = 'tin'; }
   const filtered = filterAvailByQ(items, availSearchText);
   if (filtered.length === 0) {
@@ -1527,8 +1640,9 @@ function updateAvailList() {
   const list = document.querySelector('[data-avail-list="1"]');
   if (!list) return;
   const available = externalWindows.filter(w => !snappedExternals.has(w.windowNumber));
-  const terminal = available.filter(w => !isFinderApp(w.app) && !isTiNApp(w.app));
+  const terminal = available.filter(w => isTerminalApp(w.app));
   const finder = available.filter(w => isFinderApp(w.app));
+  const apps = available.filter(w => !isTerminalApp(w.app) && !isFinderApp(w.app) && !isTiNApp(w.app));
   const tin = available.filter(w =>
     isTiNApp(w.app) && !/ Grid$/.test(w.title) && !/\[\d+\]$/.test(w.title)
   );
@@ -1541,7 +1655,7 @@ function updateAvailList() {
       _self: true,
     });
   }
-  populateAvailList(list, terminal, finder, tin);
+  populateAvailList(list, terminal, finder, apps, tin);
 }
 
 // 楽観的更新: main への invoke と並行で renderer の slot state を即座に反映
@@ -1721,7 +1835,7 @@ function render() {
       const status = await ipcRenderer.invoke('get-yabai-sa-status');
       if (status.saActive) {
         saBtn.textContent = '✓';
-        saBtn.title = 'yabai SA 有効 — Space 移動が使用可能';
+        saBtn.title = 'yabai 起動中 — Space 移動は SA ロード状況に依存します（sudo yabai --load-sa）';
         saBtn.style.color = '#2a9d2a';
         saBtn.style.opacity = '0.7';
       } else {
@@ -1762,9 +1876,10 @@ function render() {
       const isActive = wn === frontmostWindowNumber;
       const tab = document.createElement('div');
       tab.className = 'groupy-tab' + (isActive ? ' active' : '');
-      const isFinder = (info.app||'').toLowerCase().includes('finder');
-      const iconClass = isFinder ? 'finder' : 'app';
-      const iconLabel = isFinder ? 'F' : (info.app||'A').charAt(0).toUpperCase();
+      const isFinder = isFinderApp(info.app||'');
+      const isTerm = isTerminalApp(info.app||'');
+      const iconClass = isFinder ? 'finder' : isTerm ? 'term' : 'app';
+      const iconLabel = isFinder ? 'F' : isTerm ? 'T' : (info.app||'A').charAt(0).toUpperCase();
       const shortTitle = (info.title || info.app || 'Window').slice(0, 22);
       tab.innerHTML = `<span class="tab-icon ${iconClass}">${iconLabel}</span>`
         + `<span class="tab-title" title="${info.title||''}">${shortTitle}</span>`
@@ -2015,8 +2130,9 @@ function render() {
   const available = externalWindows.filter(w => !snappedExternals.has(w.windowNumber));
   _availSection.innerHTML = '';
   if (available.length > 0) {
-    const availableTerminal = available.filter(w => !isFinderApp(w.app) && !isTiNApp(w.app));
+    const availableTerminal = available.filter(w => isTerminalApp(w.app));
     const availableFinder = available.filter(w => isFinderApp(w.app));
+    const availableApps = available.filter(w => !isTerminalApp(w.app) && !isFinderApp(w.app) && !isTiNApp(w.app));
     // TiN Grid overlay と slot terminal は除外、sidebar のみ
     const availableTiN = available.filter(w =>
       isTiNApp(w.app) && !/ Grid$/.test(w.title) && !/\[\d+\]$/.test(w.title)
@@ -2065,6 +2181,7 @@ function render() {
     };
     tabsBar.appendChild(makeTab('term', 'Terminal', availableTerminal.length, 'terminal'));
     tabsBar.appendChild(makeTab('finder', 'Finder', availableFinder.length, 'finder'));
+    tabsBar.appendChild(makeTab('apps', 'Apps', availableApps.length, null));
     tabsBar.appendChild(makeTab('tin', 'TiN', availableTiN.length, null));
     _availSection.appendChild(tabsBar);
 
@@ -2091,7 +2208,9 @@ function render() {
       ? 'Filter terminals...'
       : activeAvailTab === 'finder'
         ? 'Filter finder windows...'
-        : 'Filter workspaces...';
+        : activeAvailTab === 'apps'
+          ? 'Filter apps...'
+          : 'Filter workspaces...';
     if (_availSearchInput.value !== availSearchText) _availSearchInput.value = availSearchText;
     searchWrap.appendChild(_availSearchInput);
     _availSection.appendChild(searchWrap);
@@ -2101,7 +2220,7 @@ function render() {
     list.className = 'avail-list';
     list.setAttribute('data-avail-list', '1');
     _availSection.appendChild(list);
-    populateAvailList(list, availableTerminal, availableFinder, availableTiN);
+    populateAvailList(list, availableTerminal, availableFinder, availableApps, availableTiN);
   }
 
   // ━━ SIDEBAR TERMINALS section (xterm containers are preserved across renders) ━━
@@ -2198,10 +2317,6 @@ ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snapped
   gridSlots = gridInfo || {};
   externalWindows = windows;
   frontmostWindowNumber = frontmostWn || 0;
-  gpOccupiedSlots = new Set([
-    ...Object.keys(gridSlots).map(Number),
-    ...Object.values(snappedSlots || {}).map(Number),
-  ]);
   gpRender(gridCols, gridRows);
 
   // snappedList が届いた場合は authoritative sync (main.js の状態を正とする)
@@ -2390,8 +2505,6 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
     }
   }
 
-  // main の poll から snapped/grid 情報を受け取って occupied slots を更新
-  let gpOccupiedSlots = new Set();
 
   function gpRenderEditLines() {
     document.querySelectorAll('.gp-col-line, .gp-row-line').forEach(el => el.remove());
@@ -2463,7 +2576,12 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
   ipcRenderer.on('update-grid-panel', (_e, { cols, rows, colRatios: cr, rowRatios: rr }) => {
     gpColRatios = cr || null;
     gpRowRatios = rr || null;
+    if (typeof cols === 'number' && typeof rows === 'number') {
+      gridCols = cols;
+      gridRows = rows;
+    }
     gpRender(cols, rows);
+    scheduleRender();
   });
 
   ipcRenderer.on('enter-grid-edit-mode', () => {
