@@ -283,6 +283,28 @@
   .grid-size-item svg { opacity: 0.45; transition: opacity 0.1s; }
   .grid-size-item:hover svg, .grid-size-item.active svg { opacity: 1; }
 
+  /* ── Space picker popup ── */
+  .space-picker-popup {
+    position: fixed; z-index: 9999;
+    background: #fff; border: 1px solid rgba(0,0,0,0.12);
+    border-radius: 8px; padding: 4px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.18);
+    min-width: 120px; max-height: 260px; overflow-y: auto;
+  }
+  .space-picker-item {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 9px; border: none; background: transparent;
+    border-radius: 5px; cursor: pointer; width: 100%;
+    font-size: 11px; font-family: 'SF Mono','Menlo',monospace;
+    color: rgba(0,0,0,0.55); transition: all 0.1s; text-align: left;
+    white-space: nowrap;
+  }
+  .space-picker-item:hover { background: rgba(0,0,0,0.06); color: rgba(0,0,0,0.8); }
+  .space-picker-item.current { font-weight: 700; color: rgba(0,0,0,0.75); }
+  .space-picker-item .sp-num {
+    font-size: 9px; opacity: 0.45; min-width: 18px;
+  }
+
   /* ── Terminal card (sidebar embedded) ── */
   .term-card {
     background: rgba(0,0,0,0.025); border: 1px solid rgba(0,0,0,0.07);
@@ -1497,6 +1519,88 @@ function render() {
   nextSpaceBtn.title = '次のデスクトップに移動 (TiN + snap 済みウィンドウをまとめて)';
   nextSpaceBtn.addEventListener('click', () => ipcRenderer.invoke('push-to-space', { direction: +1 }));
   selector.appendChild(nextSpaceBtn);
+
+  // ── Space ピッカーボタン (↗) ──
+  const spacePickerBtn = document.createElement('button');
+  spacePickerBtn.className = 'grid-opt';
+  spacePickerBtn.textContent = '↗';
+  spacePickerBtn.title = 'デスクトップを選んで移動…';
+  let _spacePickerPopup = null;
+  function closeSpacePicker() {
+    if (_spacePickerPopup) { _spacePickerPopup.remove(); _spacePickerPopup = null; }
+    document.removeEventListener('mousedown', _spacePickerOutside);
+  }
+  function _spacePickerOutside(e) {
+    if (_spacePickerPopup && !_spacePickerPopup.contains(e.target) && e.target !== spacePickerBtn) closeSpacePicker();
+  }
+  spacePickerBtn.addEventListener('click', async (e) => {
+    if (_spacePickerPopup) { closeSpacePicker(); return; }
+    const spaces = await ipcRenderer.invoke('get-spaces');
+    if (!spaces || !spaces.length) { spacePickerBtn.title = 'Spaceリスト取得失敗'; return; }
+
+    _spacePickerPopup = document.createElement('div');
+    _spacePickerPopup.className = 'space-picker-popup';
+    spaces.forEach(sp => {
+      const item = document.createElement('button');
+      item.className = 'space-picker-item' + (sp.isCurrent ? ' current' : '');
+      const num = document.createElement('span');
+      num.className = 'sp-num';
+      num.textContent = sp.index;
+      item.appendChild(num);
+      item.appendChild(document.createTextNode(sp.label || `Desktop ${sp.index}`));
+      if (sp.isCurrent) item.appendChild(Object.assign(document.createElement('span'), { textContent: ' ✓', style: 'opacity:.4;font-size:9px' }));
+      item.addEventListener('click', async () => {
+        closeSpacePicker();
+        spacePickerBtn.disabled = true;
+        await ipcRenderer.invoke('push-to-space-to', { targetSpaceId: sp.id, targetIndex: sp.index });
+        spacePickerBtn.disabled = false;
+      });
+      _spacePickerPopup.appendChild(item);
+    });
+
+    // ボタン直下に配置
+    const rect = spacePickerBtn.getBoundingClientRect();
+    _spacePickerPopup.style.top = (rect.bottom + 4) + 'px';
+    _spacePickerPopup.style.right = (window.innerWidth - rect.right) + 'px';
+    document.body.appendChild(_spacePickerPopup);
+    setTimeout(() => document.addEventListener('mousedown', _spacePickerOutside), 0);
+  });
+  selector.appendChild(spacePickerBtn);
+
+  // ── yabai SA 状態インジケーター ──
+  const saBtn = document.createElement('button');
+  saBtn.className = 'grid-opt';
+  saBtn.textContent = '⚙';
+  saBtn.title = 'yabai SA 状態確認中...';
+  saBtn.style.opacity = '0.3';
+  selector.appendChild(saBtn);
+
+  // SA 状態を非同期で確認してインジケーターを更新
+  (async () => {
+    try {
+      const status = await ipcRenderer.invoke('get-yabai-sa-status');
+      if (status.saActive) {
+        saBtn.textContent = '✓';
+        saBtn.title = 'yabai SA 有効 — Space 移動が使用可能';
+        saBtn.style.color = '#2a9d2a';
+        saBtn.style.opacity = '0.7';
+      } else {
+        saBtn.textContent = '!';
+        saBtn.style.color = '#c0392b';
+        saBtn.style.opacity = '0.8';
+        saBtn.title = status.running
+          ? 'yabai SA 未ロード — クリックしてセットアップ手順を確認'
+          : 'yabai 未検出 — クリックしてセットアップ手順を確認';
+        saBtn.addEventListener('click', () => {
+          const msg = status.running
+            ? `yabai は動作していますが Scripting Addition (SA) が未ロードです。\n\nターミナルで以下を実行してください:\n\n  sudo yabai --load-sa\n\n再起動後も有効にするには yabai の設定ファイル (~/.config/yabai/yabairc) に\n以下を追加し、LaunchAgent として登録してください:\n\n  yabai -m signal --add event=dock_did_restart action="sudo yabai --load-sa"`
+            : `yabai がインストールされていません。\n\nHomebrew でインストール:\n  brew install koekeishiya/formulae/yabai\n\nインストール後に yabai を起動して SA をロード:\n  yabai --start-service\n  sudo yabai --load-sa`;
+          require('electron').ipcRenderer.invoke('show-message', { message: msg });
+        });
+      }
+    } catch {}
+  })();
+
   if (_titlebarGrid) {
     _titlebarGrid.appendChild(selector);
   } else {
@@ -1960,10 +2064,15 @@ let gpEditMode = false; // グリッドJSブロックとこのブロックで共
 
   window.addEventListener('mousemove', (e) => {
     if (gpEditMode) { setClickthrough(false); return; }
-    const rect = gridPanel.getBoundingClientRect();
-    const onGrid = e.clientX >= rect.left && e.clientX <= rect.right
-                && e.clientY >= rect.top  && e.clientY <= rect.bottom;
-    setClickthrough(onGrid);
+    const gridRect = gridPanel.getBoundingClientRect();
+    const sidebarEl = document.getElementById('sidebar');
+    const sidebarRect = sidebarEl ? sidebarEl.getBoundingClientRect() : null;
+    const onGrid = e.clientX >= gridRect.left && e.clientX <= gridRect.right
+                && e.clientY >= gridRect.top  && e.clientY <= gridRect.bottom;
+    const onSidebar = sidebarRect
+                   && e.clientX >= sidebarRect.left && e.clientX <= sidebarRect.right
+                   && e.clientY >= sidebarRect.top  && e.clientY <= sidebarRect.bottom;
+    setClickthrough(onGrid && !onSidebar);
   });
 
   window.addEventListener('mouseleave', () => setClickthrough(false));

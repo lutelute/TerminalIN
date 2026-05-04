@@ -38,22 +38,89 @@ async function yabaiIsRunning() {
   } catch { return false; }
 }
 
+// yabai scripting addition (SA) の有効状態を確認
+// SA なしだと window --space 操作が偽成功するため、実際に移動するか検証する
+let _yabaiSACache = null; // { active: bool, checkedAt: number }
+async function checkYabaiSA() {
+  const now = Date.now();
+  if (_yabaiSACache && now - _yabaiSACache.checkedAt < 30000) return _yabaiSACache.active;
+
+  const p = getYabaiPath();
+  if (!p) { _yabaiSACache = { active: false, checkedAt: now }; return false; }
+  try {
+    // SA 確認: query --spaces は SA なしだと失敗する
+    const { stdout } = await execAsync(`${p} -m query --spaces`, { timeout: 2000 });
+    const spaces = JSON.parse(stdout);
+    const active = Array.isArray(spaces) && spaces.length > 0;
+    _yabaiSACache = { active, checkedAt: now };
+    console.log(`[tin] yabai SA check: ${active ? 'ACTIVE' : 'INACTIVE'}`);
+    return active;
+  } catch {
+    _yabaiSACache = { active: false, checkedAt: now };
+    return false;
+  }
+}
+
+ipcMain.handle('get-yabai-sa-status', async () => {
+  const p = getYabaiPath();
+  const running = p ? await yabaiIsRunning() : false;
+  const saActive = running ? await checkYabaiSA() : false;
+  return { yabaiPath: p || null, running, saActive };
+});
+
+ipcMain.handle('show-message', (_event, { message }) => {
+  dialog.showMessageBox({ type: 'info', message, buttons: ['OK'] });
+});
+
 // yabai で windowNumbers を next/prev Space に移動。
 // 成功した wn のリストを返す。
-async function moveWindowsViaYabai(windowNumbers, direction) {
+// yabai で Space 移動を試みる。
+// yabai は SA 未ロード時に exit 0 を返しても実際には移動しない場合があるため、
+// getSpaceForWindows で移動を検証し、失敗した wn を返り値から除外する。
+async function moveWindowsViaYabai(windowNumbers, direction, targetSpaceId) {
   const p = getYabaiPath();
   if (!p || !windowNumbers.length) return [];
-  const spaceArg = direction > 0 ? 'next' : 'prev';
-  const succeeded = [];
+
+  // まず絶対 Space インデックスを取得（ラップアラウンドと検証に使用）
+  let targetYabaiIndex = null;
+  try {
+    const { stdout } = await execAsync(`${p} -m query --spaces`, { timeout: 2000 });
+    const spaces = JSON.parse(stdout);
+    const currentIdx = spaces.findIndex(s => s['has-focus'] || s.focused || s['is-visible']);
+    if (currentIdx >= 0) {
+      const targetIdx = ((currentIdx + direction) + spaces.length) % spaces.length;
+      targetYabaiIndex = spaces[targetIdx].index;
+    }
+  } catch {}
+
+  const spaceArg = targetYabaiIndex != null
+    ? String(targetYabaiIndex)                       // 絶対インデックス（ラップアラウンド対応）
+    : (direction > 0 ? 'next' : 'prev');
+
+  const attempted = [];
   await Promise.all(windowNumbers.map(async wn => {
     try {
       await execAsync(`${p} -m window ${wn} --space ${spaceArg}`, { timeout: 3000 });
-      succeeded.push(wn);
+      attempted.push(wn);
     } catch (e) {
       console.log(`[tin] yabai wn=${wn} --space ${spaceArg} failed: ${e.stderr?.trim() || e.message}`);
     }
   }));
-  return succeeded;
+
+  if (attempted.length === 0) return [];
+
+  // SA 未ロード時の偽陽性を排除: getSpaceForWindows で実際の移動を検証
+  if (axHelper && axHelper.getSpaceForWindows && targetSpaceId) {
+    const actualSpaces = axHelper.getSpaceForWindows(attempted);
+    const verified = actualSpaces
+      .filter(s => Number(s.spaceId) === Number(targetSpaceId))
+      .map(s => s.wn);
+    const fake = attempted.filter(wn => !verified.includes(wn));
+    if (fake.length > 0)
+      console.log(`[tin] yabai偽陽性検出: wn=[${fake}] は実際には移動していない → CGS fallback`);
+    return verified;
+  }
+  return attempted;
 }
 
 // 非同期 osascript 実行。execSync だと main process が完全にブロックされ
@@ -325,13 +392,23 @@ async function restoreSnappedWindows(ws, persistedList) {
     if (liveWindows.length > 0) break;
     await new Promise(r => setTimeout(r, 400));
   }
+  // 別 Space にいるウィンドウも復元対象にする (push-to-space 後の再起動で消えるバグ対策)
+  let liveAllSpaces = liveWindows;
+  if (axHelper && axHelper.listWindowsAllSpaces) {
+    try {
+      const allSpaces = axHelper.listWindowsAllSpaces();
+      if (allSpaces.length > liveWindows.length) liveAllSpaces = allSpaces;
+    } catch {}
+  }
 
   const restored = [];
   const missing = [];
   const moveCmds = [];
 
   for (const p of persistedList) {
-    const live = matchPersistedToLive(p, liveWindows);
+    // まず現 Space で探し、なければ全 Space で探す (_spaceAbsent として復元)
+    const live = matchPersistedToLive(p, liveWindows) || matchPersistedToLive(p, liveAllSpaces);
+    const isAbsent = live && !liveWindows.some(w => w.windowNumber === live.windowNumber);
     if (!live) {
       missing.push({ app: p.app, title: p.title, slot: p.slot });
       continue;
@@ -365,6 +442,7 @@ async function restoreSnappedWindows(ws, persistedList) {
       windowNumber: live.windowNumber, windowIndex: live.windowIndex || 0, slot,
       origX: p.origX, origY: p.origY, origW: p.origW, origH: p.origH,
       snappedAt: p.snappedAt || Date.now(),
+      _spaceAbsent: isAbsent || false,
     });
     ws._lastKnownSnappedWns.add(live.windowNumber);
     snappedIndexAdd(live.windowNumber, ws);
@@ -535,7 +613,7 @@ function fireAndForgetMove(windows, positionOnly = false) {
 // disappear from CGWindowList even though they are still alive in AX.
 // We set `stabilizingUntil` on these events to suppress release logic
 // for a while afterward.
-let stabilizingUntil = 0;
+let stabilizingUntil = 0; // グローバル fallback (sleep/display 系イベント用)
 const STABILIZE_MS = 60000;
 let retileAfterStabilize = null;
 let recoveryTimers = [];
@@ -580,16 +658,23 @@ async function recoverSnappedWindows() {
   }
 }
 
-function beginStabilize(reason) {
-  stabilizingUntil = Date.now() + STABILIZE_MS;
-  for (const [, ws] of workspaces) {
+// ws を指定すると per-workspace stabilize（push-to-space, space-follow 用）
+// ws 省略でグローバル stabilize（sleep/display 系）
+function beginStabilize(reason, ws) {
+  const until = Date.now() + STABILIZE_MS;
+  if (ws) {
+    ws._stabilizingUntil = until;
     for (const [, info] of ws.snappedExternals) info._missCount = 0;
+  } else {
+    stabilizingUntil = until;
+    for (const [, w] of workspaces) {
+      w._stabilizingUntil = until;
+      for (const [, info] of w.snappedExternals) info._missCount = 0;
+    }
   }
   console.log(`[tin] stabilizing for ${STABILIZE_MS}ms (reason: ${reason})`);
-  // 既存タイマー全部クリア
   recoveryTimers.forEach(t => clearTimeout(t));
   recoveryTimers = [];
-  // 段階的に復旧試行: 1秒, 3秒, 8秒, 20秒, 60秒
   [1000, 3000, 8000, 20000, 60000].forEach(delay => {
     const t = setTimeout(() => {
       recoverSnappedWindows().catch(e => console.warn('[tin] recovery failed:', e.message));
@@ -597,7 +682,10 @@ function beginStabilize(reason) {
     recoveryTimers.push(t);
   });
 }
-function isStabilizing() { return Date.now() < stabilizingUntil; }
+function isStabilizing(ws) {
+  const now = Date.now();
+  return now < stabilizingUntil || (ws && now < (ws._stabilizingUntil || 0));
+}
 
 // Move a workspace sidebar back onto a visible display if its bounds are
 // entirely outside every display's work area (e.g. the display it was on
@@ -1311,33 +1399,259 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
   console.log(`[tin] push-to-space dir=${direction} electronWns=[${electronWns}] snappedWns=[${snappedWns}]`);
   if (!electronWns.length) return { ok: false, reason: 'no-tin-window' };
 
-  beginStabilize('push-to-space');
+  // 目標 Space ID を CGS から事前計算（yabai 検証と moveWindowsToSpaceId に使用）
+  let targetSpaceId = null;
+  if (axHelper.getSpacesList) {
+    try {
+      const spaceList = axHelper.getSpacesList();
+      const curIdx = spaceList.findIndex(s => s.isCurrent);
+      if (curIdx >= 0) {
+        const tgtIdx = ((curIdx + direction) + spaceList.length) % spaceList.length;
+        targetSpaceId = spaceList[tgtIdx].id;
+      }
+    } catch {}
+  }
+
+  beginStabilize('push-to-space', ws);
   try {
-    // スナップ済みターミナルを yabai で先に移動 (yabai は SA 有効時のみ機能)
+    // ── 移動戦略 ──
+    // 1. yabai SA が有効: yabai で確実に移動（検証済み）
+    // 2. yabai SA 無効: sticky → TiN 移動 → Space 切り替わり後に unsticky
+    //    CGS は他プロセスのウィンドウを直接移動できないため、
+    //    sticky (全 Space 表示) にしておき TiN 移動後の自動 Space 切り替えで追従させる
+
+    // 1. yabai で移動を試みる（偽陽性を検証）
     let yabaiMoved = [];
     if (snappedWns.length > 0) {
-      yabaiMoved = await moveWindowsViaYabai(snappedWns, direction);
+      yabaiMoved = await moveWindowsViaYabai(snappedWns, direction, targetSpaceId);
       if (yabaiMoved.length > 0)
         console.log(`[tin] yabai moved=[${yabaiMoved}]`);
     }
 
-    // TiN 自身を CGS で移動
+    // 2. yabai が動かなかった分: sticky → TiN 移動 → yabai Space focus → unsticky
+    const notMovedByYabai = snappedWns.filter(wn => !yabaiMoved.includes(wn));
+    if (notMovedByYabai.length > 0 && axHelper.setWindowSticky) {
+      axHelper.setWindowSticky(notMovedByYabai, true);
+    }
+
+    // 3. TiN を移動
     const tinMoved = axHelper.moveToSpace(electronWns, direction);
     console.log(`[tin] push-to-space tinMoved=${tinMoved}`);
 
-    // yabai で動かなかった残りを sticky 方式で試みる (SIP 無効時の副作用なし)
-    const notMovedByYabai = snappedWns.filter(wn => !yabaiMoved.includes(wn));
+    // 4. 目標 Space に強制切り替えしてから unsticky
+    //    yabai -m space --focus <index> は SA 不要で動作する
+    let cgsFallbackMoved = 0;
     if (notMovedByYabai.length > 0 && axHelper.setWindowSticky) {
+      let switched = false;
+
+      // targetIndex を取得（getSpacesList の index フィールド）
+      let targetIndex = null;
+      if (targetSpaceId && axHelper.getSpacesList) {
+        try {
+          const sp = axHelper.getSpacesList().find(s => Number(s.id) === Number(targetSpaceId));
+          if (sp) targetIndex = sp.index;
+        } catch {}
+      }
+
+      // yabai -m space --focus で target Space に強制切り替え（SA 不要）
+      if (targetIndex) {
+        const p = getYabaiPath();
+        if (p) {
+          try {
+            await execAsync(`${p} -m space --focus ${targetIndex}`, { timeout: 2000 });
+            switched = true;
+            console.log(`[tin] yabai space focus ${targetIndex} OK`);
+          } catch (e) {
+            const msg = e.stderr?.trim() || e.message;
+            // "already focused" は目標 Space に既にいる = 成功扱い
+            if (msg.includes('already focused')) switched = true;
+            console.log(`[tin] yabai space focus ${targetIndex}: ${msg}`);
+          }
+        }
+      }
+
+      // macOS の自動切り替えを待つ（yabai なしのフォールバック）
+      if (!switched && targetSpaceId && axHelper.getSpacesList) {
+        for (let i = 0; i < 20; i++) {
+          await new Promise(r => setTimeout(r, 50));
+          try {
+            const cur = axHelper.getSpacesList().find(s => s.isCurrent);
+            if (cur && Number(cur.id) === Number(targetSpaceId)) { switched = true; break; }
+          } catch {}
+        }
+      }
+
+      // target Space に切り替わった状態で CGS 移動を再試行
+      // ユーザーが target Space にいるとき、CGS の Space 操作権限が変わる可能性がある
+      if (switched && targetSpaceId && axHelper.moveWindowsToSpaceId) {
+        await new Promise(r => setTimeout(r, 150)); // Space アニメーション待機
+        try {
+          const cgsRetry = axHelper.moveWindowsToSpaceId(notMovedByYabai, targetSpaceId);
+          console.log(`[tin] cgs retry on target space: ${cgsRetry}/${notMovedByYabai.length}`);
+          cgsFallbackMoved = cgsRetry;
+        } catch {}
+      }
+
+      // sticky 解除（window が target Space に移動済みならそこに留まる）
+      await new Promise(r => setTimeout(r, 50));
+      axHelper.setWindowSticky(notMovedByYabai, false);
+      if (!cgsFallbackMoved) cgsFallbackMoved = notMovedByYabai.length;
+      console.log(`[tin] sticky→unsticky: ${notMovedByYabai.length} windows, switched=${switched}`);
+    }
+
+    // 移動後、TiN を主ディスプレイ中央に再配置して retile
+    // getDisplayNearestPoint はマルチモニター環境で間違ったディスプレイを選ぶ場合があるため
+    // getPrimaryDisplay を使用する
+    if (ws.win && !ws.win.isDestroyed()) {
+      const b = ws.win.getBounds();
+      const wa = screen.getPrimaryDisplay().workArea;
+      const cx = wa.x + Math.round((wa.width - b.width) / 2);
+      const cy = wa.y + Math.round((wa.height - b.height) / 2);
+      ws.win.setBounds({ x: cx, y: cy, width: b.width, height: b.height });
+      retileAll(ws, true).catch(() => {});
+      console.log(`[tin] push-to-space centered to (${cx},${cy})`);
+    }
+
+    // _tinSpaceId を新 Space に更新して pollFn の誤検知を防ぐ
+    if (electronWns.length > 0 && axHelper.getSpaceForWindows) {
       try {
-        axHelper.setWindowSticky(notMovedByYabai, true);
-        await new Promise(r => setTimeout(r, 350));
-        axHelper.setWindowSticky(notMovedByYabai, false);
+        const spaces = axHelper.getSpaceForWindows([electronWns[0]]);
+        const sid = Number(spaces[0]?.spaceId || 0);
+        if (sid > 0) ws._tinSpaceId = sid;
       } catch {}
     }
 
-    return { ok: true, moved: tinMoved + yabaiMoved.length, yabai: yabaiMoved.length };
+    return { ok: true, moved: tinMoved + yabaiMoved.length + cgsFallbackMoved, yabai: yabaiMoved.length, cgs: cgsFallbackMoved };
   } catch (e) {
     console.log(`[tin] push-to-space error: ${e.message}`);
+    return { ok: false, error: e.message };
+  }
+});
+
+// ── Space 一覧取得 ──
+// yabai query を優先、なければ CGS native で返す
+ipcMain.handle('get-spaces', async () => {
+  const p = getYabaiPath();
+  if (p && await yabaiIsRunning()) {
+    try {
+      const { stdout } = await execAsync(`${p} -m query --spaces`, { timeout: 2000 });
+      const ys = JSON.parse(stdout);
+      return ys.map(s => ({
+        index: s.index,
+        id: s.id,
+        label: s.label || '',
+        isCurrent: !!(s['has-focus'] || s.focused || s['is-visible']),
+      }));
+    } catch {}
+  }
+  if (axHelper && axHelper.getSpacesList) {
+    try {
+      return axHelper.getSpacesList().map(s => ({
+        index: s.index,
+        id: s.id,
+        label: '',
+        isCurrent: s.isCurrent,
+      }));
+    } catch {}
+  }
+  return [];
+});
+
+// ── 特定 Space への移動 (ピッカー用) ──
+// targetSpaceId: CGS Space ID (get-spaces の id フィールド)
+// targetIndex:   yabai Space index (get-spaces の index フィールド、yabai 使用時)
+ipcMain.handle('push-to-space-to', async (event, { targetSpaceId, targetIndex }) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws || !axHelper) return { ok: false };
+
+  // TiN ウィンドウ番号取得
+  let electronWns = [];
+  if (ws.win && !ws.win.isDestroyed() && axHelper.getWindowIdFromHandle) {
+    try {
+      const handle = ws.win.getNativeWindowHandle();
+      const ptr = handle.readBigUInt64LE(0);
+      const wid = axHelper.getWindowIdFromHandle(ptr);
+      if (wid > 0) electronWns.push(wid);
+    } catch {}
+  }
+  if (!electronWns.length) return { ok: false, reason: 'no-tin-window' };
+
+  // snapped 全取得（別 Space のものも含む）
+  let snappedWns = [...ws.snappedExternals.values()]
+    .map(i => i.windowNumber).filter(wn => typeof wn === 'number' && wn > 0);
+  if (snappedWns.length === 0 && ws._lastKnownSnappedWns.size > 0 && axHelper.listWindowsAllSpaces) {
+    try {
+      const allWns = new Set(axHelper.listWindowsAllSpaces().map(w => w.windowNumber));
+      for (const wn of ws._lastKnownSnappedWns) {
+        if (allWns.has(wn)) snappedWns.push(wn);
+        else ws._lastKnownSnappedWns.delete(wn);
+      }
+    } catch {}
+  }
+
+  console.log(`[tin] push-to-space-to spaceId=${targetSpaceId} idx=${targetIndex} electronWns=[${electronWns}] snappedWns=[${snappedWns}]`);
+  beginStabilize('push-to-space-to', ws);
+  try {
+    let yabaiMoved = 0, cgsMoved = 0;
+
+    // ターミナル移動: yabai 絶対インデックス優先
+    const yabaiSucceeded = new Set();
+    if (snappedWns.length > 0) {
+      const p = getYabaiPath();
+      if (p && targetIndex && await yabaiIsRunning()) {
+        await Promise.all(snappedWns.map(async wn => {
+          try {
+            await execAsync(`${p} -m window ${wn} --space ${targetIndex}`, { timeout: 3000 });
+            yabaiSucceeded.add(wn);
+          } catch (e) {
+            console.log(`[tin] yabai wn=${wn} --space ${targetIndex} failed: ${e.stderr?.trim()}`);
+          }
+        }));
+        yabaiMoved = yabaiSucceeded.size;
+      }
+      // yabai 偽陽性を検証: 実際に targetSpaceId に移動したか確認
+      if (yabaiSucceeded.size > 0 && axHelper.getSpaceForWindows && targetSpaceId) {
+        const actualSpaces = axHelper.getSpaceForWindows([...yabaiSucceeded]);
+        for (const s of actualSpaces) {
+          if (Number(s.spaceId) !== Number(targetSpaceId)) {
+            console.log(`[tin] yabai偽陽性 wn=${s.wn}: spaceId=${s.spaceId} ≠ target=${targetSpaceId} → CGS fallback`);
+            yabaiSucceeded.delete(s.wn);
+          }
+        }
+        yabaiMoved = yabaiSucceeded.size;
+      }
+      // yabai で実際に動かなかった分は CGS で移動
+      const cgsTargets = snappedWns.filter(wn => !yabaiSucceeded.has(wn));
+      if (cgsTargets.length > 0 && axHelper.moveWindowsToSpaceId && targetSpaceId) {
+        cgsMoved = axHelper.moveWindowsToSpaceId(cgsTargets, targetSpaceId);
+        console.log(`[tin] cgs moved ${cgsMoved}/${cgsTargets.length} to spaceId=${targetSpaceId}`);
+      }
+    }
+
+    // TiN 自身を CGS で移動
+    let tinMoved = 0;
+    if (axHelper.moveWindowsToSpaceId && targetSpaceId) {
+      tinMoved = axHelper.moveWindowsToSpaceId(electronWns, targetSpaceId);
+    }
+
+    // センタリング + retile
+    if (ws.win && !ws.win.isDestroyed()) {
+      const b = ws.win.getBounds();
+      const disp = screen.getDisplayNearestPoint({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
+      const wa = disp.workArea;
+      ws.win.setBounds({ x: wa.x + Math.round((wa.width - b.width) / 2), y: wa.y + Math.round((wa.height - b.height) / 2), width: b.width, height: b.height });
+      retileAll(ws, true).catch(() => {});
+    }
+    if (electronWns.length > 0 && axHelper.getSpaceForWindows) {
+      try {
+        const spaces = axHelper.getSpaceForWindows([electronWns[0]]);
+        const sid = Number(spaces[0]?.spaceId || 0);
+        if (sid > 0) ws._tinSpaceId = sid;
+      } catch {}
+    }
+    return { ok: true, moved: tinMoved + yabaiMoved + cgsMoved };
+  } catch (e) {
+    console.log(`[tin] push-to-space-to error: ${e.message}`);
     return { ok: false, error: e.message };
   }
 });
@@ -1509,6 +1823,7 @@ function createWorkspace(name, savedState) {
     id: wsId, win, name: wsName,
     snappedExternals: new Map(),
     _lastKnownSnappedWns: new Set(), // Space 移動後も snapped wn を保持 (miss で消えない)
+    _tinSpaceId: 0, // TiN 自身の現在 Space ID (Mission Control 追従検知用)
     gridWindows: new Map(),    // slot -> { win, pty, ptyId }
     sidebarPtys: new Map(),    // ptyId -> pty (for sidebar embedded terms)
     gridOverlay: null,         // 廃止済み (統合ウィンドウ方式)
@@ -1605,13 +1920,45 @@ function createWorkspace(name, savedState) {
   const pollFn = async () => {
     if (!ws.win || ws.win.isDestroyed()) return;
     if (_dragging) return;
+
+    // TiN 自身が別 Space に移動した検知 (Mission Control / 直接 Space 移動)
+    if (axHelper && axHelper.getSpaceForWindows && axHelper.moveWindowsToSpaceId &&
+        ws.snappedExternals.size > 0 && !isStabilizing(ws)) {
+      try {
+        const handle = ws.win.getNativeWindowHandle();
+        const ptr = handle.readBigUInt64LE(0);
+        const tinWid = axHelper.getWindowIdFromHandle ? axHelper.getWindowIdFromHandle(ptr) : 0;
+        if (tinWid > 0) {
+          const spaces = axHelper.getSpaceForWindows([tinWid]);
+          const tinSpaceId = Number(spaces[0]?.spaceId || 0);
+          if (tinSpaceId > 0) {
+            if (ws._tinSpaceId > 0 && tinSpaceId !== ws._tinSpaceId) {
+              const snappedWns = [...ws.snappedExternals.values()]
+                .map(i => i.windowNumber).filter(wn => typeof wn === 'number' && wn > 0);
+              if (snappedWns.length > 0) {
+                console.log(`[tin] space-follow: TiN ${ws._tinSpaceId}→${tinSpaceId}, pulling ${snappedWns.length} windows`);
+                beginStabilize('space-follow', ws);
+                axHelper.moveWindowsToSpaceId(snappedWns, tinSpaceId);
+                const b = ws.win.getBounds();
+                const disp = screen.getDisplayNearestPoint({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
+                const wa = disp.workArea;
+                ws.win.setBounds({ x: wa.x + Math.round((wa.width - b.width) / 2), y: wa.y + Math.round((wa.height - b.height) / 2), width: b.width, height: b.height });
+                setTimeout(() => retileAll(ws, true).catch(() => {}), 300);
+              }
+            }
+            ws._tinSpaceId = tinSpaceId;
+          }
+        }
+      } catch {}
+    }
+
     const windowsAll = await listWindowsForUI();
     const windows = windowsAll.filter(w => w.app !== 'TiN');
 
     // 大量消失検知: sleep 復帰 / ディスプレイ切替の watchdog
     // windowNumber が変わっただけ (title 再マッチで救える) のケースは missing 扱いしない。
     // 連続 2 回 50%以上 missing した時だけ発動 → 1 poll の瞬間的な欠落では誤発動しない。
-    if (!isStabilizing() && ws.snappedExternals.size >= 2) {
+    if (!isStabilizing(ws) && ws.snappedExternals.size >= 2) {
       const liveSet = new Set();
       for (const w of windows) liveSet.add(w.windowNumber);
       let missing = 0;
@@ -1635,7 +1982,7 @@ function createWorkspace(name, savedState) {
         ws._watchdogMissStreak = (ws._watchdogMissStreak || 0) + 1;
         if (ws._watchdogMissStreak >= 2) {
           console.log(`[tin] watchdog: ${missing}/${ws.snappedExternals.size} missing (streak=${ws._watchdogMissStreak}) → auto-recovery`);
-          beginStabilize('watchdog-mass-disappear');
+          beginStabilize('watchdog-mass-disappear', ws);
           ws._watchdogMissStreak = 0;
         }
       } else {
@@ -1724,7 +2071,7 @@ function createWorkspace(name, savedState) {
         }
       }
       if (!live) {
-        if (isStabilizing()) {
+        if (isStabilizing(ws)) {
           info._missCount = 0;
           continue;
         }

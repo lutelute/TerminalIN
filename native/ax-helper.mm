@@ -485,19 +485,29 @@ static napi_value MoveToSpace(napi_env env, napi_callback_info info) {
     uint32_t length;
     napi_get_array_length(env, args[0], &length);
     int moved = 0;
-    // ウィンドウの現在 Space を取得するヘルパー
+    // ウィンドウが指定 Space に存在するか確認（複数 Space 所属時も正確に判定）
+    auto isWindowOnSpace = [&](CGWindowID wid, uint64_t spaceId) -> bool {
+        if (!pfnSLSCopySpacesForWindows) return false;
+        CFArrayRef spaces = pfnSLSCopySpacesForWindows(cid, 7, (__bridge CFArrayRef)@[@(wid)]);
+        if (!spaces) return false;
+        bool found = false;
+        for (CFIndex j = 0; j < CFArrayGetCount(spaces); j++) {
+            uint64_t sid = 0;
+            CFNumberGetValue((CFNumberRef)CFArrayGetValueAtIndex(spaces, j), kCFNumberSInt64Type, (int64_t*)&sid);
+            if (sid == spaceId) { found = true; break; }
+        }
+        CFRelease(spaces);
+        return found;
+    };
     auto getWindowSpaceId = [&](CGWindowID wid) -> uint64_t {
-        initSkyLight();
         if (!pfnSLSCopySpacesForWindows) return 0;
         CFArrayRef spaces = pfnSLSCopySpacesForWindows(cid, 7, (__bridge CFArrayRef)@[@(wid)]);
         if (!spaces) return 0;
-        uint64_t spaceId = 0;
-        if (CFArrayGetCount(spaces) > 0) {
-            CFNumberRef n = (CFNumberRef)CFArrayGetValueAtIndex(spaces, 0);
-            CFNumberGetValue(n, kCFNumberSInt64Type, &spaceId);
-        }
+        uint64_t sid = 0;
+        if (CFArrayGetCount(spaces) > 0)
+            CFNumberGetValue((CFNumberRef)CFArrayGetValueAtIndex(spaces, 0), kCFNumberSInt64Type, (int64_t*)&sid);
         CFRelease(spaces);
-        return spaceId;
+        return sid;
     };
 
     for (uint32_t i = 0; i < length; i++) {
@@ -507,54 +517,200 @@ static napi_value MoveToSpace(napi_env env, napi_callback_info info) {
         napi_get_value_int32(env, item, &wn);
 
         uint64_t spaceBefore = getWindowSpaceId((CGWindowID)wn);
+        bool onTarget = false;
 
-        // まず ownerCid で試みる
+        // ownerCid で MoveWindows を試みる
         int ownerCid = 0;
         CGSGetWindowOwner(cid, (CGWindowID)wn, &ownerCid);
-        int moveCid = (ownerCid > 0) ? ownerCid : cid;
-        spaceMoveWindows(moveCid, (__bridge CFArrayRef)@[@(wn)], targetSpace);
+        spaceMoveWindows((ownerCid > 0) ? ownerCid : cid,
+                         (__bridge CFArrayRef)@[@(wn)], targetSpace);
+        usleep(5000);
+        onTarget = isWindowOnSpace((CGWindowID)wn, targetSpace);
 
-        // 移動確認 (小さい遅延で Space 反映を待つ)
-        usleep(20000); // 20ms
-        uint64_t spaceAfter = getWindowSpaceId((CGWindowID)wn);
-
-        if (spaceAfter != targetSpace && spaceAfter == spaceBefore) {
-            // ownerCid では動かなかった → myCid で再試行
+        if (!onTarget) {
+            // myCid で MoveWindows 再試行
             spaceMoveWindows(cid, (__bridge CFArrayRef)@[@(wn)], targetSpace);
-            usleep(20000);
-            spaceAfter = getWindowSpaceId((CGWindowID)wn);
+            usleep(5000);
+            onTarget = isWindowOnSpace((CGWindowID)wn, targetSpace);
         }
 
-        if (spaceAfter != targetSpace && spaceAfter == spaceBefore) {
-            // SLS/Move 系が全滅 → Add/Remove 分割で再試行 (認証モデルが異なる可能性)
+        if (!onTarget) {
+            // Add/Remove 方式: window を target Space に追加してから old を削除
             CFArrayRef winArr  = (__bridge CFArrayRef)@[@(wn)];
-            CFArrayRef toArr   = (__bridge CFArrayRef)@[@(targetSpace)];
-            CFArrayRef fromArr = (__bridge CFArrayRef)@[@(spaceBefore)];
-            // myCid で Add
+            CFArrayRef toArr   = (__bridge CFArrayRef)@[@((int64_t)targetSpace)];
+            CFArrayRef fromArr = (__bridge CFArrayRef)@[@((int64_t)spaceBefore)];
+
             CGSAddWindowsToSpaces(cid, winArr, toArr);
-            usleep(30000);
-            spaceAfter = getWindowSpaceId((CGWindowID)wn);
-            if (spaceAfter == targetSpace) {
-                // Add 成功 → 旧 Space から Remove
+            usleep(10000);
+            if (isWindowOnSpace((CGWindowID)wn, targetSpace)) {
                 CGSRemoveWindowsFromSpaces(cid, winArr, fromArr);
-                usleep(20000);
+                usleep(5000);
+                onTarget = true;
             } else {
-                // ownerCid で Add
-                CFArrayRef winArrOwner = (__bridge CFArrayRef)@[@(wn)];
-                CGSAddWindowsToSpaces(ownerCid > 0 ? ownerCid : cid, winArrOwner, toArr);
-                usleep(30000);
-                spaceAfter = getWindowSpaceId((CGWindowID)wn);
-                if (spaceAfter == targetSpace)
-                    CGSRemoveWindowsFromSpaces(ownerCid > 0 ? ownerCid : cid, winArrOwner, fromArr);
+                // ownerCid で Add 再試行
+                int addCid = (ownerCid > 0) ? ownerCid : cid;
+                CGSAddWindowsToSpaces(addCid, winArr, toArr);
+                usleep(10000);
+                if (isWindowOnSpace((CGWindowID)wn, targetSpace)) {
+                    CGSRemoveWindowsFromSpaces(addCid, winArr, fromArr);
+                    usleep(5000);
+                    onTarget = true;
+                }
             }
         }
 
-        if (spaceAfter != targetSpace)
+        uint64_t spaceAfter = getWindowSpaceId((CGWindowID)wn);
+        if (!onTarget)
             NSLog(@"[tin] moveToSpace wn=%d before=%llu after=%llu target=%llu FAILED (all methods)",
                   wn, (unsigned long long)spaceBefore, (unsigned long long)spaceAfter, (unsigned long long)targetSpace);
-        else if (spaceAfter != spaceBefore)
+        else
             NSLog(@"[tin] moveToSpace wn=%d %llu→%llu OK", wn,
                   (unsigned long long)spaceBefore, (unsigned long long)targetSpace);
+        moved++;
+    }
+
+    napi_value result;
+    napi_create_int32(env, moved, &result);
+    return result;
+}
+
+// getSpaceForWindows(windowNumbers[]) → [{wn, spaceId}]
+static napi_value GetSpaceForWindows(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+    initSkyLight();
+    int cid = spaceCid();
+
+    uint32_t length;
+    napi_get_array_length(env, args[0], &length);
+
+    napi_value result;
+    napi_create_array_with_length(env, length, &result);
+    for (uint32_t i = 0; i < length; i++) {
+        napi_value item;
+        napi_get_element(env, args[0], i, &item);
+        int32_t wn;
+        napi_get_value_int32(env, item, &wn);
+
+        uint64_t spaceId = 0;
+        if (pfnSLSCopySpacesForWindows) {
+            CFArrayRef spaces = pfnSLSCopySpacesForWindows(cid, 7, (__bridge CFArrayRef)@[@(wn)]);
+            if (spaces) {
+                if (CFArrayGetCount(spaces) > 0) {
+                    CFNumberRef n = (CFNumberRef)CFArrayGetValueAtIndex(spaces, 0);
+                    CFNumberGetValue(n, kCFNumberSInt64Type, (int64_t*)&spaceId);
+                }
+                CFRelease(spaces);
+            }
+        }
+
+        napi_value entry, wnVal, spaceVal;
+        napi_create_object(env, &entry);
+        napi_create_int32(env, wn, &wnVal);
+        napi_create_int64(env, (int64_t)spaceId, &spaceVal);
+        napi_set_named_property(env, entry, "wn", wnVal);
+        napi_set_named_property(env, entry, "spaceId", spaceVal);
+        napi_set_element(env, result, i, entry);
+    }
+    return result;
+}
+
+// getSpacesList() → [{id, index, isCurrent}]
+// 全 Space の一覧を返す (CGSCopyManagedDisplaySpaces ベース)
+static napi_value GetSpacesList(napi_env env, napi_callback_info info) {
+    initSkyLight();
+    int cid = spaceCid();
+    uint64_t activeSpace = spaceGetActive(cid);
+    CFArrayRef displays = spaceCopyDisplaySpaces(cid);
+
+    napi_value result;
+    napi_create_array(env, &result);
+    if (!displays) return result;
+
+    uint32_t idx = 0;
+    for (NSDictionary *d in (__bridge NSArray *)displays) {
+        for (NSDictionary *s in d[@"Spaces"]) {
+            NSNumber *sid = s[@"id64"] ?: s[@"ManagedSpaceID"];
+            if (!sid) continue;
+            uint64_t spaceId = [sid unsignedLongLongValue];
+
+            napi_value entry, v;
+            napi_create_object(env, &entry);
+            napi_create_int64(env, (int64_t)spaceId, &v);
+            napi_set_named_property(env, entry, "id", v);
+            napi_create_uint32(env, idx + 1, &v);
+            napi_set_named_property(env, entry, "index", v);
+            napi_get_boolean(env, spaceId == activeSpace, &v);
+            napi_set_named_property(env, entry, "isCurrent", v);
+            napi_set_element(env, result, idx++, entry);
+        }
+    }
+    CFRelease(displays);
+    return result;
+}
+
+// moveWindowsToSpaceId(windowNumbers[], targetSpaceId) → moved count
+// 絶対 Space ID を指定してウィンドウを移動する (Mission Control 追従用)
+static napi_value MoveWindowsToSpaceId(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+    int64_t targetSpace;
+    napi_get_value_int64(env, args[1], &targetSpace);
+
+    initSkyLight();
+    int cid = spaceCid();
+
+    uint32_t length;
+    napi_get_array_length(env, args[0], &length);
+    int moved = 0;
+
+    auto getWinSpace = [&](CGWindowID wid) -> uint64_t {
+        if (!pfnSLSCopySpacesForWindows) return 0;
+        CFArrayRef spaces = pfnSLSCopySpacesForWindows(cid, 7, (__bridge CFArrayRef)@[@(wid)]);
+        if (!spaces) return 0;
+        uint64_t sid = 0;
+        if (CFArrayGetCount(spaces) > 0) {
+            CFNumberRef n = (CFNumberRef)CFArrayGetValueAtIndex(spaces, 0);
+            CFNumberGetValue(n, kCFNumberSInt64Type, (int64_t*)&sid);
+        }
+        CFRelease(spaces);
+        return sid;
+    };
+
+    for (uint32_t i = 0; i < length; i++) {
+        napi_value item;
+        napi_get_element(env, args[0], i, &item);
+        int32_t wn;
+        napi_get_value_int32(env, item, &wn);
+
+        uint64_t spaceBefore = getWinSpace((CGWindowID)wn);
+        if (spaceBefore == (uint64_t)targetSpace) { moved++; continue; }
+
+        int ownerCid = 0;
+        CGSGetWindowOwner(cid, (CGWindowID)wn, &ownerCid);
+        spaceMoveWindows(ownerCid > 0 ? ownerCid : cid,
+                         (__bridge CFArrayRef)@[@(wn)], (uint64_t)targetSpace);
+        usleep(5000); // 5ms — 最小限のコミット待機
+
+        uint64_t spaceAfter = getWinSpace((CGWindowID)wn);
+        if (spaceAfter != (uint64_t)targetSpace && spaceBefore > 0) {
+            CFArrayRef winArr  = (__bridge CFArrayRef)@[@(wn)];
+            CFArrayRef toArr   = (__bridge CFArrayRef)@[@(targetSpace)];
+            CFArrayRef fromArr = (__bridge CFArrayRef)@[@((int64_t)spaceBefore)];
+            CGSAddWindowsToSpaces(cid, winArr, toArr);
+            usleep(10000); // 10ms
+            spaceAfter = getWinSpace((CGWindowID)wn);
+            if (spaceAfter == (uint64_t)targetSpace)
+                CGSRemoveWindowsFromSpaces(cid, winArr, fromArr);
+        }
+
+        NSLog(@"[tin] moveWindowsToSpaceId wn=%d %llu→%llu %@", wn,
+              (unsigned long long)spaceBefore, (unsigned long long)(uint64_t)targetSpace,
+              spaceAfter == (uint64_t)targetSpace ? @"OK" : @"FAILED");
         moved++;
     }
 
@@ -601,7 +757,7 @@ static napi_value MoveWindowsToActiveSpace(napi_env env, napi_callback_info info
 
         NSArray *winArr = @[@(wn)];
         spaceMoveWindows(moveCid, (__bridge CFArrayRef)winArr, activeSpace);
-        usleep(20000);
+        usleep(5000);
 
         uint64_t spaceAfter = 0;
         if (pfnSLSCopySpacesForWindows) {
@@ -615,7 +771,7 @@ static napi_value MoveWindowsToActiveSpace(napi_env env, napi_callback_info info
         // 失敗時 myCid で再試行
         if (spaceAfter != activeSpace && spaceAfter == spaceBefore) {
             spaceMoveWindows(cid, (__bridge CFArrayRef)winArr, activeSpace);
-            usleep(20000);
+            usleep(5000);
             if (pfnSLSCopySpacesForWindows) {
                 CFArrayRef sp = pfnSLSCopySpacesForWindows(cid, 7, (__bridge CFArrayRef)@[@(wn)]);
                 if (sp && CFArrayGetCount(sp) > 0) { CFNumberGetValue((CFNumberRef)CFArrayGetValueAtIndex(sp, 0), kCFNumberSInt64Type, &spaceAfter); CFRelease(sp); }
@@ -870,6 +1026,15 @@ static napi_value Init(napi_env env, napi_value exports) {
 
     napi_create_function(env, NULL, 0, MoveWindowsToActiveSpace, NULL, &fn);
     napi_set_named_property(env, exports, "moveWindowsToActiveSpace", fn);
+
+    napi_create_function(env, NULL, 0, GetSpaceForWindows, NULL, &fn);
+    napi_set_named_property(env, exports, "getSpaceForWindows", fn);
+
+    napi_create_function(env, NULL, 0, GetSpacesList, NULL, &fn);
+    napi_set_named_property(env, exports, "getSpacesList", fn);
+
+    napi_create_function(env, NULL, 0, MoveWindowsToSpaceId, NULL, &fn);
+    napi_set_named_property(env, exports, "moveWindowsToSpaceId", fn);
 
     napi_create_function(env, NULL, 0, GetFrontmostWindowNumber, NULL, &fn);
     napi_set_named_property(env, exports, "getFrontmostWindowNumber", fn);
