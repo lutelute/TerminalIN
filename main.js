@@ -1155,6 +1155,11 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
         await new Promise(r => setTimeout(r, 80));
       }
       if (pos) await batchMove([{ windowNumber, pid, app: appName, title, windowIndex: windowIndex || 0, ...pos }]);
+      // snap 後に sticky 化 — TiN がどの Space に移動しても snapped が常時追従する
+      if (axHelper && axHelper.setWindowSticky) {
+        axHelper.setWindowSticky([windowNumber], true);
+        console.log(`[tin] snap: wn=${windowNumber} → sticky=true`);
+      }
     } catch {}
   })();
   scheduleSaveWorkspaces();
@@ -1172,6 +1177,10 @@ ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
   ws._lastKnownSnappedWns.delete(windowNumber);
   snappedIndexRemove(windowNumber);
   compactSlots(ws);
+  // sticky 解除 (unsnap 前に実施)
+  if (axHelper && axHelper.setWindowSticky) {
+    try { axHelper.setWindowSticky([windowNumber], false); } catch {}
+  }
   // 元の位置・サイズに戻す。AX expansion は Terminal.app silent fail するので osascript 補完。
   const restoreCmd = [{ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
     x: info.origX, y: info.origY, width: info.origW, height: info.origH }];
@@ -1425,31 +1434,32 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
 
   beginStabilize('push-to-space', ws);
   try {
+    // ── sticky 方式: snapped windows は snap 時に sticky 化済み ──
+    // sticky window は全 Space に常時表示されるため、TiN を移動するだけで
+    // snapped window も新 Space に追従する。
+    // 50ms タイマー (_groupyFollowTimer) が位置を TiN に合わせて再配置する。
+
     // TiN 自身を移動（CGS、自プロセスなので確実）
     const tinMoved = axHelper.moveToSpace ? axHelper.moveToSpace(electronWns, direction) : 0;
-    console.log(`[tin] push-to-space tinMoved=${tinMoved}`);
+    console.log(`[tin] push-to-space tinMoved=${tinMoved} snappedSticky=${snappedWns.length}`);
 
-    // 外部スナップ済みウィンドウ: CGS でベストエフォート移動
-    // 注: Darwin 25 + SA なし環境では他プロセスの Space 移動は制限される
-    if (snappedWns.length > 0 && axHelper.moveWindowsToSpaceId && targetSpaceId) {
-      const moved = axHelper.moveWindowsToSpaceId(snappedWns, targetSpaceId);
-      console.log(`[tin] push-to-space cgs snapped: ${moved}/${snappedWns.length}`);
-    }
-
-    // TiN を新 Space のディスプレイ中央に配置して retile
+    // TiN を新 Space のディスプレイに合わせて中央配置
+    // 短い待機後に実行（Space アニメーション中はディスプレイ取得が不安定）
+    await new Promise(r => setTimeout(r, 180));
     if (ws.win && !ws.win.isDestroyed()) {
       const b = ws.win.getBounds();
-      const disp = screen.getPrimaryDisplay();
+      const disp = screen.getDisplayNearestPoint({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
       const wa = disp.workArea;
       ws.win.setBounds({
         x: wa.x + Math.round((wa.width - b.width) / 2),
         y: wa.y + Math.round((wa.height - b.height) / 2),
         width: b.width, height: b.height,
       });
-      retileAll(ws, true).catch(() => {});
+      // retileAll で sticky snapped windows を TiN の新位置に揃える
+      await retileAll(ws, true).catch(() => {});
     }
 
-    // _tinSpaceId 更新
+    // _tinSpaceId 更新（space-follow ポーリングの誤検知防止）
     if (electronWns.length > 0 && axHelper.getSpaceForWindows) {
       try {
         const spaces = axHelper.getSpaceForWindows([electronWns[0]]);
@@ -1909,7 +1919,9 @@ function createWorkspace(name, savedState) {
     if (_dragging) return;
 
     // TiN 自身が別 Space に移動した検知 (Mission Control / 直接 Space 移動)
-    if (axHelper && axHelper.getSpaceForWindows && axHelper.moveWindowsToSpaceId &&
+    // sticky 方式: snapped windows は全 Space に存在するため CGS 移動は不要
+    // TiN が新 Space に来たら retileAll で位置を揃えるだけでよい
+    if (axHelper && axHelper.getSpaceForWindows &&
         ws.snappedExternals.size > 0 && !isStabilizing(ws)) {
       try {
         const handle = ws.win.getNativeWindowHandle();
@@ -1920,18 +1932,10 @@ function createWorkspace(name, savedState) {
           const tinSpaceId = Number(spaces[0]?.spaceId || 0);
           if (tinSpaceId > 0) {
             if (ws._tinSpaceId > 0 && tinSpaceId !== ws._tinSpaceId) {
-              const snappedWns = [...ws.snappedExternals.values()]
-                .map(i => i.windowNumber).filter(wn => typeof wn === 'number' && wn > 0);
-              if (snappedWns.length > 0) {
-                console.log(`[tin] space-follow: TiN ${ws._tinSpaceId}→${tinSpaceId}, pulling ${snappedWns.length} windows`);
-                beginStabilize('space-follow', ws);
-                axHelper.moveWindowsToSpaceId(snappedWns, tinSpaceId);
-                const b = ws.win.getBounds();
-                const disp = screen.getDisplayNearestPoint({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
-                const wa = disp.workArea;
-                ws.win.setBounds({ x: wa.x + Math.round((wa.width - b.width) / 2), y: wa.y + Math.round((wa.height - b.height) / 2), width: b.width, height: b.height });
-                setTimeout(() => retileAll(ws, true).catch(() => {}), 300);
-              }
+              console.log(`[tin] space-follow (sticky): TiN ${ws._tinSpaceId}→${tinSpaceId}, retiling ${ws.snappedExternals.size} windows`);
+              beginStabilize('space-follow', ws);
+              // sticky windows は新 Space でも同じ座標にいるため retileAll だけで揃う
+              setTimeout(() => retileAll(ws, true).catch(() => {}), 200);
             }
             ws._tinSpaceId = tinSpaceId;
           }
