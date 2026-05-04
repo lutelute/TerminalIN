@@ -2269,23 +2269,20 @@ let gpEditMode = false; // グリッドJSブロックとこのブロックで共
 
   window.addEventListener('mousemove', (e) => {
     if (gpEditMode) { setClickthrough(false); return; }
-    // ドロワーが開いている場合は常にクリックスルー無効
-    if (document.body.classList.contains('drawer-open')) { setClickthrough(false); return; }
+
+    // ① カーソル下に z-index > 100 の要素があればポップアップ/ドロワー等の UI
+    //   → click-through 無効 (グリッドサイズポップアップ・Space ピッカー等すべてに対応)
+    const hasOverlay = document.elementsFromPoint(e.clientX, e.clientY).some(el => {
+      const z = parseInt(getComputedStyle(el).zIndex, 10);
+      return !isNaN(z) && z > 100;
+    });
+    if (hasOverlay) { setClickthrough(false); return; }
+
+    // ② ヘッダー (#sidebar) 上か content area (#grid-panel) 上か判定
     const gridRect = gridPanel.getBoundingClientRect();
-    const sidebarEl = document.getElementById('sidebar');
-    const sidebarRect = sidebarEl ? sidebarEl.getBoundingClientRect() : null;
-    // ドロワーパネルの範囲もチェック
-    const drawerEl = document.getElementById('drawer-panel');
-    const drawerRect = drawerEl ? drawerEl.getBoundingClientRect() : null;
     const onGrid = e.clientX >= gridRect.left && e.clientX <= gridRect.right
                 && e.clientY >= gridRect.top  && e.clientY <= gridRect.bottom;
-    const onSidebar = sidebarRect
-                   && e.clientX >= sidebarRect.left && e.clientX <= sidebarRect.right
-                   && e.clientY >= sidebarRect.top  && e.clientY <= sidebarRect.bottom;
-    const onDrawer = drawerRect
-                  && e.clientX >= drawerRect.left && e.clientX <= drawerRect.right
-                  && e.clientY >= drawerRect.top  && e.clientY <= drawerRect.bottom;
-    setClickthrough(onGrid && !onSidebar && !onDrawer);
+    setClickthrough(onGrid);
   });
 
   window.addEventListener('mouseleave', () => setClickthrough(false));
