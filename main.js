@@ -855,25 +855,27 @@ function getSlotBounds(ws, slot) {
   }
 
   // ── Grid モード: 通常のグリッドレイアウト ──
+  // gap=12, padding=12 は workspace.html の .gp-grid-container と一致させる
   const cols = ws.gridCols, rows = ws.gridRows;
-  const gap = 4;
+  const gap = 12, pad = 12;
   const col = slot % cols, row = Math.floor(slot / cols);
 
   const colRatios = (ws.colRatios && ws.colRatios.length === cols) ? ws.colRatios : Array(cols).fill(1/cols);
   const rowRatios = (ws.rowRatios && ws.rowRatios.length === rows) ? ws.rowRatios : Array(rows).fill(1/rows);
 
-  const totalW = area.width - gap * (cols - 1);
-  const totalH = area.height - gap * (rows - 1);
+  // padding=12: グリッドエリアの外周余白
+  const innerW = area.width - pad * 2 - gap * (cols - 1);
+  const innerH = area.height - pad * 2 - gap * (rows - 1);
 
   let xOff = 0, yOff = 0;
-  for (let i = 0; i < col; i++) xOff += totalW * colRatios[i] + gap;
-  for (let i = 0; i < row; i++) yOff += totalH * rowRatios[i] + gap;
+  for (let i = 0; i < col; i++) xOff += innerW * colRatios[i] + gap;
+  for (let i = 0; i < row; i++) yOff += innerH * rowRatios[i] + gap;
 
   return {
-    x: Math.round(area.x + xOff),
-    y: Math.round(area.y + yOff),
-    width: Math.round(totalW * colRatios[col]),
-    height: Math.round(totalH * rowRatios[row]),
+    x: Math.round(area.x + pad + xOff),
+    y: Math.round(area.y + pad + yOff),
+    width: Math.round(innerW * colRatios[col]),
+    height: Math.round(innerH * rowRatios[row]),
   };
 }
 
@@ -1837,29 +1839,35 @@ function createWorkspace(name, savedState) {
   // drag 中は snapped 外部ウィンドウの AX 追従を停止し、主スレッドを空ける。
   // 外部ターミナルは drag 終了時の retileAll で一括配置する。
   let _dragging = false;
-  let _lastMoveMs = 0;
+  let _groupyDirty = false; // 外部ウィンドウ追従が必要かどうか
   const onWinMove = () => {
-    // 1. embedded grid windows (Electron BrowserWindow) — 即座に同期
+    // 1. embedded BrowserWindow は setBounds() で即座に同期 (ブロックしない)
     for (const [slot, gw] of ws.gridWindows) {
       if (gw.win && !gw.win.isDestroyed()) {
         const b = getSlotBounds(ws, slot);
         if (b) gw.win.setBounds(b);
       }
     }
-    // 2. 外部スナップ済みウィンドウ — Groupy リアルタイム追従 (16ms throttle)
-    if (ws.snappedExternals.size > 0 && axHelper) {
-      const now = Date.now();
-      if (now - _lastMoveMs < 16) return;
-      _lastMoveMs = now;
-      const cmds = [];
-      for (const [, info] of ws.snappedExternals) {
-        const b = getSlotBounds(ws, info.slot);
-        if (b) cmds.push({ windowNumber: info.windowNumber, pid: info.pid,
-          app: info.app, title: info.title, windowIndex: info.windowIndex || 0, ...b });
-      }
-      if (cmds.length) fireAndForgetMove(cmds, true); // positionOnly=true でドラッグ中は位置のみ
-    }
+    // 2. 外部ウィンドウはフラグを立てるだけ — AX は 50ms タイマーで非同期実行
+    if (ws.snappedExternals.size > 0) _groupyDirty = true;
   };
+
+  // 外部ウィンドウ追従タイマー (50ms = 20fps)
+  // move イベントから分離して main thread のブロックを回避
+  const _groupyFollowTimer = setInterval(() => {
+    if (!_groupyDirty || !ws.snappedExternals.size || !axHelper || ws.win?.isDestroyed()) return;
+    _groupyDirty = false;
+    const cmds = [];
+    for (const [, info] of ws.snappedExternals) {
+      const b = getSlotBounds(ws, info.slot);
+      if (b) cmds.push({ windowNumber: info.windowNumber, pid: info.pid,
+        app: info.app, title: info.title, windowIndex: info.windowIndex || 0, ...b });
+    }
+    if (cmds.length) fireAndForgetMove(cmds, true);
+  }, 50);
+  // ウィンドウ close 時にタイマーを停止
+  win.once('closed', () => clearInterval(_groupyFollowTimer));
+
   win.on('move', onWinMove);
   win.on('resize', onWinMove);
   win.on('will-move', () => { if (!_dragging) { _dragging = true; } });

@@ -928,8 +928,13 @@ ipcRenderer.on('set-sidebar-width', (_e, { width }) => {
 
 // 復元時の snapped Map 初期化 (main 側で既に配置済みの窓を renderer に知らせる)
 ipcRenderer.on('hydrate-snapped', (_e, list) => {
-  for (const entry of (list || [])) {
-    snappedExternals.set(entry.windowNumber, { title: entry.title, app: entry.app, slot: entry.slot });
+  // 権威リストで同期: _snapPending のものは楽観的状態を保持して除外
+  const incoming = new Map((list || []).map(e => [e.windowNumber, e]));
+  for (const [k] of snappedExternals) {
+    if (!incoming.has(k) && !_snapPending.has(k)) snappedExternals.delete(k);
+  }
+  for (const [k, entry] of incoming) {
+    snappedExternals.set(k, { title: entry.title, app: entry.app, slot: entry.slot });
   }
   render();
 });
