@@ -57,9 +57,10 @@
   #drawer-content { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 5px; }
   #drawer-content::-webkit-scrollbar { width: 5px; }
   #drawer-content::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 3px; }
-  /* ドロワー外クリックで閉じる用オーバーレイ */
+  /* ドロワー外クリックで閉じるオーバーレイ — ヘッダー(68px)の下のみカバー */
   #drawer-overlay {
-    position: fixed; inset: 0;
+    position: fixed;
+    top: 68px; left: 0; right: 0; bottom: 0;  /* ヘッダーはカバーしない */
     z-index: 8999;
     display: none;
   }
@@ -2268,15 +2269,23 @@ let gpEditMode = false; // グリッドJSブロックとこのブロックで共
 
   window.addEventListener('mousemove', (e) => {
     if (gpEditMode) { setClickthrough(false); return; }
+    // ドロワーが開いている場合は常にクリックスルー無効
+    if (document.body.classList.contains('drawer-open')) { setClickthrough(false); return; }
     const gridRect = gridPanel.getBoundingClientRect();
     const sidebarEl = document.getElementById('sidebar');
     const sidebarRect = sidebarEl ? sidebarEl.getBoundingClientRect() : null;
+    // ドロワーパネルの範囲もチェック
+    const drawerEl = document.getElementById('drawer-panel');
+    const drawerRect = drawerEl ? drawerEl.getBoundingClientRect() : null;
     const onGrid = e.clientX >= gridRect.left && e.clientX <= gridRect.right
                 && e.clientY >= gridRect.top  && e.clientY <= gridRect.bottom;
     const onSidebar = sidebarRect
                    && e.clientX >= sidebarRect.left && e.clientX <= sidebarRect.right
                    && e.clientY >= sidebarRect.top  && e.clientY <= sidebarRect.bottom;
-    setClickthrough(onGrid && !onSidebar);
+    const onDrawer = drawerRect
+                  && e.clientX >= drawerRect.left && e.clientX <= drawerRect.right
+                  && e.clientY >= drawerRect.top  && e.clientY <= drawerRect.bottom;
+    setClickthrough(onGrid && !onSidebar && !onDrawer);
   });
 
   window.addEventListener('mouseleave', () => setClickthrough(false));
