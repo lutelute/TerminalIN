@@ -559,6 +559,11 @@ async function restoreAllPending() {
     }
     await batchMove(allMoveCmds);
     console.log(`[tin] batch restore: moved ${allMoveCmds.length} windows in 1 call`);
+    // restore した snapped windows を sticky 化（Space 移動追従のため）
+    if (axHelper && axHelper.setWindowSticky) {
+      const wns = allMoveCmds.map(c => c.windowNumber);
+      try { axHelper.setWindowSticky(wns, true); console.log(`[tin] batch restore: sticky set for ${wns.length} windows`); } catch {}
+    }
   }
   scheduleSyncSnapped();
 }
@@ -1327,6 +1332,10 @@ ipcMain.handle('retile-now', async (event) => {
       cmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
       wns.push(info.windowNumber);
     }
+  }
+  // sticky が漏れているウィンドウがあれば再設定（restore 後の保険）
+  if (wns.length && axHelper && axHelper.setWindowSticky) {
+    try { axHelper.setWindowSticky(wns, true); } catch {}
   }
   // snapped ウィンドウ + このワークスペースの TiN 全ウィンドウをまとめて現在 Space に引き寄せる
   const sidebarWn = getElectronWinNumber(ws.win);
