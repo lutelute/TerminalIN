@@ -109,6 +109,9 @@
   /* スナップ済み(アプリあり)のスロットは枠を非表示。空きスロットだけ薄く表示 */
   body.show-grid-overlay #gp-grid .gp-cell.cell-occupied { box-shadow: none; }
   body.show-grid-overlay #gp-grid .gp-cell.cell-active   { box-shadow: none; }
+  /* ポップアップ / ドロワー表示中はグリッド枠を隠す（背後に透けて見える問題を防ぐ） */
+  body:has(.grid-size-popup, #tab-ctx-menu, .slot-picker) #gp-grid,
+  body.drawer-open #gp-grid { opacity: 0 !important; }
   .gp-cell-empty { background: transparent; }
 
   /* 分割線なし */
