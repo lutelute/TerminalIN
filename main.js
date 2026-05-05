@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, screen, Menu, powerMonitor, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Menu, powerMonitor, dialog, shell, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const pty = require('node-pty');
@@ -177,12 +177,19 @@ const PRESETS_DIR = path.join(INTEGRATION_DIR, 'presets');
 const TIN_START_TIME = Date.now();
 // アプリ設定
 const SETTINGS_JSON = path.join(INTEGRATION_DIR, 'settings.json');
+const DEFAULT_HOTKEYS = {
+  snapFrontmost:   'Command+Option+S',
+  unsnapFrontmost: 'Command+Option+W',
+  focusTiN:        'Command+Option+T',
+  slot1: '', slot2: '', slot3: '', slot4: '',
+};
 const DEFAULT_SETTINGS = {
   pollIntervalMs: 1500,
   dragEndMode: 'position',  // 'position' | 'full' | 'off'
   defaultGridCols: 2,
   defaultGridRows: 2,
   autoLaunch: false,
+  hotkeys: { ...DEFAULT_HOTKEYS },
 };
 let appSettings = { ...DEFAULT_SETTINGS };
 function loadSettings() {
@@ -1270,11 +1277,116 @@ ipcMain.handle('get-grid-state', (event) => {
   return { cols: ws.gridCols, rows: ws.gridRows, slots };
 });
 
+// ── Global Hotkeys ──────────────────────────────────────────────────────────
+
+// フロントウィンドウを対象 workspace の次の空きスロットにスナップ
+async function snapFrontmostWindow(ws) {
+  if (!axHelper) return;
+  const wn = axHelper.getFrontmostWindowNumber();
+  if (!wn) return;
+  if (isExternalSnapped(wn)) return; // 既にスナップ済み
+  const allWins = axHelper.listWindows();
+  const win = allWins.find(w => w.windowNumber === wn);
+  if (!win || win.app === 'TiN') return;
+  const slot = nextFreeSlot(ws);
+  if (slot < 0) return;
+  ws.snappedExternals.set(wn, {
+    app: win.app, pid: win.pid, title: win.title, windowNumber: wn,
+    windowIndex: win.windowIndex || 0, slot,
+    origX: win.x, origY: win.y, origW: win.width, origH: win.height,
+    snappedAt: Date.now(),
+  });
+  ws._lastKnownSnappedWns.add(wn);
+  snappedIndexAdd(wn, ws);
+  scheduleSyncSnapped(0);
+  const pos = getSlotBounds(ws, slot);
+  if (pos) {
+    try {
+      if (axHelper.moveWindowsToActiveSpace) {
+        axHelper.moveWindowsToActiveSpace([wn]);
+        await new Promise(r => setTimeout(r, 80));
+      }
+      await batchMove([{ windowNumber: wn, pid: win.pid, app: win.app, title: win.title, ...pos }]);
+      if (axHelper.setWindowSticky) axHelper.setWindowSticky([wn], true);
+    } catch {}
+  }
+  scheduleSaveWorkspaces();
+}
+
+// フロントウィンドウをスナップ解除
+async function unsnapFrontmostWindow(ws) {
+  if (!axHelper) return;
+  const wn = axHelper.getFrontmostWindowNumber();
+  if (!wn) return;
+  const info = ws.snappedExternals.get(wn);
+  if (!info) return;
+  ws.snappedExternals.delete(wn);
+  ws._lastKnownSnappedWns.delete(wn);
+  snappedIndexRemove(wn);
+  compactSlots(ws);
+  scheduleSyncSnapped(0);
+  if (axHelper.setWindowSticky) try { axHelper.setWindowSticky([wn], false); } catch {}
+  const cmds = [{ windowNumber: wn, pid: info.pid, app: info.app, title: info.title,
+    x: info.origX, y: info.origY, width: info.origW, height: info.origH }];
+  try { await osascriptMove(cmds); } catch {}
+  await retileAll(ws);
+  scheduleSaveWorkspaces();
+}
+
+function registerHotkeys() {
+  globalShortcut.unregisterAll();
+  const hk = { ...DEFAULT_HOTKEYS, ...(appSettings.hotkeys || {}) };
+
+  // アクティブな (or 最初の) workspace を返すヘルパー
+  const activeWs = () => [...workspaces.values()][0];
+
+  const actions = {
+    snapFrontmost:   () => { const ws = activeWs(); if (ws) snapFrontmostWindow(ws).catch(() => {}); },
+    unsnapFrontmost: () => { const ws = activeWs(); if (ws) unsnapFrontmostWindow(ws).catch(() => {}); },
+    focusTiN: () => {
+      for (const [, ws] of workspaces) {
+        if (ws.win && !ws.win.isDestroyed()) { ws.win.show(); ws.win.focus(); }
+      }
+    },
+    slot1: () => { const ws = activeWs(); if (ws) ipcMain.emit('set-active-tab-hotkey', ws, 0); },
+    slot2: () => { const ws = activeWs(); if (ws) ipcMain.emit('set-active-tab-hotkey', ws, 1); },
+    slot3: () => { const ws = activeWs(); if (ws) ipcMain.emit('set-active-tab-hotkey', ws, 2); },
+    slot4: () => { const ws = activeWs(); if (ws) ipcMain.emit('set-active-tab-hotkey', ws, 3); },
+  };
+
+  for (const [key, acc] of Object.entries(hk)) {
+    if (!acc || !actions[key]) continue;
+    try {
+      const ok = globalShortcut.register(acc, actions[key]);
+      if (!ok) console.warn(`[tin] hotkey conflict: ${acc} (${key})`);
+    } catch (e) {
+      console.warn(`[tin] hotkey register failed: ${acc} — ${e.message}`);
+    }
+  }
+}
+
+// slot切替をホットキーから直接実行
+ipcMain.on('set-active-tab-hotkey', (ws, slot) => {
+  if (!ws || !ws.win || ws.win.isDestroyed()) return;
+  ws.activeTabSlot = slot;
+  ws.viewMode = 'tab';
+  beginStabilize('set-active-tab', ws);
+  retileAll(ws).then(() => {
+    const activeWns = [];
+    for (const [wn, info] of ws.snappedExternals) {
+      if (info.slot === slot) activeWns.push({ windowNumber: wn, pid: info.pid, app: info.app, title: info.title });
+    }
+    if (activeWns.length && axHelper && axHelper.raiseWindows) axHelper.raiseWindows(activeWns);
+  }).catch(() => {});
+  ws.win.webContents.send('tab-switched-hotkey', slot);
+});
+
 // Settings IPC
 ipcMain.handle('get-settings', () => ({ ...appSettings }));
 ipcMain.handle('save-settings', (_event, newSettings) => {
   const prev = { ...appSettings };
-  appSettings = { ...DEFAULT_SETTINGS, ...(newSettings || {}) };
+  appSettings = { ...DEFAULT_SETTINGS, ...(newSettings || {}),
+    hotkeys: { ...DEFAULT_HOTKEYS, ...(newSettings?.hotkeys || {}) } };
   saveSettings();
   // 即座に反映: auto-launch
   if (appSettings.autoLaunch !== prev.autoLaunch) {
@@ -1288,6 +1400,8 @@ ipcMain.handle('save-settings', (_event, newSettings) => {
       if (ws._pollRestart) ws._pollRestart();
     }
   }
+  // hotkeys 変更時は再登録
+  registerHotkeys();
   return { ok: true, settings: { ...appSettings } };
 });
 
@@ -2706,6 +2820,7 @@ app.whenReady().then(() => {
   writeInfoJson();
   writeSnappedJson();
   startFrontmostPoll();
+  registerHotkeys();
 
   // Accessibility 権限チェック: 無いと snap / raise が silent fail するので
   // 明示的にダイアログ表示して System Settings へ誘導。
@@ -2904,6 +3019,10 @@ function writeWorkspacesJsonSync() {
   }
   atomicWriteJSONSync(WORKSPACES_JSON, payload);
 }
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+});
 
 app.on('before-quit', () => {
   app.isQuitting = true;
