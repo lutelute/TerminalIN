@@ -1167,9 +1167,15 @@ async function openPreferences() {
         <option value="2,3">2×3</option>
       </select>
     </label>
-    <label style="display:flex;align-items:center;margin-bottom:14px;">
+    <label style="display:flex;align-items:center;margin-bottom:8px;">
       <input type="checkbox" id="pref-autolaunch" style="margin-right:8px;">ログイン時に自動起動
     </label>
+    <label style="display:flex;align-items:center;margin-bottom:4px;">
+      <input type="checkbox" id="pref-sticky" style="margin-right:8px;">全 Space に追従 (sticky)
+    </label>
+    <div style="font-size:11px;color:rgba(200,60,40,0.8);margin-bottom:14px;padding-left:20px;">
+      ⚠ ON にすると他アプリが重くなる場合があります
+    </div>
     <div style="border-top:1px solid rgba(0,0,0,0.08);margin:0 -4px 12px;padding-top:12px;">
       <div style="font-weight:600;font-size:12px;color:rgba(0,0,0,0.5);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
         グローバルホットキー
@@ -1188,6 +1194,7 @@ async function openPreferences() {
   panel.querySelector('#pref-drag').value = settings.dragEndMode || 'position';
   panel.querySelector('#pref-grid').value = `${settings.defaultGridCols||2},${settings.defaultGridRows||2}`;
   panel.querySelector('#pref-autolaunch').checked = !!settings.autoLaunch;
+  panel.querySelector('#pref-sticky').checked = !!settings.stickyWindows;
 
   // ホットキー行を生成
   const hkRows = panel.querySelector('#pref-hk-rows');
@@ -1221,6 +1228,7 @@ async function openPreferences() {
       defaultGridCols: c,
       defaultGridRows: r,
       autoLaunch: panel.querySelector('#pref-autolaunch').checked,
+      stickyWindows: panel.querySelector('#pref-sticky').checked,
       hotkeys,
     });
     backdrop.remove();
