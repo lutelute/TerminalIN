@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, screen, Menu, powerMonitor, dialog, shell, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
 const pty = require('node-pty');
 const { spawn, exec, execFile, execSync } = require('child_process');
 const { promisify } = require('util');
@@ -2821,6 +2822,7 @@ app.whenReady().then(() => {
   writeSnappedJson();
   startFrontmostPoll();
   registerHotkeys();
+  startRestServer();
 
   // Accessibility 権限チェック: 無いと snap / raise が silent fail するので
   // 明示的にダイアログ表示して System Settings へ誘導。
@@ -3020,8 +3022,138 @@ function writeWorkspacesJsonSync() {
   atomicWriteJSONSync(WORKSPACES_JSON, payload);
 }
 
+// ── REST API (localhost only) — Raycast 拡張・外部ツール連携用 ──────────────
+// port は info.json に書き出し。
+const REST_PORT = 37123;
+let _restServer = null;
+
+function parseBody(req) {
+  return new Promise((resolve) => {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 4096) req.destroy(); });
+    req.on('end', () => { try { resolve(JSON.parse(body)); } catch { resolve({}); } });
+    req.on('error', () => resolve({}));
+  });
+}
+
+function restReply(res, status, obj) {
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+  res.end(JSON.stringify(obj));
+}
+
+function startRestServer() {
+  if (_restServer) return;
+  _restServer = http.createServer(async (req, res) => {
+    if (req.method === 'OPTIONS') { restReply(res, 204, {}); return; }
+    const url = new URL(req.url, `http://localhost:${REST_PORT}`);
+    const route = `${req.method} ${url.pathname}`;
+
+    // GET /api/status — ワークスペース・スナップ状態
+    if (route === 'GET /api/status') {
+      const wsArr = [];
+      for (const [, ws] of workspaces) {
+        const snapped = [];
+        for (const [wn, info] of ws.snappedExternals) {
+          snapped.push({ windowNumber: wn, app: info.app, title: info.title, slot: info.slot });
+        }
+        wsArr.push({ id: ws.id, name: ws.name, gridCols: ws.gridCols, gridRows: ws.gridRows,
+          snapped, gridTerminals: ws.gridWindows.size });
+      }
+      return restReply(res, 200, { ok: true, version: PROTOCOL_VERSION, workspaces: wsArr });
+    }
+
+    // GET /api/windows — スナップ可能なウィンドウ一覧
+    if (route === 'GET /api/windows') {
+      const wins = axHelper ? axHelper.listWindows().filter(w => w.app !== 'TiN') : [];
+      return restReply(res, 200, { ok: true, windows: wins.map(w => ({
+        windowNumber: w.windowNumber, app: w.app, title: w.title, pid: w.pid
+      })) });
+    }
+
+    // POST /api/snap — フロントウィンドウをスナップ { windowNumber?: number, workspaceId?: number }
+    if (route === 'POST /api/snap') {
+      const body = await parseBody(req);
+      const ws = (body.workspaceId ? workspaces.get(body.workspaceId) : null) || [...workspaces.values()][0];
+      if (!ws) return restReply(res, 404, { ok: false, error: 'no workspace' });
+      let targetWn = body.windowNumber;
+      if (!targetWn && axHelper) targetWn = axHelper.getFrontmostWindowNumber();
+      if (!targetWn) return restReply(res, 400, { ok: false, error: 'no window' });
+      if (isExternalSnapped(targetWn)) return restReply(res, 200, { ok: true, note: 'already snapped' });
+      const allWins = axHelper ? axHelper.listWindows() : [];
+      const win = allWins.find(w => w.windowNumber === targetWn);
+      if (!win || win.app === 'TiN') return restReply(res, 400, { ok: false, error: 'invalid window' });
+      const slot = nextFreeSlot(ws);
+      if (slot < 0) return restReply(res, 409, { ok: false, error: 'no free slot' });
+      ws.snappedExternals.set(targetWn, {
+        app: win.app, pid: win.pid, title: win.title, windowNumber: targetWn,
+        windowIndex: win.windowIndex || 0, slot,
+        origX: win.x, origY: win.y, origW: win.width, origH: win.height, snappedAt: Date.now(),
+      });
+      ws._lastKnownSnappedWns.add(targetWn);
+      snappedIndexAdd(targetWn, ws);
+      scheduleSyncSnapped(0);
+      const pos = getSlotBounds(ws, slot);
+      if (pos) {
+        (async () => {
+          try {
+            if (axHelper.moveWindowsToActiveSpace) { axHelper.moveWindowsToActiveSpace([targetWn]); await new Promise(r=>setTimeout(r,80)); }
+            await batchMove([{ windowNumber: targetWn, pid: win.pid, app: win.app, title: win.title, ...pos }]);
+            if (axHelper.setWindowSticky) axHelper.setWindowSticky([targetWn], true);
+          } catch {}
+        })();
+      }
+      scheduleSaveWorkspaces();
+      return restReply(res, 200, { ok: true, slot, workspaceId: ws.id });
+    }
+
+    // POST /api/unsnap { windowNumber: number }
+    if (route === 'POST /api/unsnap') {
+      const body = await parseBody(req);
+      let wn = body.windowNumber;
+      if (!wn && axHelper) wn = axHelper.getFrontmostWindowNumber();
+      if (!wn) return restReply(res, 400, { ok: false, error: 'no window' });
+      let found = false;
+      for (const [, ws] of workspaces) {
+        const info = ws.snappedExternals.get(wn);
+        if (!info) continue;
+        found = true;
+        ws.snappedExternals.delete(wn);
+        ws._lastKnownSnappedWns.delete(wn);
+        snappedIndexRemove(wn);
+        compactSlots(ws);
+        scheduleSyncSnapped(0);
+        if (axHelper?.setWindowSticky) try { axHelper.setWindowSticky([wn], false); } catch {}
+        osascriptMove([{ windowNumber: wn, pid: info.pid, app: info.app, title: info.title,
+          x: info.origX, y: info.origY, width: info.origW, height: info.origH }]).catch(() => {});
+        retileAll(ws).catch(() => {});
+        scheduleSaveWorkspaces();
+        break;
+      }
+      return restReply(res, found ? 200 : 404, { ok: found, error: found ? undefined : 'not snapped' });
+    }
+
+    // POST /api/focus — TiN ウィンドウをフォーカス
+    if (route === 'POST /api/focus') {
+      for (const [, ws] of workspaces) {
+        if (ws.win && !ws.win.isDestroyed()) { ws.win.show(); ws.win.focus(); }
+      }
+      return restReply(res, 200, { ok: true });
+    }
+
+    restReply(res, 404, { ok: false, error: 'not found' });
+  });
+
+  _restServer.listen(REST_PORT, '127.0.0.1', () => {
+    console.log(`[tin] REST API listening on http://127.0.0.1:${REST_PORT}`);
+  });
+  _restServer.on('error', (e) => {
+    console.warn(`[tin] REST API error: ${e.message}`);
+  });
+}
+
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  if (_restServer) _restServer.close();
 });
 
 app.on('before-quit', () => {
