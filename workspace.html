@@ -1061,22 +1061,96 @@ function renderRestoreBanner() {
 }
 
 // ── Preferences modal ──
+// Electron アクセラレーター → 表示文字列 (⌘⌥S 形式)
+function accToDisplay(acc) {
+  if (!acc) return '—';
+  return acc.replace('CommandOrControl', '⌘').replace('Command', '⌘')
+            .replace('Control', '⌃').replace('Option', '⌥').replace('Shift', '⇧')
+            .replace(/\+/g, '');
+}
+
+// キーダウンイベント → Electron アクセラレーター文字列
+function eventToAcc(e) {
+  const parts = [];
+  if (e.metaKey)  parts.push('Command');
+  if (e.ctrlKey)  parts.push('Control');
+  if (e.altKey)   parts.push('Option');
+  if (e.shiftKey) parts.push('Shift');
+  const k = e.key;
+  if (['Meta','Control','Alt','Shift'].includes(k)) return null;
+  // 特殊キー変換
+  const specialMap = { ' ': 'Space', 'ArrowUp':'Up','ArrowDown':'Down','ArrowLeft':'Left','ArrowRight':'Right',
+    'Escape':'Escape','Enter':'Return','Backspace':'Backspace','Delete':'Delete',
+    'Tab':'Tab','Home':'Home','End':'End','PageUp':'PageUp','PageDown':'PageDown' };
+  parts.push(specialMap[k] || k.toUpperCase());
+  return parts.join('+');
+}
+
+// ホットキーキャプチャ field を作成
+function makeHotkeyField(id, currentAcc) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;align-items:center;gap:6px;';
+  const field = document.createElement('div');
+  field.id = id;
+  field.dataset.acc = currentAcc || '';
+  field.tabIndex = 0;
+  field.style.cssText = 'min-width:90px;padding:3px 8px;border:1px solid rgba(0,0,0,0.2);border-radius:4px;' +
+    'font-size:12px;font-family:"SF Mono",monospace;cursor:pointer;text-align:center;background:#fff;' +
+    'color:rgba(0,0,0,0.75);user-select:none;';
+  field.textContent = accToDisplay(currentAcc);
+  const clr = document.createElement('button');
+  clr.textContent = '✕';
+  clr.style.cssText = 'font-size:10px;border:none;background:none;cursor:pointer;color:rgba(0,0,0,0.4);padding:2px 4px;';
+
+  field.addEventListener('focus', () => {
+    field.style.borderColor = 'rgba(37,99,235,0.7)';
+    field.textContent = '…キーを押してください';
+    field.style.color = 'rgba(0,0,0,0.4)';
+  });
+  field.addEventListener('blur', () => {
+    field.style.borderColor = 'rgba(0,0,0,0.2)';
+    field.style.color = 'rgba(0,0,0,0.75)';
+    field.textContent = accToDisplay(field.dataset.acc);
+  });
+  field.addEventListener('keydown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const acc = eventToAcc(e);
+    if (!acc) return;
+    field.dataset.acc = acc;
+    field.textContent = accToDisplay(acc);
+    field.style.color = 'rgba(0,0,0,0.75)';
+    field.blur();
+  });
+  clr.addEventListener('click', () => {
+    field.dataset.acc = '';
+    field.textContent = '—';
+  });
+  wrap.appendChild(field);
+  wrap.appendChild(clr);
+  return wrap;
+}
+
 async function openPreferences() {
   const settings = await ipcRenderer.invoke('get-settings');
+  const hk = { snapFrontmost:'', unsnapFrontmost:'', focusTiN:'', slot1:'', slot2:'', slot3:'', slot4:'',
+    ...(settings.hotkeys || {}) };
   let backdrop = document.getElementById('tin-prefs-backdrop');
   if (backdrop) backdrop.remove();
   backdrop = document.createElement('div');
   backdrop.id = 'tin-prefs-backdrop';
   backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:9999;';
   const panel = document.createElement('div');
-  panel.style.cssText = 'background:#fafafa;padding:20px 24px;border-radius:10px;min-width:280px;box-shadow:0 10px 30px rgba(0,0,0,0.3);font-size:13px;color:#222;';
+  panel.style.cssText = 'background:#fafafa;padding:20px 24px;border-radius:10px;min-width:320px;max-height:90vh;overflow-y:auto;' +
+    'box-shadow:0 10px 30px rgba(0,0,0,0.3);font-size:13px;color:#222;';
   panel.innerHTML = `
     <div style="font-weight:600;font-size:15px;margin-bottom:14px;">Preferences</div>
     <label style="display:block;margin-bottom:10px;">Poll 間隔
       <select id="pref-poll" style="margin-left:8px;">
-        <option value="2000">2s (即応)</option>
-        <option value="4000">4s (標準)</option>
-        <option value="8000">8s (軽量)</option>
+        <option value="1500">1.5s (高速)</option>
+        <option value="2000">2s (標準)</option>
+        <option value="4000">4s (軽量)</option>
+        <option value="8000">8s (省電力)</option>
       </select>
     </label>
     <label style="display:block;margin-bottom:10px;">Drag 終了時
@@ -1093,9 +1167,15 @@ async function openPreferences() {
         <option value="2,3">2×3</option>
       </select>
     </label>
-    <label style="display:flex;align-items:center;margin-bottom:16px;">
+    <label style="display:flex;align-items:center;margin-bottom:14px;">
       <input type="checkbox" id="pref-autolaunch" style="margin-right:8px;">ログイン時に自動起動
     </label>
+    <div style="border-top:1px solid rgba(0,0,0,0.08);margin:0 -4px 12px;padding-top:12px;">
+      <div style="font-weight:600;font-size:12px;color:rgba(0,0,0,0.5);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
+        グローバルホットキー
+      </div>
+      <div id="pref-hk-rows" style="display:grid;grid-template-columns:1fr auto;gap:6px 10px;align-items:center;"></div>
+    </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;">
       <button id="pref-cancel" style="padding:5px 12px;">Cancel</button>
       <button id="pref-save" style="padding:5px 12px;background:#2563eb;color:#fff;border:1px solid #2563eb;border-radius:4px;">Save</button>
@@ -1103,19 +1183,45 @@ async function openPreferences() {
   `;
   backdrop.appendChild(panel);
   document.body.appendChild(backdrop);
+
   panel.querySelector('#pref-poll').value = String(settings.pollIntervalMs || 1500);
   panel.querySelector('#pref-drag').value = settings.dragEndMode || 'position';
   panel.querySelector('#pref-grid').value = `${settings.defaultGridCols||2},${settings.defaultGridRows||2}`;
   panel.querySelector('#pref-autolaunch').checked = !!settings.autoLaunch;
+
+  // ホットキー行を生成
+  const hkRows = panel.querySelector('#pref-hk-rows');
+  const hkDefs = [
+    { key: 'snapFrontmost',   label: 'フロントウィンドウをスナップ' },
+    { key: 'unsnapFrontmost', label: 'フロントウィンドウをアンスナップ' },
+    { key: 'focusTiN',        label: 'TiN にフォーカス' },
+    { key: 'slot1', label: 'スロット 1 に切替 (タブモード)' },
+    { key: 'slot2', label: 'スロット 2 に切替' },
+    { key: 'slot3', label: 'スロット 3 に切替' },
+    { key: 'slot4', label: 'スロット 4 に切替' },
+  ];
+  for (const { key, label } of hkDefs) {
+    const lbl = document.createElement('div');
+    lbl.style.cssText = 'font-size:12px;color:rgba(0,0,0,0.65);';
+    lbl.textContent = label;
+    hkRows.appendChild(lbl);
+    hkRows.appendChild(makeHotkeyField(`pref-hk-${key}`, hk[key]));
+  }
+
   panel.querySelector('#pref-cancel').onclick = () => backdrop.remove();
   panel.querySelector('#pref-save').onclick = async () => {
     const [c, r] = panel.querySelector('#pref-grid').value.split(',').map(Number);
+    const hotkeys = {};
+    for (const { key } of hkDefs) {
+      hotkeys[key] = panel.querySelector(`#pref-hk-${key}`)?.dataset.acc || '';
+    }
     await ipcRenderer.invoke('save-settings', {
       pollIntervalMs: Number(panel.querySelector('#pref-poll').value),
       dragEndMode: panel.querySelector('#pref-drag').value,
       defaultGridCols: c,
       defaultGridRows: r,
       autoLaunch: panel.querySelector('#pref-autolaunch').checked,
+      hotkeys,
     });
     backdrop.remove();
   };
