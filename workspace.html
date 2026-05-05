@@ -242,10 +242,10 @@
   /* タブ右クリックメニュー */
   #tab-ctx-menu {
     position: fixed; z-index: 99999;
-    background: rgba(28,28,30,0.96); backdrop-filter: blur(12px);
-    border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;
+    background: rgb(38,38,40);
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 8px;
     padding: 4px; min-width: 120px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
     animation: ctxFadeIn 0.08s ease;
   }
   @keyframes ctxFadeIn { from { opacity:0; transform:scale(0.96); } to { opacity:1; transform:scale(1); } }
@@ -1281,7 +1281,7 @@ async function openSlotPicker(anchorBtn, w) {
   picker.className = 'slot-picker';
   picker.style.cssText = `
     position:fixed; z-index:10000;
-    background:rgba(28,28,30,0.92); backdrop-filter:blur(14px);
+    background:rgb(36,36,38);
     border:1px solid rgba(255,255,255,0.08); border-radius:10px;
     padding:10px; box-shadow:0 16px 40px rgba(0,0,0,0.5);
     opacity:0; transform:scale(0.94); transition:opacity .12s ease,transform .14s ease;
