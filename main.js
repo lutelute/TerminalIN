@@ -610,11 +610,8 @@ function listWindowsForUI() {
 // Fire-and-forget: sidebar ドラッグ中のリアルタイム retile 用。応答待ちで
 // event loop をブロックしないので、次の move イベントをすぐ処理できる。
 function fireAndForgetMove(windows, positionOnly = false) {
-  if (!windows.length) return;
-  if (axHelper) {
-    try { axHelper.moveWindows(windows, positionOnly); return; } catch {}
-  }
-  osascriptMove(windows).catch(() => {});
+  if (!windows.length || !axHelper) return;
+  try { axHelper.moveWindows(windows, positionOnly); } catch {}
 }
 
 // ── Stabilization guard ──
@@ -735,18 +732,14 @@ function normalizeAppName(name) {
 // set bounds と違ってグローバル座標で解釈される。
 async function batchMove(cmds) {
   if (!cmds.length) return;
+  if (!axHelper) return;
   const t0 = Date.now();
-  if (axHelper) {
-    try {
-      const moved = axHelper.moveWindows(cmds, false);
-      const dt = Date.now() - t0;
-      if (dt > 30) console.log(`[tin] batchMove(native): ${dt}ms ${cmds.length}win moved=${moved}`);
-      if (moved === cmds.length) return;
-    } catch {}
-  }
-  await osascriptMove(cmds);
-  const dt = Date.now() - t0;
-  if (dt > 50) console.log(`[tin] batchMove(osascript): ${dt}ms ${cmds.length}win`);
+  try {
+    const moved = axHelper.moveWindows(cmds, false);
+    const dt = Date.now() - t0;
+    if (dt > 30) console.log(`[tin] batchMove(native): ${dt}ms ${cmds.length}win moved=${moved}`);
+  } catch {}
+  // osascript fallback は廃止 — System Events が全アプリに Automation 権限を要求するため
 }
 
 // System Events を使ったウィンドウ移動 fallback。
@@ -1171,7 +1164,6 @@ ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
   const restoreCmd = [{ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
     x: info.origX, y: info.origY, width: info.origW, height: info.origH }];
   await batchMove(restoreCmd);
-  osascriptMove(restoreCmd).catch(() => {});
   await retileAll(ws);
   raiseAllWorkspaceWindows(ws, true).catch(() => {});
   scheduleSyncSnapped();
@@ -2800,7 +2792,7 @@ app.whenReady().then(() => {
             const b = getSlotBounds(ws, info.slot);
             if (b) moveCmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
           }
-          if (moveCmds.length) await osascriptMove(moveCmds);
+          if (moveCmds.length) await batchMove(moveCmds);
         }
       }},
       { type: 'separator' },
