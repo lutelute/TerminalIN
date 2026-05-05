@@ -96,7 +96,7 @@
     display: grid; pointer-events: none;
     gap: 12px;
     padding: 12px;
-    background: rgba(0,0,0,0.07); /* gap＋padding 部分だけ塗る */
+    background: transparent;
   }
   .gp-cell {
     background: transparent; /* セルは透明 — スナップウィンドウが透けて見える */
@@ -362,12 +362,12 @@
     background: #fff; border: 1px solid rgba(0,0,0,0.12);
     border-radius: 8px; padding: 5px;
     box-shadow: 0 4px 20px rgba(0,0,0,0.18);
-    display: grid; grid-template-columns: repeat(2, 1fr); gap: 2px;
-    min-width: 160px;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px;
+    min-width: 200px;
   }
   .grid-size-custom-row {
     grid-column: 1 / -1;
-    display: flex; flex-direction: column; gap: 5px;
+    display: flex; flex-direction: row; align-items: center; gap: 5px;
     padding: 6px 4px 3px;
     border-top: 1px solid rgba(0,0,0,0.07);
     margin-top: 2px;
@@ -1426,8 +1426,18 @@ function openGridSizePopup(anchorEl) {
     });
     inp.addEventListener('click', (e) => e.stopPropagation());
   });
+  // C-2: 色分けグリッドアイコン（青=列/縦, 橙=行/横）
+  const colIcon = document.createElement('span');
+  colIcon.title = '列数（縦に何分割）';
+  colIcon.innerHTML = `<svg width="20" height="14" viewBox="0 0 20 14" style="display:block"><rect x="0" y="0" width="8" height="14" rx="1.5" fill="rgba(60,120,230,0.75)"/><rect x="10" y="0" width="8" height="14" rx="1.5" fill="rgba(60,120,230,0.22)"/></svg>`;
+  const rowIcon = document.createElement('span');
+  rowIcon.title = '行数（横に何分割）';
+  rowIcon.innerHTML = `<svg width="20" height="14" viewBox="0 0 20 14" style="display:block"><rect x="0" y="0" width="20" height="6" rx="1.5" fill="rgba(230,100,30,0.72)"/><rect x="0" y="8" width="20" height="6" rx="1.5" fill="rgba(230,100,30,0.22)"/></svg>`;
+
+  customRow.appendChild(colIcon);
   customRow.appendChild(colInput);
   customRow.appendChild(sep);
+  customRow.appendChild(rowIcon);
   customRow.appendChild(rowInput);
   customRow.appendChild(applyBtn);
   popup.appendChild(customRow);
@@ -1901,6 +1911,13 @@ function render() {
       });
       _titlebarGrid.appendChild(tab);
     }
+    // ☰ ドロワートグル (タブ隣)
+    const drawerTabBtn = document.createElement('div');
+    drawerTabBtn.className = 'groupy-tab-add';
+    drawerTabBtn.title = 'パネルを開く / 閉じる';
+    drawerTabBtn.textContent = '☰';
+    drawerTabBtn.addEventListener('click', () => toggleDrawer());
+    _titlebarGrid.appendChild(drawerTabBtn);
     // + ボタン (新しい PTY ターミナル)
     const addTabBtn = document.createElement('div');
     addTabBtn.className = 'groupy-tab-add';
@@ -2401,6 +2418,9 @@ let gpEditMode = false; // グリッドJSブロックとこのブロックで共
   });
 
   window.addEventListener('mouseleave', () => setClickthrough(false));
+  // ウィンドウがフォーカスを失ったとき（他のアプリが前面に来たとき）は必ず OFF に戻す
+  // alwaysOnTop:false の場合、TiN がバックグラウンドになると mousemove が届かなくなるため
+  window.addEventListener('blur', () => setClickthrough(false));
 }
 
 // ── Collapse ──
