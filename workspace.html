@@ -1190,7 +1190,7 @@ async function openPreferences() {
   backdrop.appendChild(panel);
   document.body.appendChild(backdrop);
 
-  panel.querySelector('#pref-poll').value = String(settings.pollIntervalMs || 1500);
+  panel.querySelector('#pref-poll').value = String(settings.pollIntervalMs || 2000);
   panel.querySelector('#pref-drag').value = settings.dragEndMode || 'position';
   panel.querySelector('#pref-grid').value = `${settings.defaultGridCols||2},${settings.defaultGridRows||2}`;
   panel.querySelector('#pref-autolaunch').checked = !!settings.autoLaunch;
@@ -2526,57 +2526,89 @@ ipcRenderer.on('close-current', () => {
 });
 // render を debounce して DOM 再構築頻度を制限 (100ms)
 let _renderTimer = null;
-function scheduleRender() {
-  if (_renderTimer) return;
-  _renderTimer = setTimeout(() => { _renderTimer = null; render(); }, 100);
+let _lastRenderKey = '';
+
+function buildRenderKey() {
+  // snapped + grid の変化だけをキーにする (タイトルはドロワー表示分のみ)
+  let k = '';
+  for (const [wn, info] of snappedExternals) k += `${wn}:${info.slot},`;
+  k += '|';
+  for (const slot of Object.keys(gridSlots)) k += `${slot},`;
+  k += '|' + frontmostWindowNumber;
+  k += '|' + externalWindows.length; // ウィンドウ増減は検知
+  return k;
 }
 
-// Frontmost 更新 (main の軽量 poll から 500ms 以内に届く) — ext snap card のハイライト即反映
+function scheduleRender() {
+  if (_renderTimer) return;
+  _renderTimer = setTimeout(() => {
+    _renderTimer = null;
+    const key = buildRenderKey();
+    if (key === _lastRenderKey) return; // 変化なしはスキップ
+    _lastRenderKey = key;
+    render();
+  }, 100);
+}
+
+// タイトル変化など細かい変化は Available リストのみ再描画 (全 render より軽量)
+function scheduleAvailUpdate() {
+  if (_renderTimer) return; // render が pending なら重複不要
+  setTimeout(() => updateAvailList(), 150);
+}
+
+// Frontmost 更新 — ext snap card のハイライト即反映
 ipcRenderer.on('frontmost-update', (_e, wn) => {
   if (wn === frontmostWindowNumber) return;
   frontmostWindowNumber = wn || 0;
+  _lastRenderKey = ''; // frontmost 変化は必ず再描画
   render();
 });
 
 ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snappedSlots, frontmostWn, snappedList) => {
+  const prevLen = externalWindows.length;
   snappedByOther = otherSnapped || {};
   gridSlots = gridInfo || {};
   externalWindows = windows;
   frontmostWindowNumber = frontmostWn || 0;
-  gpRender(gridCols, gridRows);
 
   // snappedList が届いた場合は authoritative sync (main.js の状態を正とする)
+  let snappedChanged = false;
   if (snappedList) {
     const authoritative = new Map(snappedList.map(e => [e.windowNumber, e]));
-    // main にいないエントリを削除
     for (const [k] of snappedExternals) {
-      if (!authoritative.has(k)) snappedExternals.delete(k);
+      if (!authoritative.has(k)) { snappedExternals.delete(k); snappedChanged = true; }
     }
-    // main のエントリを追加・更新
     for (const [k, entry] of authoritative) {
       const existing = snappedExternals.get(k);
       if (existing) {
-        // live window があればタイトル補完
         const live = windows.find(w => w.windowNumber === k);
         if (live && live.title) existing.title = live.title;
         if (live && live.app) existing.app = live.app;
-        existing.slot = entry.slot;
+        if (existing.slot !== entry.slot) { existing.slot = entry.slot; snappedChanged = true; }
       } else {
         snappedExternals.set(k, { title: entry.title, app: entry.app, slot: entry.slot });
+        snappedChanged = true;
       }
     }
   } else {
-    // snappedList なし (旧バージョン互換): live のみでタイトル補完
     for (const [k, info] of snappedExternals) {
       const live = windows.find(w => w.windowNumber === k);
       if (live) {
         if (live.title) info.title = live.title;
         if (live.app) info.app = live.app;
       }
-      // 削除しない — main.js が unsnap したタイミングで hydrate-snapped が来る
     }
   }
-  scheduleRender();
+
+  if (snappedChanged || windows.length !== prevLen) {
+    // スナップ増減・ウィンドウ数変化: グリッドと Available を両方更新
+    gpRender(gridCols, gridRows);
+    _lastRenderKey = ''; // 強制再描画
+    scheduleRender();
+  } else {
+    // タイトルのみの変化: Available リストだけ軽量更新
+    scheduleAvailUpdate();
+  }
 });
 
 // ── Raise on sidebar click (軽量: mousedown ではなく mouseup + debounce で発火) ──
