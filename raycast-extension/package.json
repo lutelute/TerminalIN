@@ -1,0 +1,48 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "tin-window-manager",
+  "title": "TiN Window Manager",
+  "description": "Snap, unsnap, and manage windows with TiN",
+  "icon": "tin-icon.png",
+  "author": "lutelute",
+  "categories": ["Productivity", "Developer Tools"],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "snap-window",
+      "title": "Snap Frontmost Window",
+      "description": "Snap the current frontmost window into TiN",
+      "mode": "no-view"
+    },
+    {
+      "name": "unsnap-window",
+      "title": "Unsnap Frontmost Window",
+      "description": "Release the current frontmost window from TiN",
+      "mode": "no-view"
+    },
+    {
+      "name": "switch-workspace",
+      "title": "Switch Workspace",
+      "description": "Focus TiN and list workspaces",
+      "mode": "view"
+    },
+    {
+      "name": "show-status",
+      "title": "TiN Status",
+      "description": "Show snapped windows and workspace state",
+      "mode": "view"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.70.0"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^1.0.8",
+    "typescript": "^5.4.5"
+  },
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "lint": "ray lint"
+  }
+}
