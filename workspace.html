@@ -393,10 +393,12 @@
   .grid-size-custom-btn:hover { background: rgba(60,120,230,0.22); }
   /* カスタムプレビュー: SVG グリッドをスクロール可能なエリアに表示 */
   .grid-size-custom-preview {
-    width: 100%; overflow-x: auto; overflow-y: hidden;
+    grid-column: 1 / -1;
     display: flex; align-items: center; justify-content: center;
-    padding: 3px 0;
-    color: rgba(0,0,0,0.5);
+    padding: 6px 4px 4px;
+    border-top: 1px solid rgba(0,0,0,0.06);
+    margin-top: 2px;
+    overflow: auto;
   }
   .grid-size-custom-preview svg { flex-shrink: 0; }
   .grid-size-item {
@@ -1448,18 +1450,32 @@ function openGridSizePopup(anchorEl) {
   const updatePreview = () => {
     const c = Math.max(1, Math.min(20, parseInt(colInput.value, 10) || 1));
     const r = Math.max(1, Math.min(20, parseInt(rowInput.value, 10) || 1));
-    const W = 120, H = 80, gap = 2;
+    // 列が多いほど横長、行が多いほど縦長になるようアスペクト比を調整
+    const W = Math.max(160, Math.min(220, c * 36));
+    const H = Math.max(72,  Math.min(160, r * 36));
+    const gap = Math.max(2, Math.min(4, Math.floor(Math.min(W / c, H / r) * 0.1)));
     const cw = (W - gap * (c - 1)) / c;
     const rh = (H - gap * (r - 1)) / r;
+    // 列ごとに青の濃さを変えて縦方向を強調、行ごとにオレンジを変えて横方向を強調
     let rects = '';
     for (let ci = 0; ci < c; ci++) {
       for (let ri = 0; ri < r; ri++) {
         const x = (ci * (cw + gap)).toFixed(1);
         const y = (ri * (rh + gap)).toFixed(1);
-        rects += `<rect x="${x}" y="${y}" width="${cw.toFixed(1)}" height="${rh.toFixed(1)}" rx="2"/>`;
+        // 列の色合い: 青
+        const colAlpha = (0.55 - (ci / Math.max(c - 1, 1)) * 0.28).toFixed(2);
+        // 行の色合い: オレンジ
+        const rowAlpha = (0.38 - (ri / Math.max(r - 1, 1)) * 0.18).toFixed(2);
+        // 混合: 青ベースにオレンジをミックス
+        const fill = ci === 0 && ri === 0
+          ? `rgba(60,120,230,${colAlpha})`
+          : `rgba(${Math.round(60 + ri * 12)},${Math.round(120 - ri * 8)},${Math.round(230 - ci * 20)},${(0.32 - ci * 0.02 - ri * 0.015).toFixed(2)})`;
+        rects += `<rect x="${x}" y="${y}" width="${cw.toFixed(1)}" height="${rh.toFixed(1)}" rx="3" fill="${fill}" stroke="rgba(60,100,200,0.35)" stroke-width="0.8"/>`;
       }
     }
-    previewDiv.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="rgba(60,120,230,0.25)" stroke="rgba(60,120,230,0.6)" stroke-width="0.5">${rects}</svg>`;
+    // ラベル (例: 5×1)
+    const label = `${c}×${r}`;
+    previewDiv.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:4px"><svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${rects}</svg><span style="font-size:10px;color:rgba(0,0,0,0.35);font-family:'SF Mono','Menlo',monospace;font-weight:600">${label}</span></div>`;
   };
   [colInput, rowInput].forEach(inp => inp.addEventListener('input', updatePreview));
   updatePreview();
