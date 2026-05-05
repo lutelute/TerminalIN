@@ -789,33 +789,14 @@ async function osascriptMove(cmds) {
 // アクティブ化すると TiN がその後ろに隠れてしまうため。
 async function raiseSpecificWindows(cmds) {
   if (!cmds.length) return;
-  const t0 = Date.now();
-  if (axHelper) {
-    try {
-      const raised = axHelper.raiseWindows(cmds);
-      const dt = Date.now() - t0;
-      if (dt > 30) console.log(`[tin] raise(native): ${dt}ms ${cmds.length}win raised=${raised}`);
-      if (raised === cmds.length) return;
-    } catch {}
-  }
-  // osascript fallback (AXRaise via System Events)
-  const byApp = new Map();
-  for (const cmd of cmds) {
-    if (!cmd.app) continue;
-    const normalizedApp = normalizeAppName(cmd.app);
-    if (!byApp.has(normalizedApp)) byApp.set(normalizedApp, []);
-    byApp.get(normalizedApp).push(cmd);
-  }
-  const jobs = [];
-  for (const [appName, wins] of byApp) {
-    const raiseLines = wins.map(w => {
-      const t = (w.title || '').substring(0, 20).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      return `    try\n      perform action "AXRaise" of (first window whose name contains "${t}")\n    end try`;
-    }).join('\n');
-    const script = `tell application "System Events" to tell process "${appName}"\n${raiseLines}\nend tell`;
-    jobs.push(runOsascript(script, 2000));
-  }
-  if (jobs.length) await Promise.all(jobs);
+  if (!axHelper) return;
+  try {
+    const t0 = Date.now();
+    axHelper.raiseWindows(cmds);
+    const dt = Date.now() - t0;
+    if (dt > 30) console.log(`[tin] raise(native): ${dt}ms ${cmds.length}win`);
+  } catch {}
+  // osascript fallback は使わない — spawn ~200ms の遅延がタブ選択のもたつきの原因
 }
 
 // ── Helpers ──
@@ -860,25 +841,25 @@ function getSlotBounds(ws, slot) {
   }
 
   // ── Grid モード: 通常のグリッドレイアウト ──
-  // gap=12, padding=12 は workspace.html の .gp-grid-container と一致させる
+  // gap/padding は workspace.html の .gp-grid-container と一致させる
+  // CSS: gap:8px, padding: 4px 8px 8px (top=4, right=8, bottom=8, left=8)
   const cols = ws.gridCols, rows = ws.gridRows;
-  const gap = 12, pad = 12;
+  const gap = 8, padX = 8, padTop = 4, padBottom = 8;
   const col = slot % cols, row = Math.floor(slot / cols);
 
   const colRatios = (ws.colRatios && ws.colRatios.length === cols) ? ws.colRatios : Array(cols).fill(1/cols);
   const rowRatios = (ws.rowRatios && ws.rowRatios.length === rows) ? ws.rowRatios : Array(rows).fill(1/rows);
 
-  // padding=12: グリッドエリアの外周余白
-  const innerW = area.width - pad * 2 - gap * (cols - 1);
-  const innerH = area.height - pad * 2 - gap * (rows - 1);
+  const innerW = area.width  - padX * 2 - gap * (cols - 1);
+  const innerH = area.height - padTop - padBottom - gap * (rows - 1);
 
   let xOff = 0, yOff = 0;
   for (let i = 0; i < col; i++) xOff += innerW * colRatios[i] + gap;
   for (let i = 0; i < row; i++) yOff += innerH * rowRatios[i] + gap;
 
   return {
-    x: Math.round(area.x + pad + xOff),
-    y: Math.round(area.y + pad + yOff),
+    x: Math.round(area.x + padX + xOff),
+    y: Math.round(area.y + padTop + yOff),
     width: Math.round(innerW * colRatios[col]),
     height: Math.round(innerH * rowRatios[row]),
   };
@@ -1794,7 +1775,7 @@ function createWorkspace(name, savedState) {
     transparent: true,        // グリッドパネル部分を透過させスナップウィンドウを表示
     backgroundColor: '#00000000',
     hasShadow: true,
-    alwaysOnTop: true,   // Groupy: TiN ヘッダーが外部アプリのタイトルバーの上に常時表示
+    alwaysOnTop: false,
     acceptFirstMouse: true,
     webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false, backgroundThrottling: false },
   });
@@ -2163,8 +2144,30 @@ function createWorkspace(name, savedState) {
     ws.pollTimer = setInterval(pollFn, appSettings.pollIntervalMs || 4000);
   };
 
+  // ── ヘッダー保護: カーソルがヘッダー上なら強制的に click-through OFF ──
+  // alwaysOnTop:false の場合 setIgnoreMouseEvents(true) でイベントが届かなくなるため
+  // main プロセスからカーソル座標をポーリングして安全に制御する。
+  // カーソルが TiN ウィンドウ外にあるときはポーリング間隔を 1 秒に落として軽量化。
+  let _ctGuardFast = false;
+  ws._ctGuardTimer = setInterval(() => {
+    if (!ws.win || ws.win.isDestroyed()) return;
+    const cursor = screen.getCursorScreenPoint();
+    const b = ws.win.getBounds();
+    const inWindow = cursor.x >= b.x && cursor.x <= b.x + b.width
+                  && cursor.y >= b.y && cursor.y <= b.y + b.height;
+    if (!inWindow) {
+      // ウィンドウ外: 低頻度でよい。前回 fast だったなら click-through リセット
+      if (_ctGuardFast) { ws.win.setIgnoreMouseEvents(false); _ctGuardFast = false; }
+      return;
+    }
+    _ctGuardFast = true;
+    const inHeader = cursor.y < b.y + TITLEBAR_H;
+    if (inHeader) ws.win.setIgnoreMouseEvents(false);
+  }, 150);
+
   win.on('closed', async () => {
     if (ws.pollTimer) clearInterval(ws.pollTimer);
+    if (ws._ctGuardTimer) clearInterval(ws._ctGuardTimer);
     if (ws.moveThrottle) clearTimeout(ws.moveThrottle);
     if (ws.overlayThrottle) clearTimeout(ws.overlayThrottle);
     // Close grid windows

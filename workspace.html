@@ -94,13 +94,21 @@
   .gp-grid-container {
     position: absolute; inset: 0;
     display: grid; pointer-events: none;
-    gap: 12px;
-    padding: 12px;
+    gap: 8px;
+    padding: 4px 8px 8px;  /* 上は狭く、左右・下は標準 */
     background: transparent;
   }
+  /* グリッドオーバーレイ: 複数アプリのグリッドモードのときだけ表示 */
+  #gp-grid { opacity: 0; transition: opacity 0.15s; pointer-events: none; }
+  body.show-grid-overlay #gp-grid { opacity: 1; }
   .gp-cell {
-    background: transparent; /* セルは透明 — スナップウィンドウが透けて見える */
+    background: transparent;
+    box-shadow: inset 0 0 0 1px rgba(100,140,220,0.15);
+    border-radius: 4px;
   }
+  /* スナップ済み(アプリあり)のスロットは枠を非表示。空きスロットだけ薄く表示 */
+  body.show-grid-overlay #gp-grid .gp-cell.cell-occupied { box-shadow: none; }
+  body.show-grid-overlay #gp-grid .gp-cell.cell-active   { box-shadow: none; }
   .gp-cell-empty { background: transparent; }
 
   /* 分割線なし */
@@ -228,6 +236,25 @@
     margin-left: 2px; transition: background 0.1s, color 0.1s;
   }
   .groupy-tab .tab-close:hover { background: rgba(220,50,50,0.15); color: rgba(200,40,40,0.8); }
+  /* タブ右クリックメニュー */
+  #tab-ctx-menu {
+    position: fixed; z-index: 99999;
+    background: rgba(28,28,30,0.96); backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;
+    padding: 4px; min-width: 120px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+    animation: ctxFadeIn 0.08s ease;
+  }
+  @keyframes ctxFadeIn { from { opacity:0; transform:scale(0.96); } to { opacity:1; transform:scale(1); } }
+  .ctx-item {
+    padding: 6px 12px; font-size: 12px; color: rgba(255,255,255,0.85);
+    border-radius: 5px; cursor: pointer; display: flex; align-items: center; gap: 8px;
+    -webkit-app-region: no-drag;
+  }
+  .ctx-item:hover { background: rgba(255,255,255,0.1); }
+  .ctx-item.danger { color: rgba(255,90,90,0.9); }
+  .ctx-item.danger:hover { background: rgba(255,60,60,0.15); }
+  .ctx-sep { height: 1px; background: rgba(255,255,255,0.1); margin: 3px 4px; }
   .groupy-tab-add {
     height: 20px; width: 20px;
     display: flex; align-items: center; justify-content: center;
@@ -1730,6 +1757,42 @@ function swapSlotsLocally(src, dst) {
   if (dstExt) dstExt.slot = src;
 }
 
+// ── タブ右クリックコンテキストメニュー ──
+function showTabCtxMenu(x, y, { wn, isPty, slotKey }) {
+  const existing = document.getElementById('tab-ctx-menu');
+  if (existing) existing.remove();
+  const menu = document.createElement('div');
+  menu.id = 'tab-ctx-menu';
+
+  const mkItem = (icon, label, cls, fn) => {
+    const el = document.createElement('div');
+    el.className = 'ctx-item' + (cls ? ' ' + cls : '');
+    el.innerHTML = `<span>${icon}</span><span>${label}</span>`;
+    el.addEventListener('mousedown', (e) => { e.stopPropagation(); menu.remove(); fn(); });
+    menu.appendChild(el);
+  };
+
+  if (isPty) {
+    mkItem('⤢', '前面に表示', '', () => ipcRenderer.invoke('add-grid-terminal'));
+    menu.appendChild(Object.assign(document.createElement('div'), { className: 'ctx-sep' }));
+    mkItem('✕', 'ターミナルを閉じる', 'danger', () => ipcRenderer.invoke('remove-grid-terminal', { slot: Number(slotKey) }));
+  } else {
+    mkItem('⤢', '前面に表示', '', () => ipcRenderer.invoke('raise-snapped', { windowNumber: wn }));
+    menu.appendChild(Object.assign(document.createElement('div'), { className: 'ctx-sep' }));
+    mkItem('⎋', 'Unsnap', 'danger', () => ipcRenderer.invoke('unsnap-external', { windowNumber: wn }));
+  }
+
+  // 位置調整（ヘッダー内 + 画面端クリップ）
+  menu.style.left = '0'; menu.style.top = '0';
+  document.body.appendChild(menu);
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  menu.style.left = Math.min(x, window.innerWidth - mw - 8) + 'px';
+  menu.style.top = Math.max(68 + 4, Math.min(y, window.innerHeight - mh - 8)) + 'px';
+
+  const close = (e) => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('mousedown', close); } };
+  setTimeout(() => document.addEventListener('mousedown', close), 0);
+}
+
 // ── Persistent DOM sections (created once, updated in-place) ──
 const _gridSection = document.createElement('div');
 _gridSection.className = 'section section-grid';
@@ -1895,6 +1958,10 @@ function render() {
         e.stopPropagation();
         ipcRenderer.invoke('remove-grid-terminal', { slot: Number(slot) });
       });
+      tab.addEventListener('contextmenu', e => {
+        e.preventDefault(); e.stopPropagation();
+        showTabCtxMenu(e.clientX, e.clientY, { isPty: true, slotKey: slot });
+      });
       _titlebarGrid.appendChild(tab);
     }
     // 外部スナップ済みタブ
@@ -1924,6 +1991,10 @@ function render() {
       tab.querySelector('.tab-close').addEventListener('click', e => {
         e.stopPropagation();
         ipcRenderer.invoke('unsnap-external', { windowNumber: wn });
+      });
+      tab.addEventListener('contextmenu', e => {
+        e.preventDefault(); e.stopPropagation();
+        showTabCtxMenu(e.clientX, e.clientY, { wn, isPty: false });
       });
       _titlebarGrid.appendChild(tab);
     }
@@ -2316,6 +2387,11 @@ function render() {
   _availSection.style.display = available.length > 0 ? '' : 'none';
 
   statusEl.textContent = `${Object.keys(gridSlots).length} grid \u00b7 ${snappedExternals.size} ext \u00b7 ${embeddedTerms.length} console`;
+
+  // \u30b0\u30ea\u30c3\u30c9\u30aa\u30fc\u30d0\u30fc\u30ec\u30a4: \u8907\u6570\u30a2\u30d7\u30ea & \u30b0\u30ea\u30c3\u30c9\u30e2\u30fc\u30c9\u306e\u3068\u304d\u3060\u3051\u8868\u793a
+  const totalItems = snappedExternals.size + Object.keys(gridSlots).length;
+  const showOverlay = currentViewMode === 'grid' && totalItems >= 2;
+  document.body.classList.toggle('show-grid-overlay', showOverlay);
 }
 
 // ── IPC ──
@@ -2434,9 +2510,8 @@ let gpEditMode = false; // グリッドJSブロックとこのブロックで共
   });
 
   window.addEventListener('mouseleave', () => setClickthrough(false));
-  // ウィンドウがフォーカスを失ったとき（他のアプリが前面に来たとき）は必ず OFF に戻す
-  // alwaysOnTop:false の場合、TiN がバックグラウンドになると mousemove が届かなくなるため
-  window.addEventListener('blur', () => setClickthrough(false));
+  // blur で OFF にしない: click-through ON でターミナルをクリックすると blur が発火し、
+  // 次クリックを TiN が横取りする原因になる。ヘッダー保護は main の _ctGuardTimer が担当。
 }
 
 // ── Collapse ──
@@ -2505,18 +2580,35 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
     if (!container) return;
     const cumC = gpGetCumulative(gpColRatios, cols);
     const cumR = gpGetCumulative(gpRowRatios, rows);
+    // fr 単位を使う: CSS grid が gap を差し引いた残り幅を fr で配分するため
+    // % 単位だと gap を二重計算して JS の getSlotBounds とズレる
     const colSizes = [];
-    for (let i = 0; i < cols; i++) colSizes.push(`${(cumC[i+1] - cumC[i]) * 100}%`);
+    for (let i = 0; i < cols; i++) colSizes.push(`${(cumC[i+1] - cumC[i])}fr`);
     const rowSizes = [];
-    for (let i = 0; i < rows; i++) rowSizes.push(`${(cumR[i+1] - cumR[i]) * 100}%`);
+    for (let i = 0; i < rows; i++) rowSizes.push(`${(cumR[i+1] - cumR[i])}fr`);
     container.style.gridTemplateColumns = colSizes.join(' ');
     container.style.gridTemplateRows = rowSizes.join(' ');
     container.style.gap = '8px';
     container.innerHTML = '';
+    // 占有済みスロット（アプリあり）を特定
+    const occupiedSlots = new Set([
+      ...[...snappedExternals.values()].map(i => i.slot).filter(s => typeof s === 'number'),
+      ...Object.keys(gridSlots).map(Number),
+    ]);
+    const activeSlot = (() => {
+      if (frontmostWindowNumber <= 0) return -1;
+      for (const [wn, info] of snappedExternals) {
+        if (wn === frontmostWindowNumber) return info.slot ?? -1;
+      }
+      return -1;
+    })();
     const total = cols * rows;
     for (let i = 0; i < total; i++) {
       const cell = document.createElement('div');
-      cell.className = 'gp-cell';
+      const cls = ['gp-cell'];
+      if (occupiedSlots.has(i)) cls.push('cell-occupied');
+      if (i === activeSlot)     cls.push('cell-active');
+      cell.className = cls.join(' ');
       container.appendChild(cell);
     }
     document.querySelectorAll('.gp-divider').forEach(el => el.remove());
