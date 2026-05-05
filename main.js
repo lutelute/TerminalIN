@@ -185,7 +185,7 @@ const DEFAULT_HOTKEYS = {
   slot1: '', slot2: '', slot3: '', slot4: '',
 };
 const DEFAULT_SETTINGS = {
-  pollIntervalMs: 1500,
+  pollIntervalMs: 2000,
   dragEndMode: 'position',  // 'position' | 'full' | 'off'
   defaultGridCols: 2,
   defaultGridRows: 2,
@@ -2206,9 +2206,15 @@ function createWorkspace(name, savedState) {
     }
 
     // Fast-path: build identity string and skip IPC if nothing changed
-    // 軽量な identity: windowNumber:title の連結 + snapped keys + grid keys
+    // スナップ済みウィンドウのみタイトルを含める (terminal タイトルは常時変化するため
+    // 全ウィンドウのタイトルを入れると毎 poll で IPC が発火してしまう)
+    const snappedWnSet = new Set(ws.snappedExternals.keys());
     let identity = '';
-    for (const w of windows) { identity += w.windowNumber; identity += ':'; identity += w.title; identity += ','; }
+    for (const w of windows) {
+      identity += w.windowNumber;
+      if (snappedWnSet.has(w.windowNumber)) { identity += ':'; identity += w.title; }
+      identity += ',';
+    }
     identity += '|';
     for (const k of ws.snappedExternals.keys()) { identity += k; identity += ','; }
     identity += '|';
