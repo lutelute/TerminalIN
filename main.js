@@ -2699,7 +2699,7 @@ function startFrontmostPoll() {
         }
       }
     } catch {}
-  }, 500);
+  }, 1000); // 1000ms: mousedown で即時更新するので視覚的な遅れなし
 }
 
 app.whenReady().then(() => {
