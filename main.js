@@ -178,7 +178,7 @@ const TIN_START_TIME = Date.now();
 // アプリ設定
 const SETTINGS_JSON = path.join(INTEGRATION_DIR, 'settings.json');
 const DEFAULT_SETTINGS = {
-  pollIntervalMs: 4000,
+  pollIntervalMs: 1500,
   dragEndMode: 'position',  // 'position' | 'full' | 'off'
   defaultGridCols: 2,
   defaultGridRows: 2,
@@ -620,7 +620,7 @@ function fireAndForgetMove(windows, positionOnly = false) {
 // We set `stabilizingUntil` on these events to suppress release logic
 // for a while afterward.
 let stabilizingUntil = 0; // グローバル fallback (sleep/display 系イベント用)
-const STABILIZE_MS = 60000;
+const STABILIZE_MS = 30000;
 let retileAfterStabilize = null;
 let recoveryTimers = [];
 
@@ -681,7 +681,7 @@ function beginStabilize(reason, ws) {
   console.log(`[tin] stabilizing for ${STABILIZE_MS}ms (reason: ${reason})`);
   recoveryTimers.forEach(t => clearTimeout(t));
   recoveryTimers = [];
-  [1000, 3000, 8000, 20000, 60000].forEach(delay => {
+  [1000, 3000, 8000, 15000, 30000].forEach(delay => {
     const t = setTimeout(() => {
       recoverSnappedWindows().catch(e => console.warn('[tin] recovery failed:', e.message));
     }, delay);
@@ -1894,8 +1894,8 @@ function createWorkspace(name, savedState) {
   ws.viewMode = 'grid';       // 'grid' | 'tab' — Groupy 表示モード
   ws.activeTabSlot = 0;       // Tab モードでアクティブなスロット番号
   // Poll external windows
-  // pollTimer: 2000ms。Available リスト更新は 2 秒遅延するが
-  // snap/unsnap の即時操作には影響しない。snapped の grace period は 8 回 = ~16s。
+  // pollTimer: デフォルト 1500ms。listWindows (CGWindowList, ~1ms) なので短縮しても CPU 負荷は低い。
+  // snap/unsnap の即時操作には影響しない。snapped の grace period は 3 回 miss = ~4.5s。
   const pollFn = async () => {
     if (!ws.win || ws.win.isDestroyed()) return;
     if (_dragging) return;
@@ -2125,10 +2125,8 @@ function createWorkspace(name, savedState) {
       if (typeof info.slot === 'number') snappedSlots[wn] = info.slot;
       snappedList.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
     }
-    // 最前面 window (focused slot ハイライト用)
-    let frontmostWn = 0;
-    try { if (axHelper && axHelper.getFrontmostWindowNumber) frontmostWn = axHelper.getFrontmostWindowNumber() || 0; } catch {}
-    ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots, snappedSlots, frontmostWn, snappedList);
+    // 最前面 window (focused slot ハイライト用) — _frontmostInterval (500ms) のキャッシュを流用
+    ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots, snappedSlots, _lastFrontmost, snappedList);
   };
   ws.pollTimer = setInterval(pollFn, appSettings.pollIntervalMs || 4000);
   ws._pollRestart = () => {
@@ -2139,27 +2137,30 @@ function createWorkspace(name, savedState) {
   // ── ヘッダー保護: カーソルがヘッダー上なら強制的に click-through OFF ──
   // alwaysOnTop:false の場合 setIgnoreMouseEvents(true) でイベントが届かなくなるため
   // main プロセスからカーソル座標をポーリングして安全に制御する。
-  // カーソルが TiN ウィンドウ外にあるときはポーリング間隔を 1 秒に落として軽量化。
+  // ウィンドウ内: 100ms、ウィンドウ外: 800ms の adaptive setTimeout ループ。
+  // setInterval(150ms) より外でのnative call を ~8倍削減。
   let _ctGuardFast = false;
-  ws._ctGuardTimer = setInterval(() => {
+  const _ctGuardLoop = () => {
     if (!ws.win || ws.win.isDestroyed()) return;
     const cursor = screen.getCursorScreenPoint();
     const b = ws.win.getBounds();
     const inWindow = cursor.x >= b.x && cursor.x <= b.x + b.width
                   && cursor.y >= b.y && cursor.y <= b.y + b.height;
     if (!inWindow) {
-      // ウィンドウ外: 低頻度でよい。前回 fast だったなら click-through リセット
       if (_ctGuardFast) { ws.win.setIgnoreMouseEvents(false); _ctGuardFast = false; }
+      ws._ctGuardTimer = setTimeout(_ctGuardLoop, 800);
       return;
     }
     _ctGuardFast = true;
     const inHeader = cursor.y < b.y + TITLEBAR_H;
     if (inHeader) ws.win.setIgnoreMouseEvents(false);
-  }, 150);
+    ws._ctGuardTimer = setTimeout(_ctGuardLoop, 100);
+  };
+  ws._ctGuardTimer = setTimeout(_ctGuardLoop, 100);
 
   win.on('closed', async () => {
     if (ws.pollTimer) clearInterval(ws.pollTimer);
-    if (ws._ctGuardTimer) clearInterval(ws._ctGuardTimer);
+    if (ws._ctGuardTimer) clearTimeout(ws._ctGuardTimer);
     if (ws.moveThrottle) clearTimeout(ws.moveThrottle);
     if (ws.overlayThrottle) clearTimeout(ws.overlayThrottle);
     // Close grid windows

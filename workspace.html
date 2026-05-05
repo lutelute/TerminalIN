@@ -1103,7 +1103,7 @@ async function openPreferences() {
   `;
   backdrop.appendChild(panel);
   document.body.appendChild(backdrop);
-  panel.querySelector('#pref-poll').value = String(settings.pollIntervalMs || 4000);
+  panel.querySelector('#pref-poll').value = String(settings.pollIntervalMs || 1500);
   panel.querySelector('#pref-drag').value = settings.dragEndMode || 'position';
   panel.querySelector('#pref-grid').value = `${settings.defaultGridCols||2},${settings.defaultGridRows||2}`;
   panel.querySelector('#pref-autolaunch').checked = !!settings.autoLaunch;
@@ -2494,12 +2494,12 @@ let gpEditMode = false; // グリッドJSブロックとこのブロックで共
     ipcRenderer.send('set-win-clickthrough', on);
   }
 
-  window.addEventListener('mousemove', (e) => {
+  function evalClickthrough(clientX, clientY) {
     if (gpEditMode) { setClickthrough(false); return; }
 
     // ① カーソル下に z-index > 100 の要素があればポップアップ/ドロワー等の UI
     //   → click-through 無効 (グリッドサイズポップアップ・Space ピッカー等すべてに対応)
-    const hasOverlay = document.elementsFromPoint(e.clientX, e.clientY).some(el => {
+    const hasOverlay = document.elementsFromPoint(clientX, clientY).some(el => {
       const z = parseInt(getComputedStyle(el).zIndex, 10);
       return !isNaN(z) && z > 100;
     });
@@ -2507,10 +2507,16 @@ let gpEditMode = false; // グリッドJSブロックとこのブロックで共
 
     // ② ヘッダー (#sidebar) 上か content area (#grid-panel) 上か判定
     const gridRect = gridPanel.getBoundingClientRect();
-    const onGrid = e.clientX >= gridRect.left && e.clientX <= gridRect.right
-                && e.clientY >= gridRect.top  && e.clientY <= gridRect.bottom;
+    const onGrid = clientX >= gridRect.left && clientX <= gridRect.right
+                && clientY >= gridRect.top  && clientY <= gridRect.bottom;
     setClickthrough(onGrid);
-  });
+  }
+
+  window.addEventListener('mousemove', (e) => evalClickthrough(e.clientX, e.clientY));
+
+  // mousedown capture phase: mousemove と click がほぼ同時に届いた場合に
+  // clickthrough が ON のままクリックが届くのを防ぐ (IPC 非同期遅延対策)
+  window.addEventListener('mousedown', (e) => evalClickthrough(e.clientX, e.clientY), true);
 
   window.addEventListener('mouseleave', () => setClickthrough(false));
   // blur で OFF にしない: click-through ON でターミナルをクリックすると blur が発火し、
