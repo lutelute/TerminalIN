@@ -190,6 +190,7 @@ const DEFAULT_SETTINGS = {
   defaultGridCols: 2,
   defaultGridRows: 2,
   autoLaunch: false,
+  stickyWindows: false,     // 全 Space 追従: GPU コンポジターに常時負荷をかけるため OFF 推奨
   hotkeys: { ...DEFAULT_HOTKEYS },
 };
 let appSettings = { ...DEFAULT_SETTINGS };
@@ -567,8 +568,8 @@ async function restoreAllPending() {
     }
     await batchMove(allMoveCmds);
     console.log(`[tin] batch restore: moved ${allMoveCmds.length} windows in 1 call`);
-    // restore した snapped windows を sticky 化（Space 移動追従のため）
-    if (axHelper && axHelper.setWindowSticky) {
+    // sticky 化 — stickyWindows 設定が ON の場合のみ (OFF = コンポジター負荷なし)
+    if (appSettings.stickyWindows && axHelper && axHelper.setWindowSticky) {
       const wns = allMoveCmds.map(c => c.windowNumber);
       try { axHelper.setWindowSticky(wns, true); console.log(`[tin] batch restore: sticky set for ${wns.length} windows`); } catch {}
     }
@@ -1142,8 +1143,7 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
         await new Promise(r => setTimeout(r, 80));
       }
       if (pos) await batchMove([{ windowNumber, pid, app: appName, title, windowIndex: windowIndex || 0, ...pos }]);
-      // snap 後に sticky 化 — TiN がどの Space に移動しても snapped が常時追従する
-      if (axHelper && axHelper.setWindowSticky) {
+      if (appSettings.stickyWindows && axHelper && axHelper.setWindowSticky) {
         axHelper.setWindowSticky([windowNumber], true);
         console.log(`[tin] snap: wn=${windowNumber} → sticky=true`);
       }
@@ -1308,7 +1308,7 @@ async function snapFrontmostWindow(ws) {
         await new Promise(r => setTimeout(r, 80));
       }
       await batchMove([{ windowNumber: wn, pid: win.pid, app: win.app, title: win.title, ...pos }]);
-      if (axHelper.setWindowSticky) axHelper.setWindowSticky([wn], true);
+      if (appSettings.stickyWindows && axHelper.setWindowSticky) axHelper.setWindowSticky([wn], true);
     } catch {}
   }
   scheduleSaveWorkspaces();
@@ -1421,8 +1421,8 @@ ipcMain.handle('retile-now', async (event) => {
       wns.push(info.windowNumber);
     }
   }
-  // sticky が漏れているウィンドウがあれば再設定（restore 後の保険）
-  if (wns.length && axHelper && axHelper.setWindowSticky) {
+  // sticky 再設定 (stickyWindows ON 時のみ)
+  if (appSettings.stickyWindows && wns.length && axHelper && axHelper.setWindowSticky) {
     try { axHelper.setWindowSticky(wns, true); } catch {}
   }
   // snapped ウィンドウ + このワークスペースの TiN 全ウィンドウをまとめて現在 Space に引き寄せる
@@ -2824,6 +2824,16 @@ app.whenReady().then(() => {
   registerHotkeys();
   startRestServer();
 
+  // stickyWindows=false の場合: 残存 sticky を起動時に即解除 (前バージョンの遺産を清掃)
+  if (!appSettings.stickyWindows && axHelper && axHelper.setWindowSticky) {
+    try {
+      const allWins = axHelper.listWindows();
+      const nonTiN = allWins.filter(w => w.app !== 'TiN').map(w => w.windowNumber);
+      if (nonTiN.length) axHelper.setWindowSticky(nonTiN, false);
+      console.log(`[tin] cleared sticky on ${nonTiN.length} windows`);
+    } catch {}
+  }
+
   // Accessibility 権限チェック: 無いと snap / raise が silent fail するので
   // 明示的にダイアログ表示して System Settings へ誘導。
   if (axHelper && !axHelper.isAXTrusted()) {
@@ -3098,7 +3108,7 @@ function startRestServer() {
           try {
             if (axHelper.moveWindowsToActiveSpace) { axHelper.moveWindowsToActiveSpace([targetWn]); await new Promise(r=>setTimeout(r,80)); }
             await batchMove([{ windowNumber: targetWn, pid: win.pid, app: win.app, title: win.title, ...pos }]);
-            if (axHelper.setWindowSticky) axHelper.setWindowSticky([targetWn], true);
+            if (appSettings.stickyWindows && axHelper.setWindowSticky) axHelper.setWindowSticky([targetWn], true);
           } catch {}
         })();
       }
