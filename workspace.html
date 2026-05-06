@@ -2085,7 +2085,7 @@ function render() {
   sizeBtn.className = 'grid-opt grid-size-cycle active';
   sizeBtn.textContent = curIdx >= 0 ? _sizeCyclePresets[curIdx][0] : `${gridCols}\u00d7${gridRows}`;
   sizeBtn.title = '\u30af\u30ea\u30c3\u30af\u3067\u30ec\u30a4\u30a2\u30a6\u30c8\u9078\u629e | \u30b9\u30af\u30ed\u30fc\u30eb\u3067\u9806\u9001\u308a';
-  sizeBtn.addEventListener('click', (e) => { e.stopPropagation(); openGridSizePopup(sizeBtn); });
+  sizeBtn.addEventListener('click', (e) => { e.stopPropagation(); openGridLayoutPopup(sizeBtn); });
   sizeBtn.addEventListener('wheel', (e) => {
     e.preventDefault();
     const base = curIdx < 0 ? 0 : curIdx;
@@ -2101,13 +2101,6 @@ function render() {
   editBtn.title = 'Edit Grid Ratios';
   editBtn.addEventListener('click', () => ipcRenderer.send('enter-grid-edit'));
   selector.appendChild(editBtn);
-  // Layout Editor ボタン
-  const layoutBtn = document.createElement('button');
-  layoutBtn.className = 'grid-opt';
-  layoutBtn.textContent = '\u229e';
-  layoutBtn.title = 'Grid Layout Editor \u2014 \u30bb\u30eb\u7d50\u5408/\u5206\u5272';
-  layoutBtn.addEventListener('click', (e) => { e.stopPropagation(); openGridLayoutPopup(layoutBtn); });
-  selector.appendChild(layoutBtn);
   // Retile ボタン (snapped ウィンドウを slot に揃え直す)
   const retileBtn = document.createElement('button');
   retileBtn.className = 'grid-opt';
@@ -2942,10 +2935,37 @@ function openGridLayoutPopup(anchorEl) {
   const popup = document.createElement('div');
   popup.id = 'grid-layout-popup';
 
-  // タイトル
+  // ── タイトル + サイズ変更行 ──
+  const titleRow = document.createElement('div');
+  titleRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
   const title = document.createElement('h3');
   title.textContent = 'Grid Layout';
-  popup.appendChild(title);
+  title.style.flex = '1';
+  titleRow.appendChild(title);
+  // サイズ入力
+  const colInput = document.createElement('input');
+  colInput.type = 'number'; colInput.min = '1'; colInput.max = '20'; colInput.value = cols;
+  colInput.style.cssText = 'width:32px;text-align:center;font-size:11px;border:1px solid rgba(0,0,0,0.15);border-radius:4px;padding:2px 4px;';
+  const sepLbl = document.createElement('span');
+  sepLbl.textContent = '×'; sepLbl.style.cssText = 'font-size:11px;color:rgba(0,0,0,0.4);';
+  const rowInput = document.createElement('input');
+  rowInput.type = 'number'; rowInput.min = '1'; rowInput.max = '20'; rowInput.value = rows;
+  rowInput.style.cssText = 'width:32px;text-align:center;font-size:11px;border:1px solid rgba(0,0,0,0.15);border-radius:4px;padding:2px 4px;';
+  const applySize = () => {
+    const nc = Math.max(1, Math.min(20, parseInt(colInput.value) || 1));
+    const nr = Math.max(1, Math.min(20, parseInt(rowInput.value) || 1));
+    if (nc !== cols || nr !== rows) { setGridSize(nc, nr); popup.remove(); notifyOverlay(false); }
+  };
+  [colInput, rowInput].forEach(inp => {
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') applySize(); e.stopPropagation(); });
+    inp.addEventListener('click', e => e.stopPropagation());
+  });
+  const applySizeBtn = document.createElement('button');
+  applySizeBtn.textContent = 'Apply'; applySizeBtn.className = 'glp-btn primary';
+  applySizeBtn.style.padding = '3px 8px'; applySizeBtn.style.fontSize = '10px';
+  applySizeBtn.addEventListener('click', applySize);
+  titleRow.appendChild(colInput); titleRow.appendChild(sepLbl); titleRow.appendChild(rowInput); titleRow.appendChild(applySizeBtn);
+  popup.appendChild(titleRow);
 
   // ── プリセット行 ──
   const presetBar = document.createElement('div');
