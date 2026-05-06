@@ -2287,11 +2287,13 @@ function createWorkspace(name, savedState) {
         return;
       }
 
-      // カーソルがグリッドエリア上か判定
-      const gridArea = getGridArea(ws);
-      const onGrid = gridArea &&
-        cursor.x >= gridArea.x && cursor.x <= gridArea.x + gridArea.width &&
-        cursor.y >= gridArea.y && cursor.y <= gridArea.y + gridArea.height;
+      // グリッドパネル = サイドバー右端以降 + ヘッダー下
+      // getGridArea は x=b.x (ウィンドウ左端) を返すが、実際の透明エリアはサイドバー右
+      const sidebarW = (ws.sidebarWidth || DEFAULT_SIDEBAR_W) + SIDEBAR_DIVIDER_W;
+      const gridX = b.x + sidebarW;
+      const gridY = b.y + TITLEBAR_H;
+      const onGrid = cursor.x >= gridX && cursor.x <= b.x + b.width
+                  && cursor.y >= gridY && cursor.y <= b.y + b.height;
 
       if (onGrid) {
         if (_ctLast !== true) { ws.win.setIgnoreMouseEvents(true, { forward: true }); _ctLast = true; }
