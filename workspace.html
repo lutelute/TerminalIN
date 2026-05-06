@@ -1035,12 +1035,12 @@
   <div id="titlebar">
     <div id="titlebar-row1">
       <!-- ドロワートグルボタン -->
-      <div class="drawer-btn" id="drawer-toggle-btn" title="パネルを表示/非表示 (ターミナル・Finder リスト)" onclick="toggleDrawer()">☰</div>
+      <div class="drawer-btn" id="drawer-toggle-btn" title="Drawer — ウィンドウリストパネルを開閉" onclick="toggleDrawer()">☰</div>
       <span id="title">TiN</span>
       <input id="title-input" type="text" />
       <div style="flex:1"></div>
       <!-- モード切り替えボタン -->
-      <div id="view-mode-btn" class="drawer-btn" title="グリッド / フルスクリーンタブ 切り替え" onclick="toggleViewMode()">⊞</div>
+      <div id="view-mode-btn" class="drawer-btn" title="View — グリッド分割 / フルスクリーンタブ を切り替え" onclick="toggleViewMode()">⊞</div>
       <div id="collapse-btn" title="Collapse sidebar (Cmd+B)" style="display:none">‹</div>
     </div>
     <div id="titlebar-row2">
@@ -2116,7 +2116,7 @@ function render() {
   const sizeBtn = document.createElement('button');
   sizeBtn.className = 'grid-opt grid-size-cycle active';
   sizeBtn.textContent = curIdx >= 0 ? _sizeCyclePresets[curIdx][0] : `${gridCols}\u00d7${gridRows}`;
-  sizeBtn.title = '\u30af\u30ea\u30c3\u30af\u3067\u30ec\u30a4\u30a2\u30a6\u30c8\u9078\u629e | \u30b9\u30af\u30ed\u30fc\u30eb\u3067\u9806\u9001\u308a';
+  sizeBtn.title = 'Grid \u2014 \u30af\u30ea\u30c3\u30af\u3067\u30b5\u30a4\u30ba\u30fb\u30ec\u30a4\u30a2\u30a6\u30c8\u7de8\u96c6 | \u30b9\u30af\u30ed\u30fc\u30eb\u3067\u30b5\u30a4\u30ba\u9806\u9001\u308a';
   sizeBtn.addEventListener('click', (e) => { e.stopPropagation(); openGridLayoutPopup(sizeBtn); });
   sizeBtn.addEventListener('wheel', (e) => {
     e.preventDefault();
@@ -2130,26 +2130,26 @@ function render() {
   const editBtn = document.createElement('button');
   editBtn.className = 'grid-opt';
   editBtn.textContent = '\u270f\ufe0f';
-  editBtn.title = 'Edit Grid Ratios';
+  editBtn.title = 'Ratio — グリッドの幅・高さ比率をドラッグで調整';
   editBtn.addEventListener('click', () => ipcRenderer.send('enter-grid-edit'));
   selector.appendChild(editBtn);
   // Retile ボタン (snapped ウィンドウを slot に揃え直す)
   const retileBtn = document.createElement('button');
   retileBtn.className = 'grid-opt';
   retileBtn.textContent = '\u21bb';
-  retileBtn.title = 'Retile — snap 済みウィンドウを現在のデスクトップに集合して grid に揃え直す';
+  retileBtn.title = 'Retile — スナップ済みウィンドウを現在のデスクトップに集合してグリッドに整列';
   retileBtn.addEventListener('click', () => ipcRenderer.invoke('retile-now'));
   selector.appendChild(retileBtn);
   const prevSpaceBtn = document.createElement('button');
   prevSpaceBtn.className = 'grid-opt';
   prevSpaceBtn.textContent = '\u25c4';
-  prevSpaceBtn.title = '前のデスクトップに移動 (TiN + snap 済みウィンドウをまとめて)';
+  prevSpaceBtn.title = 'Space ◄ — TiN + スナップ済みウィンドウをまとめて前のデスクトップへ';
   prevSpaceBtn.addEventListener('click', () => ipcRenderer.invoke('push-to-space', { direction: -1 }));
   selector.appendChild(prevSpaceBtn);
   const nextSpaceBtn = document.createElement('button');
   nextSpaceBtn.className = 'grid-opt';
   nextSpaceBtn.textContent = '\u25ba';
-  nextSpaceBtn.title = '次のデスクトップに移動 (TiN + snap 済みウィンドウをまとめて)';
+  nextSpaceBtn.title = 'Space ► — TiN + スナップ済みウィンドウをまとめて次のデスクトップへ';
   nextSpaceBtn.addEventListener('click', () => ipcRenderer.invoke('push-to-space', { direction: +1 }));
   selector.appendChild(nextSpaceBtn);
 
@@ -2157,7 +2157,7 @@ function render() {
   const spacePickerBtn = document.createElement('button');
   spacePickerBtn.className = 'grid-opt';
   spacePickerBtn.textContent = '↗';
-  spacePickerBtn.title = 'デスクトップを選んで移動…';
+  spacePickerBtn.title = 'Space ↗ — デスクトップを選んでまとめて移動';
   let _spacePickerPopup = null;
   function closeSpacePicker() {
     if (_spacePickerPopup) { _spacePickerPopup.remove(); _spacePickerPopup = null; }
@@ -2521,7 +2521,8 @@ function render() {
   if (gridCount < gridCols * gridRows) {
     const addGrid = document.createElement('div');
     addGrid.className = 'add-btn grid-add';
-    addGrid.textContent = '+ Grid terminal';
+    addGrid.textContent = '+ Term';
+    addGrid.title = '+Term — グリッドターミナルを新規追加';
     addGrid.addEventListener('click', addGridTerminal);
     _gridSection.appendChild(addGrid);
   }
