@@ -12,7 +12,7 @@ TiN ターミナル制御テスト
   --keep     : テスト後もターミナルを残す (自動クローズしない)
   --project P: ターミナルを開くディレクトリ (デフォルト: カレント)
 """
-import argparse, subprocess, time, os, sys, json
+import argparse, subprocess, time, os, sys, json, shlex
 
 try:
     import requests
@@ -61,47 +61,63 @@ def main():
     # workspace 選択
     ws_id = args.ws_id
     if not ws_id:
-        # スナップが少ない ws を優先
         ws_id = sorted(d["workspaces"], key=lambda w: len(w["snapped"]))[0]["id"]
     ws_name = next((w["name"] for w in d["workspaces"] if w["id"] == ws_id), "?")
     info(f"対象 workspace: '{ws_name}' (id={ws_id})")
 
-    # ── Step 2: 起動前のウィンドウ番号を記録 ──────────
-    step(2, "起動前のウィンドウ一覧を記録")
-    wins_before = tin("GET", "/api/windows").get("windows", [])
-    before_wns = {w["windowNumber"] for w in wins_before}
-    info(f"既存ウィンドウ数: {len(before_wns)}")
+    # ── Step 2: AppleScript で新ターミナルを開き ID を直接取得 ──
+    # open -na Terminal を使わない理由:
+    # 「どのウィンドウが新しく開いたか」を差分検出すると、テスト元ターミナルが
+    # TiN に未登録のまま before_wns に入らず誤検出される競合状態が発生する。
+    # AppleScript で開いて id (= CGWindowNumber) を直接受け取ることで排除する。
+    step(2, f"新ターミナルを AppleScript で起動  ({project})")
+    shell_cd = "cd " + shlex.quote(project)
+    as_cmd = shell_cd.replace("\\", "\\\\").replace('"', '\\"')
+    # 起動前の window ID 一覧を取得してから do script で新規ウィンドウを開き
+    # 差分で新しい window ID を確定する（make new window は Terminal.app 非対応）
+    open_as = (
+        'tell application "Terminal"\n'
+        '    set oldIDs to id of every window\n'
+        f'    do script "{as_cmd}"\n'
+        '    delay 0.6\n'
+        '    set newID to 0\n'
+        '    repeat with w in (every window)\n'
+        '        set wID to id of w\n'
+        '        if wID is not in oldIDs then\n'
+        '            set newID to wID\n'
+        '            exit repeat\n'
+        '        end if\n'
+        '    end repeat\n'
+        '    if newID is 0 then set newID to id of front window\n'
+        '    return newID\n'
+        'end tell'
+    )
+    res2 = subprocess.run(["osascript", "-e", open_as],
+                          capture_output=True, text=True, timeout=12)
+    if res2.returncode != 0 or not res2.stdout.strip().lstrip("-").isdigit():
+        err(f"ターミナル起動失敗: {res2.stderr.strip() or res2.stdout.strip() or '(no output)'}")
+    new_wn = int(res2.stdout.strip())
+    info(f"ウィンドウ ID 取得: {new_wn}")
 
-    # ── Step 3: 新ターミナルを開く ─────────────────────
-    step(3, f"新ターミナルを起動  ({project})")
-    # open -na で強制的に新規ウィンドウ
-    cmd = f'open -na Terminal "{project}"'
-    subprocess.Popen(["/bin/sh", "-c", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    info("起動コマンド送信完了、ウィンドウ出現を待機...")
-
-    # ── Step 4: 新しいウィンドウを検出 ────────────────
-    step(4, "新ターミナルウィンドウを検出")
+    # ── Step 3: TiN がそのウィンドウを認識しているか確認 ────
+    step(3, "TiN からウィンドウ情報を取得")
     new_win = None
     for attempt in range(15):  # 最大 6 秒
-        time.sleep(0.4)
         wins_now = tin("GET", "/api/windows").get("windows", [])
-        candidates = [
-            w for w in wins_now
-            if w["windowNumber"] not in before_wns
-            and any(t in w.get("app", "") for t in ("ターミナル", "Terminal", "iTerm", "Warp", "Alacritty"))
-        ]
-        if candidates:
-            new_win = candidates[0]
+        new_win = next((w for w in wins_now if w["windowNumber"] == new_wn), None)
+        if new_win:
             break
+        time.sleep(0.4)
         info(f"  待機中... ({(attempt+1)*0.4:.1f}s)")
 
     if not new_win:
-        err("新ターミナルが検出できませんでした (タイムアウト)")
+        warn("TiN から見えていないがスナップを試みます")
+        new_win = {"windowNumber": new_wn, "title": "(unknown)", "app": "Terminal"}
+    else:
+        ok(f"確認: wn={new_win['windowNumber']}  '{new_win.get('title','')[:50]}'")
 
-    ok(f"検出: wn={new_win['windowNumber']}  '{new_win['title'][:50]}'")
-
-    # ── Step 5: TiN にスナップ ─────────────────────────
-    step(5, f"slot {args.slot} にスナップ (workspace '{ws_name}')")
+    # ── Step 4: TiN にスナップ ─────────────────────────
+    step(4, f"slot {args.slot} にスナップ (workspace '{ws_name}')")
     r = tin("POST", "/api/v1/snap", json={
         "windowNumber": new_win["windowNumber"],
         "slot": args.slot,
@@ -109,50 +125,55 @@ def main():
     })
     if not r.get("ok"):
         err(f"スナップ失敗: {r.get('error','')}")
-    ok(f"スナップ成功  slot={r['slot']}  wn={r['windowNumber']}")
+    ok(f"スナップ成功  slot={r['slot']}  wn={r.get('windowNumber', new_wn)}")
 
-    # ── Step 6: 確認 ──────────────────────────────────
-    step(6, "スナップ状態を確認")
+    # ── Step 5: 確認 ──────────────────────────────────
+    step(5, "スナップ状態を確認")
     time.sleep(1)
     d2 = tin("GET", "/api/v1/status")
-    ws = next((w for w in d2["workspaces"] if w["id"] == ws_id), None)
-    snapped_entry = next((s for s in ws["snapped"] if s["windowNumber"] == new_win["windowNumber"]), None)
-    if snapped_entry:
-        ok(f"TiN サイドバーに表示: slot {snapped_entry['slot']}  '{snapped_entry['title'][:45]}'")
+    ws = next((w for w in d2.get("workspaces", []) if w["id"] == ws_id), None)
+    if ws is None:
+        warn(f"workspace id={ws_id} が見当たりません")
     else:
-        warn("サイドバーに見当たりません (retile 遅延の可能性)")
+        snapped_entry = next((s for s in ws["snapped"] if s["windowNumber"] == new_win["windowNumber"]), None)
+        if snapped_entry:
+            ok(f"TiN サイドバーに表示: slot {snapped_entry['slot']}  '{snapped_entry['title'][:45]}'")
+        else:
+            warn("サイドバーに見当たりません (retile 遅延の可能性)")
 
     if args.keep:
         print(f"\n🏁 テスト完了 (--keep 指定のためターミナルを残します)")
-        print(f"   unsnap: curl -s -X POST {BASE}/api/unsnap -H 'Content-Type: application/json' -d '{{\"windowNumber\":{new_win['windowNumber']}}}'")
+        print(f"   unsnap: curl -s -X POST {BASE}/api/unsnap -H 'Content-Type: application/json' -d '{{\"windowNumber\":{new_wn}}}'")
         return
 
-    # ── Step 7: クリーンアップ ──────────────────────────
-    step(7, "クリーンアップ (unsnap + ウィンドウを閉じる)")
+    # ── Step 6: クリーンアップ ──────────────────────────
+    step(6, "クリーンアップ (unsnap + ウィンドウを閉じる)")
 
     # unsnap
-    r = tin("POST", "/api/unsnap", json={"windowNumber": new_win["windowNumber"]})
+    r = tin("POST", "/api/unsnap", json={"windowNumber": new_wn})
     if r.get("ok"):
         ok("unsnap 完了")
     else:
         warn(f"unsnap: {r.get('error','')}")
     time.sleep(0.3)
 
-    # ターミナルウィンドウを閉じる
-    wn = new_win["windowNumber"]
-    close_script = f"""
-    tell application "Terminal"
-        set wList to every window
-        repeat with w in wList
-            try
-                if (id of w) = {wn} then close w
-            end try
-        end repeat
-    end tell
-    """
+    # AppleScript でウィンドウを閉じる
+    # new_wn は AppleScript の id of newWin で取得した値なので id of w と確実に一致する
+    close_script = (
+        'tell application "Terminal"\n'
+        '    repeat with w in every window\n'
+        '        try\n'
+        f'            if (id of w) = {new_wn} then\n'
+        '                close w\n'
+        '                exit repeat\n'
+        '            end if\n'
+        '        end try\n'
+        '    end repeat\n'
+        'end tell'
+    )
     try:
         subprocess.run(["osascript", "-e", close_script],
-                       capture_output=True, timeout=3)
+                       capture_output=True, timeout=5)
         ok("ターミナルウィンドウを閉じました")
     except Exception:
         warn("自動クローズできませんでした (手動で閉じてください)")
@@ -160,8 +181,12 @@ def main():
     # ── 最終確認 ──────────────────────────────────────
     time.sleep(0.5)
     d3 = tin("GET", "/api/v1/status")
-    ws3 = next((w for w in d3["workspaces"] if w["id"] == ws_id), None)
-    still_snapped = any(s["windowNumber"] == wn for s in ws3["snapped"])
+    ws3 = next((w for w in d3.get("workspaces", []) if w["id"] == ws_id), None)
+    if ws3 is None:
+        warn(f"workspace id={ws_id} が見当たりません (最終確認スキップ)")
+        still_snapped = False
+    else:
+        still_snapped = any(s["windowNumber"] == new_wn for s in ws3["snapped"])
 
     print(f"\n{'='*52}")
     if not still_snapped:
