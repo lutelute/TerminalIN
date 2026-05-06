@@ -1549,7 +1549,7 @@ function makeMiniGridSVG(cols, rows) {
 
 function openGridSizePopup(anchorEl) {
   const existing = document.getElementById('grid-size-popup');
-  if (existing) { existing.remove(); return; }
+  if (existing) { existing.remove(); notifyOverlay(false); return; }
   const presets = [
     ['1×2', 1, 2], ['2×1', 2, 1],
     ['1×3', 1, 3], ['3×1', 3, 1],
@@ -1567,6 +1567,7 @@ function openGridSizePopup(anchorEl) {
       ev.stopPropagation();
       setGridSize(c, r);
       popup.remove();
+      notifyOverlay(false);
     });
     popup.appendChild(item);
   }
@@ -1592,6 +1593,7 @@ function openGridSizePopup(anchorEl) {
     const r = Math.max(1, Math.min(20, parseInt(rowInput.value, 10) || 1));
     setGridSize(c, r);
     popup.remove();
+    notifyOverlay(false);
     document.removeEventListener('click', closePopup);
   };
   applyBtn.addEventListener('click', applyCustom);
