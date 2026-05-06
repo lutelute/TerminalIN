@@ -791,7 +791,7 @@
     /* gridTemplateColumns/Rows は JS で設定 */
   }
   .grid-dot {
-    height: 22px; min-width: 0;
+    min-height: 18px; min-width: 0;
     border-radius: 4px;
     background: rgba(0,0,0,0.04);
     border: 1px solid rgba(0,0,0,0.07);
@@ -826,7 +826,7 @@
     background: rgba(0,0,0,0.04);
     font-feature-settings: "tnum";
   }
-  body.compact .grid-dot { height: 14px; font-size: 8px; }
+  body.compact .grid-dot { min-height: 12px; font-size: 8px; }
 
   /* Slot card (drag&drop 対応 + slot 番号バッジ) */
   .slot-card { cursor: grab; position: relative; }
@@ -2380,8 +2380,9 @@ function render() {
     strip.className = 'grid-dots-strip';
     const dotsRow = document.createElement('div');
     dotsRow.className = 'grid-dots-row';
+    const dotRowH = document.body.classList.contains('compact') ? 14 : 22;
     dotsRow.style.gridTemplateColumns = `repeat(${gridCols}, 1fr)`;
-    dotsRow.style.gridTemplateRows    = `repeat(${gridRows}, 1fr)`;
+    dotsRow.style.gridTemplateRows    = `repeat(${gridRows}, ${dotRowH}px)`;
 
     const dotCells = gpSlotLayout
       ? [...gpSlotLayout].sort((a,b) => a.row!==b.row ? a.row-b.row : a.col-b.col)
