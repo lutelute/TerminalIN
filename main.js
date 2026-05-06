@@ -2073,24 +2073,27 @@ function createWorkspace(name, savedState) {
         ws._watchdogMissStreak = 0;
       }
     }
-    // Title fallback for packaged app: キャッシュヒットを先に適用
+    // Title fallback: スナップ済みウィンドウのタイトルのみ osascript で補完。
+    // 全ウィンドウに適用すると 4ws × 15app × 2 osascript = ~120プロセス/5s になる。
     if (windows.length > 0) {
-      let hasUnknown = false;
+      // キャッシュヒットを先に適用 (全ウィンドウ)
       for (const w of windows) {
         if (!w.title) {
           const cached = ws._titleCache.get(w.windowNumber);
-          if (cached) { w.title = cached; }
-          else { hasUnknown = true; }
+          if (cached) w.title = cached;
         }
       }
-      // 未知 windowNumber がある場合のみ osascript で補完 (5秒レート制限)
-      if (hasUnknown) {
+      // osascript 補完: スナップ済みでタイトルが空のものだけ対象
+      const snappedMissingApps = new Set();
+      for (const [wn, info] of ws.snappedExternals) {
+        const live = liveMap.get(wn);
+        if (live && !live.title) snappedMissingApps.add(live.app);
+      }
+      if (snappedMissingApps.size > 0) {
         const now = Date.now();
-        if (now - ws._titleCacheRefreshAt > 5000) {
+        if (now - ws._titleCacheRefreshAt > 30000) { // 30秒レート制限 (5秒→30秒)
           ws._titleCacheRefreshAt = now;
-          const appSet = new Set();
-          for (const w of windows) appSet.add(w.app);
-          for (const appName of appSet) {
+          for (const appName of snappedMissingApps) {
             (async () => {
               try {
                 const [idsRes, namesRes] = await Promise.all([
@@ -2110,8 +2113,7 @@ function createWorkspace(name, savedState) {
       }
       // 古いエントリ削除 (256超過時のみ)
       if (ws._titleCache.size > 256) {
-        const liveNums = new Set();
-        for (const w of windows) liveNums.add(w.windowNumber);
+        const liveNums = new Set(windows.map(w => w.windowNumber));
         for (const k of ws._titleCache.keys()) {
           if (!liveNums.has(k)) ws._titleCache.delete(k);
         }
