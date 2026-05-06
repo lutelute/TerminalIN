@@ -284,10 +284,6 @@ async function writeSnappedJson() {
   await atomicWriteJSON(SNAPPED_JSON, buildSnappedPayload());
 }
 
-// snap-external で daemon.move の BEFORE に同期書き出しが必要な場面用
-function writeSnappedJsonSync() {
-  atomicWriteJSONSync(SNAPPED_JSON, buildSnappedPayload());
-}
 
 // 書き出しのデバウンス (rapid snap/unsnap/move で多重書き込みを避ける)
 let _syncTimer = null;
