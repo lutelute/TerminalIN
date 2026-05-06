@@ -47,13 +47,18 @@ def main():
         all_wns.extend(wns)
 
     if not args.unsnap_only and all_wns:
+        # 逆順ループ + saving no で確認ダイアログをスキップして確実に閉じる
         ids = ", ".join(str(w) for w in all_wns)
         subprocess.run(["osascript", "-e",
             f'tell application "Terminal"\n'
-            f'  repeat with w in every window\n'
-            f'    if (id of w) is in {{{ids}}} then close w\n'
+            f'  activate\n'
+            f'  repeat with i from (count of windows) to 1 by -1\n'
+            f'    set w to window i\n'
+            f'    if (id of w) is in {{{ids}}} then\n'
+            f'      close w saving no\n'
+            f'    end if\n'
             f'  end repeat\n'
-            f'end tell'], capture_output=True, timeout=10)
+            f'end tell'], capture_output=True, timeout=15)
         print(f"\n✅ {len(all_wns)} ターミナルを閉じました")
     elif all_wns:
         print(f"\n✅ {len(all_wns)} 件を unsnap しました (ウィンドウは残っています)")
