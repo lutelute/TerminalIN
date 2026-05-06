@@ -3282,6 +3282,15 @@ function startRestServer() {
 
     // ── v1 API ──────────────────────────────────────────────
 
+    // POST /api/v1/workspace/new — 新しい TiN ワークスペースを作成
+    // body: { name?: string }
+    if (route === 'POST /api/v1/workspace/new') {
+      const body = await parseBody(req);
+      const ws = createWorkspace(body.name || undefined);
+      await new Promise(r => setTimeout(r, 500));
+      return restReply(res, 200, { ok: true, id: ws.id, name: ws.name });
+    }
+
     // GET /api/v1/status
     if (route === 'GET /api/v1/status') {
       const wsArr = [];
@@ -3308,16 +3317,40 @@ function startRestServer() {
     }
 
     // POST /api/v1/layout — グリッドサイズ + slotLayout を外部から設定
-    // body: { workspaceId?: number, cols: number, rows: number, layout?: CellLayout[] }
+    // body: { workspaceId?, cols, rows, layout?: CellLayout[], merges?: MergeRegion[] }
+    // merges 簡略形式: [{ col, row, colSpan, rowSpan }, ...] → layout を自動生成
     if (route === 'POST /api/v1/layout') {
       const body = await parseBody(req);
       const ws = (body.workspaceId ? workspaces.get(body.workspaceId) : null) || [...workspaces.values()][0];
       if (!ws) return restReply(res, 404, { ok: false, error: 'no workspace' });
       const cols = Math.max(1, Math.min(20, Number(body.cols) || ws.gridCols));
       const rows = Math.max(1, Math.min(20, Number(body.rows) || ws.gridRows));
-      const validIds = new Set(Array.from({ length: cols * rows }, (_, i) => i));
+
+      // merges 指定から layout を自動生成
+      let layout = body.layout || null;
+      if (!layout && body.merges && body.merges.length > 0) {
+        const covered = new Set();
+        const cells = [];
+        for (const m of body.merges) {
+          const id = m.row * cols + m.col;
+          cells.push({ id, col: m.col, row: m.row, colSpan: m.colSpan || 1, rowSpan: m.rowSpan || 1 });
+          for (let dr = 0; dr < (m.rowSpan || 1); dr++)
+            for (let dc = 0; dc < (m.colSpan || 1); dc++)
+              covered.add((m.row + dr) * cols + (m.col + dc));
+        }
+        for (let r = 0; r < rows; r++)
+          for (let c = 0; c < cols; c++) {
+            const id = r * cols + c;
+            if (!covered.has(id)) cells.push({ id, col: c, row: r, colSpan: 1, rowSpan: 1 });
+          }
+        layout = cells;
+      }
+
+      const validIds = layout
+        ? new Set(layout.map(c => c.id))
+        : new Set(Array.from({ length: cols * rows }, (_, i) => i));
       evictOverflowSnapped(ws, validIds);
-      ws.gridCols = cols; ws.gridRows = rows; ws.slotLayout = body.layout || null;
+      ws.gridCols = cols; ws.gridRows = rows; ws.slotLayout = layout;
       ws.win?.webContents.send('update-grid-panel', { cols, rows, slotLayout: ws.slotLayout });
       beginStabilize('api-layout', ws);
       scheduleSaveWorkspaces();
@@ -3373,9 +3406,13 @@ function startRestServer() {
       // 起動前のウィンドウ番号セットを記録
       const before = new Set((axHelper ? axHelper.listWindows() : []).map(w => w.windowNumber));
 
-      // コマンドを非同期で spawn
+      // コマンドを非同期で spawn (cwd 指定あれば cd してから実行)
       const { spawn } = require('child_process');
-      const child = spawn('/bin/sh', ['-c', body.cmd], { detached: true, stdio: 'ignore' });
+      const cwd = body.cwd || null;
+      const shellCmd = cwd ? `cd ${JSON.stringify(cwd)} && ${body.cmd}` : body.cmd;
+      const spawnOpts = { detached: true, stdio: 'ignore' };
+      if (cwd) { try { require('fs').accessSync(cwd); spawnOpts.cwd = cwd; } catch {} }
+      const child = spawn('/bin/sh', ['-c', shellCmd], spawnOpts);
       child.unref();
       const launchedPid = child.pid;
 
