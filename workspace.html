@@ -2644,25 +2644,40 @@ let gpEditMode = false; // グリッドJSブロックとこのブロックで共
     ipcRenderer.send('set-win-clickthrough', on);
   }
 
+  // getBoundingClientRect をキャッシュ — 毎 mousemove での reflow を回避
+  let _cachedGridRect = gridPanel.getBoundingClientRect();
+  new ResizeObserver(() => { _cachedGridRect = gridPanel.getBoundingClientRect(); }).observe(gridPanel);
+
+  // mousemove を rAF でスロットル — elementsFromPoint+getComputedStyle の連続実行を防ぐ
+  let _mmRafId = null;
+  let _mmLatestE = null;
   window.addEventListener('mousemove', (e) => {
-    if (gpEditMode) { setClickthrough(false); return; }
+    _mmLatestE = e;
+    if (_mmRafId) return;
+    _mmRafId = requestAnimationFrame(() => {
+      _mmRafId = null;
+      const ev = _mmLatestE;
+      if (gpEditMode) { setClickthrough(false); return; }
 
-    // ① カーソル下に z-index > 100 の要素があればポップアップ/ドロワー等の UI
-    //   → click-through 無効 (グリッドサイズポップアップ・Space ピッカー等すべてに対応)
-    const hasOverlay = document.elementsFromPoint(e.clientX, e.clientY).some(el => {
-      const z = parseInt(getComputedStyle(el).zIndex, 10);
-      return !isNaN(z) && z > 100;
+      // カーソル下に z-index > 100 の要素があればポップアップ/ドロワー等の UI
+      const hasOverlay = document.elementsFromPoint(ev.clientX, ev.clientY).some(el => {
+        const z = parseInt(getComputedStyle(el).zIndex, 10);
+        return !isNaN(z) && z > 100;
+      });
+      if (hasOverlay) { setClickthrough(false); return; }
+
+      // ヘッダー (#sidebar) 上か content area (#grid-panel) 上か判定
+      const gridRect = _cachedGridRect;
+      const onGrid = ev.clientX >= gridRect.left && ev.clientX <= gridRect.right
+                  && ev.clientY >= gridRect.top  && ev.clientY <= gridRect.bottom;
+      setClickthrough(onGrid);
     });
-    if (hasOverlay) { setClickthrough(false); return; }
-
-    // ② ヘッダー (#sidebar) 上か content area (#grid-panel) 上か判定
-    const gridRect = gridPanel.getBoundingClientRect();
-    const onGrid = e.clientX >= gridRect.left && e.clientX <= gridRect.right
-                && e.clientY >= gridRect.top  && e.clientY <= gridRect.bottom;
-    setClickthrough(onGrid);
   });
 
-  window.addEventListener('mouseleave', () => setClickthrough(false));
+  window.addEventListener('mouseleave', () => {
+    if (_mmRafId) { cancelAnimationFrame(_mmRafId); _mmRafId = null; }
+    setClickthrough(false);
+  });
   // blur で OFF にしない: click-through ON でターミナルをクリックすると blur が発火し、
   // 次クリックを TiN が横取りする原因になる。ヘッダー保護は main の _ctGuardTimer が担当。
 }
