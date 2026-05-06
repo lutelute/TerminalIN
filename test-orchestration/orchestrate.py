@@ -86,13 +86,14 @@ def get_or_create_workspace(base, args, status):
             sys.exit(1)
         print(f"   既存ワークスペース使用: {ws['name']} (id={ws['id']})")
         return ws["id"]
+    # 必ず新規 workspace を作成 — 既存の workspace には一切触れない
     r = tin(base, "POST", "/api/v1/workspace/new", json={"name": args.workspace_name})
     if r.get("ok"):
         print(f"✅ 新規ワークスペース: {r['name']} (id={r['id']})")
         time.sleep(0.8)
         return r["id"]
-    print(f"⚠️  workspace 作成失敗 ({r.get('error')})、最初の ws を使用")
-    return status["workspaces"][0]["id"]
+    print(f"⚠️  workspace 作成失敗 ({r.get('error')})")
+    sys.exit(1)
 
 def snap_existing(base, ws_id, slot_ids):
     """既存の未スナップターミナルを並べる"""
@@ -119,14 +120,14 @@ def snap_existing(base, ws_id, slot_ids):
 def launch_and_snap(base, ws_id, slot_ids, labels, project, label_prefix):
     count = 0
     for slot, label in zip(slot_ids, labels):
-        cmd = (f'osascript -e \'tell application "Terminal" to do script '
-               f'"cd {project} && echo \'\\\'\'[{label}] 起動完了\'\\\'\' && exec zsh"\'')
+        # open -a Terminal /path でそのディレクトリを作業ディレクトリとして開く
+        cmd = f'open -a Terminal "{project}"'
         r = tin(base, "POST", "/api/v1/launch", json={
             "cmd": cmd, "slot": slot, "workspaceId": ws_id,
             "cwd": project, "timeoutMs": 10000,
         })
         mark = "✅" if r.get("ok") else "⚠️ "
-        print(f"  {mark} slot {slot:2d} — {label}")
+        print(f"  {mark} slot {slot:2d} — {label}  ({project})")
         if r.get("ok"): count += 1
         time.sleep(2.0)
     return count
