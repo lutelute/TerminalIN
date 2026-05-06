@@ -734,6 +734,28 @@
     transform: scale(1.05);
   }
 
+  /* Empty slot placeholder */
+  .slot-card.empty-slot {
+    cursor: default;
+    background: repeating-linear-gradient(
+      -45deg,
+      transparent, transparent 4px,
+      rgba(0,0,0,0.013) 4px, rgba(0,0,0,0.013) 8px
+    );
+    border: 1px dashed rgba(0,0,0,0.11);
+    border-radius: 5px;
+    margin: 1px 2px;
+    opacity: 0.65;
+  }
+  .slot-card.empty-slot:hover {
+    background: rgba(40,120,210,0.05);
+    border-color: rgba(40,120,210,0.3);
+    opacity: 1;
+  }
+  .slot-card.empty-slot .ext-title { color: rgba(0,0,0,0.2); }
+  .slot-card.empty-slot .snap-here-btn { visibility: hidden; }
+  .slot-card.empty-slot:hover .snap-here-btn { visibility: visible; }
+
   .card-close {
     width: 20px; height: 20px; border-radius: 5px;
     display: flex; align-items: center; justify-content: center;
@@ -2216,20 +2238,41 @@ function render() {
     _gridSection.appendChild(strip);
   }
 
-  // slot cards — slot 順でソート + slot 番号バッジ + drag&drop
-  const sortedEntries = [...slotEntries.values()].sort((a, b) => a.slot - b.slot);
-  for (const entry of sortedEntries) {
+  // slot cards — 全スロット (空き含む) をスロット順で表示
+  for (let i = 0; i < gridCols * gridRows; i++) {
+    const entry = slotEntries.get(i);
     const card = document.createElement('div');
     card.className = 'ext-item slot-card';
+    card.dataset.slot = i;
+    const slotBadge = document.createElement('span');
+    slotBadge.className = 'slot-badge';
+    slotBadge.textContent = String(i + 1);
+    card.appendChild(slotBadge);
+
+    if (!entry) {
+      // ── 空きスロット プレースホルダー ──
+      card.classList.add('empty-slot');
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'ext-title';
+      titleSpan.textContent = '空き';
+      card.appendChild(titleSpan);
+      const snapBtn = document.createElement('button');
+      snapBtn.className = 'ext-btn snap snap-here-btn';
+      snapBtn.textContent = 'Snap';
+      snapBtn.title = 'フロントモストウィンドウをここにスナップ';
+      snapBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const frontWin = externalWindows.find(w => w.windowNumber === frontmostWindowNumber);
+        if (frontWin && !snappedExternals.has(frontWin.windowNumber)) snapExternal(frontWin, i);
+      });
+      card.appendChild(snapBtn);
+      _gridSection.appendChild(card);
+      continue;
+    }
+
     if (entry.type === 'ext' && entry.wn === frontmostWindowNumber && frontmostWindowNumber > 0) {
       card.classList.add('focused');
     }
-    card.draggable = true;
-    card.dataset.slot = entry.slot;
-    const slotBadge = document.createElement('span');
-    slotBadge.className = 'slot-badge';
-    slotBadge.textContent = String(entry.slot + 1);
-    card.appendChild(slotBadge);
     if (entry.type === 'pty') {
       const gridBadge = document.createElement('span');
       gridBadge.className = 'card-badge badge-grid';
@@ -2237,12 +2280,12 @@ function render() {
       card.appendChild(gridBadge);
       const titleSpan = document.createElement('span');
       titleSpan.className = 'ext-title';
-      titleSpan.textContent = `Terminal #${entry.slot + 1}`;
+      titleSpan.textContent = `Terminal #${i + 1}`;
       card.appendChild(titleSpan);
       const closeBtn = document.createElement('span');
       closeBtn.className = 'card-close';
       closeBtn.textContent = '\u00d7';
-      closeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeGridTerminal(entry.slot); });
+      closeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeGridTerminal(i); });
       card.appendChild(closeBtn);
     } else {
       const { wn, info } = entry;
@@ -2260,7 +2303,6 @@ function render() {
       card.addEventListener('click', (e) => {
         if (card._draggingNow) return;
         if (e.target.classList.contains('ext-btn') || e.target.classList.contains('slot-badge')) return;
-        // 楽観的: raise 前にハイライトを即移動 (poll 待ちで ~1s 遅延を解消)
         frontmostWindowNumber = wn;
         render();
         const liveNow = externalWindows.find(w => w.windowNumber === wn);
@@ -2277,13 +2319,11 @@ function render() {
       btn.addEventListener('click', (e) => { e.stopPropagation(); unsnapExternal(wn); });
       card.appendChild(btn);
     }
-    // drag&drop for card — Pointer Events 版 (HTML5 DnD は Electron で drop が届かない症状あり)
-    card.draggable = false;
+    // drag&drop — Pointer Events 版 (HTML5 DnD は Electron で drop が届かない症状あり)
     card.addEventListener('mousedown', (e) => {
-      // Release/close ボタン等の上なら通常動作
       if (e.button !== 0) return;
       if (e.target.closest('.ext-btn, .card-close, .slot-badge')) return;
-      const srcSlot = entry.slot;
+      const srcSlot = i;
       const startX = e.clientX, startY = e.clientY;
       let dragging = false;
       let dstCard = null;
@@ -2296,7 +2336,7 @@ function render() {
           if (Math.abs(ev.clientX - startX) < 4 && Math.abs(ev.clientY - startY) < 4) return;
           dragging = true;
           card.classList.add('dragging');
-          card._draggingNow = true; // click 抑制用
+          card._draggingNow = true;
         }
         const el = document.elementFromPoint(ev.clientX, ev.clientY);
         const tc = el && el.closest ? el.closest('.slot-card') : null;
@@ -2318,13 +2358,11 @@ function render() {
         if (dragging && dstCard) {
           const dstSlot = Number(dstCard.dataset.slot);
           if (Number.isFinite(dstSlot) && dstSlot !== srcSlot) {
-            // 楽観的更新 — UI を先に反映 (poll 待ちなしで見た目が即動く)
             reorderSlotsLocally(srcSlot, dstSlot, dstBefore);
             render();
             ipcRenderer.invoke('reorder-grid-slot', { src: srcSlot, dst: dstSlot, before: dstBefore });
           }
         }
-        // click 抑制をリセット (1 tick 後、click event 後)
         setTimeout(() => { card._draggingNow = false; }, 0);
       };
       window.addEventListener('mousemove', onMove);
