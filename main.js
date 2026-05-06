@@ -325,7 +325,7 @@ async function writeWorkspacesJson() {
       name: ws.name,
       sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
       sidebarWidth: ws.sidebarWidth || DEFAULT_SIDEBAR_W,
-      grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
+      grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios, slotLayout: ws.slotLayout },
       colorIndex: ws.colorIndex,
       snappedExternals: snapped,
     });
@@ -843,7 +843,6 @@ function getSlotBounds(ws, slot) {
   // CSS: gap:8px, padding: 4px 8px 8px (top=4, right=8, bottom=8, left=8)
   const cols = ws.gridCols, rows = ws.gridRows;
   const gap = 8, padX = 8, padTop = 4, padBottom = 8;
-  const col = slot % cols, row = Math.floor(slot / cols);
 
   const colRatios = (ws.colRatios && ws.colRatios.length === cols) ? ws.colRatios : Array(cols).fill(1/cols);
   const rowRatios = (ws.rowRatios && ws.rowRatios.length === rows) ? ws.rowRatios : Array(rows).fill(1/rows);
@@ -851,15 +850,31 @@ function getSlotBounds(ws, slot) {
   const innerW = area.width  - padX * 2 - gap * (cols - 1);
   const innerH = area.height - padTop - padBottom - gap * (rows - 1);
 
+  // ── 柔軟グリッド: slotLayout がある場合は colSpan/rowSpan を考慮 ──
+  let cellCol, cellRow, cellColSpan, cellRowSpan;
+  if (ws.slotLayout) {
+    const cell = ws.slotLayout.find(c => c.id === slot);
+    if (!cell) return null;
+    cellCol = cell.col; cellRow = cell.row;
+    cellColSpan = cell.colSpan; cellRowSpan = cell.rowSpan;
+  } else {
+    cellCol = slot % cols; cellRow = Math.floor(slot / cols);
+    cellColSpan = 1; cellRowSpan = 1;
+  }
+
   let xOff = 0, yOff = 0;
-  for (let i = 0; i < col; i++) xOff += innerW * colRatios[i] + gap;
-  for (let i = 0; i < row; i++) yOff += innerH * rowRatios[i] + gap;
+  for (let i = 0; i < cellCol; i++) xOff += innerW * colRatios[i] + gap;
+  for (let i = 0; i < cellRow; i++) yOff += innerH * rowRatios[i] + gap;
+
+  let w = 0, h = 0;
+  for (let i = 0; i < cellColSpan; i++) w += innerW * colRatios[cellCol + i] + (i > 0 ? gap : 0);
+  for (let i = 0; i < cellRowSpan; i++) h += innerH * rowRatios[cellRow + i] + (i > 0 ? gap : 0);
 
   return {
     x: Math.round(area.x + padX + xOff),
     y: Math.round(area.y + padTop + yOff),
-    width: Math.round(innerW * colRatios[col]),
-    height: Math.round(innerH * rowRatios[row]),
+    width: Math.round(w),
+    height: Math.round(h),
   };
 }
 
@@ -946,6 +961,12 @@ function nextFreeSlot(ws) {
   const used = new Set();
   for (const [slot] of ws.gridWindows) used.add(slot);
   for (const [, info] of ws.snappedExternals) used.add(info.slot);
+  if (ws.slotLayout) {
+    for (const cell of ws.slotLayout) {
+      if (!used.has(cell.id)) return cell.id;
+    }
+    return -1;
+  }
   const total = ws.gridCols * ws.gridRows;
   for (let i = 0; i < total; i++) if (!used.has(i)) return i;
   return -1;
@@ -1773,11 +1794,28 @@ ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
   ws.gridRows = rows;
   ws.colRatios = null;
   ws.rowRatios = null;
+  ws.slotLayout = null; // サイズ変更時は結合を解除
   if (ws.win && !ws.win.isDestroyed()) {
-    ws.win.webContents.send('update-grid-panel', { cols, rows, colRatios: null, rowRatios: null });
+    ws.win.webContents.send('update-grid-panel', { cols, rows, colRatios: null, rowRatios: null, slotLayout: null });
   }
   beginStabilize('set-grid-size', ws); // リサイズ中の watchdog 誤発火を抑制
   retileAll(ws);
+  scheduleSaveWorkspaces();
+});
+
+// ── 柔軟グリッド: slotLayout を設定 ──
+ipcMain.handle('set-slot-layout', (event, { layout }) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return;
+  ws.slotLayout = layout; // null でリセット
+  if (ws.win && !ws.win.isDestroyed()) {
+    ws.win.webContents.send('update-grid-panel', {
+      cols: ws.gridCols, rows: ws.gridRows,
+      colRatios: ws.colRatios, rowRatios: ws.rowRatios,
+      slotLayout: layout,
+    });
+  }
+  retileAll(ws).catch(() => {});
   scheduleSaveWorkspaces();
 });
 
@@ -1903,6 +1941,7 @@ function createWorkspace(name, savedState) {
     sidebarWidth: savedSidebarW,
     colRatios: savedGrid && savedGrid.colRatios ? savedGrid.colRatios : null,
     rowRatios: savedGrid && savedGrid.rowRatios ? savedGrid.rowRatios : null,
+    slotLayout: savedGrid && savedGrid.slotLayout ? savedGrid.slotLayout : null,
     color: (savedState && savedState.colorIndex != null) ? WS_COLORS[savedState.colorIndex % WS_COLORS.length] : WS_COLORS[(wsId - 1) % WS_COLORS.length],
     colorIndex: (savedState && savedState.colorIndex != null) ? savedState.colorIndex : (wsId - 1) % WS_COLORS.length,
   };
@@ -1920,7 +1959,7 @@ function createWorkspace(name, savedState) {
     // サイドバー幅を CSS 変数として通知
     win.webContents.send('set-sidebar-width', { width: ws.sidebarWidth || DEFAULT_SIDEBAR_W });
     // グリッドパネルを初期化
-    win.webContents.send('update-grid-panel', { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios });
+    win.webContents.send('update-grid-panel', { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios, slotLayout: ws.slotLayout });
     // リロード後も main 側の snappedExternals を renderer に同期
     if (ws.snappedExternals.size > 0) {
       const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({
@@ -2644,7 +2683,7 @@ function savePreset(name) {
         name: ws.name, colorIndex: ws.colorIndex,
         sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
         sidebarWidth: ws.sidebarWidth || DEFAULT_SIDEBAR_W,
-        grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
+        grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios, slotLayout: ws.slotLayout },
         snappedExternals: snapped,
       });
     }
@@ -3046,7 +3085,7 @@ function writeWorkspacesJsonSync() {
       name: ws.name,
       sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
       sidebarWidth: ws.sidebarWidth || DEFAULT_SIDEBAR_W,
-      grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
+      grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios, slotLayout: ws.slotLayout },
       colorIndex: ws.colorIndex,
       snappedExternals: snapped,
     });
