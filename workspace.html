@@ -2658,13 +2658,31 @@ let gpEditMode = false; // グリッドJSブロックとこのブロックで共
     setClickthrough(onGrid);
   }
 
-  window.addEventListener('mousemove', (e) => evalClickthrough(e.clientX, e.clientY));
+  let _mouseIsDown = false;
 
-  // mousedown capture phase: mousemove と click がほぼ同時に届いた場合に
-  // clickthrough が ON のままクリックが届くのを防ぐ (IPC 非同期遅延対策)
-  window.addEventListener('mousedown', (e) => evalClickthrough(e.clientX, e.clientY), true);
+  window.addEventListener('mousemove', (e) => {
+    // ドラッグ中はclickthrough状態を変えない — Terminal.app でのマウス選択を保護
+    if (_mouseIsDown) return;
+    evalClickthrough(e.clientX, e.clientY);
+  });
 
-  window.addEventListener('mouseleave', () => setClickthrough(false));
+  window.addEventListener('mousedown', (e) => {
+    _mouseIsDown = true;
+    // grid panel 外のクリックのみ evalClickthrough を呼ぶ。
+    // grid panel 上では clickthrough がすでに ON のはず。
+    // ON の状態で evalClickthrough を呼ぶと IPC 遅延中に TiN が click を横取りする。
+    const gridRect = gridPanel.getBoundingClientRect();
+    const onGrid = e.clientX >= gridRect.left && e.clientX <= gridRect.right
+                && e.clientY >= gridRect.top  && e.clientY <= gridRect.bottom;
+    if (!onGrid) evalClickthrough(e.clientX, e.clientY);
+  }, true);
+
+  window.addEventListener('mouseup', () => { _mouseIsDown = false; }, true);
+
+  window.addEventListener('mouseleave', () => {
+    _mouseIsDown = false;
+    setClickthrough(false);
+  });
   // blur で OFF にしない: click-through ON でターミナルをクリックすると blur が発火し、
   // 次クリックを TiN が横取りする原因になる。ヘッダー保護は main の _ctGuardTimer が担当。
 }
