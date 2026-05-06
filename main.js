@@ -1806,25 +1806,46 @@ ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
   scheduleSaveWorkspaces();
 });
 
-// ── 有効スロットに収まらないスナップウィンドウを押し出す ──
+// ── 有効スロットに収まらないスナップウィンドウを処理 ──
+// 空きスロットがあればシフト、なければ元位置に戻してアンスナップ
 function evictOverflowSnapped(ws, validSlotIds) {
-  const toEvict = [];
-  for (const [wn, info] of ws.snappedExternals) {
-    if (!validSlotIds.has(info.slot)) toEvict.push(wn);
+  // 現在有効スロット内で使用中のスロットを収集
+  const usedSlots = new Set();
+  for (const [, info] of ws.snappedExternals) {
+    if (validSlotIds.has(info.slot)) usedSlots.add(info.slot);
   }
-  if (!toEvict.length) return;
-  console.log(`[tin] evict ${toEvict.length} overflowing snapped windows`);
-  for (const wn of toEvict) {
+
+  const overflow = [];
+  for (const [wn, info] of ws.snappedExternals) {
+    if (!validSlotIds.has(info.slot)) overflow.push(wn);
+  }
+  if (!overflow.length) return;
+
+  console.log(`[tin] overflow ${overflow.length} snapped windows — shift or evict`);
+  for (const wn of overflow) {
     const info = ws.snappedExternals.get(wn);
-    ws.snappedExternals.delete(wn);
-    ws._lastKnownSnappedWns.delete(wn);
-    snappedIndexRemove(wn);
-    if (axHelper && axHelper.setWindowSticky) {
-      try { axHelper.setWindowSticky([wn], false); } catch {}
+    // 空き有効スロットを探してシフト
+    let freeSlot = -1;
+    for (const id of validSlotIds) {
+      if (!usedSlots.has(id)) { freeSlot = id; break; }
     }
-    if (info && info.origX !== undefined) {
-      batchMove([{ windowNumber: info.windowNumber, pid: info.pid, app: info.app,
-        title: info.title, x: info.origX, y: info.origY, width: info.origW, height: info.origH }]).catch(() => {});
+    if (freeSlot >= 0) {
+      usedSlots.add(freeSlot);
+      info.slot = freeSlot;
+      console.log(`[tin] shift wn=${wn} → slot ${freeSlot}`);
+    } else {
+      // 空きなし → アンスナップ（元位置に戻す）
+      ws.snappedExternals.delete(wn);
+      ws._lastKnownSnappedWns.delete(wn);
+      snappedIndexRemove(wn);
+      if (axHelper && axHelper.setWindowSticky) {
+        try { axHelper.setWindowSticky([wn], false); } catch {}
+      }
+      if (info && info.origX !== undefined) {
+        batchMove([{ windowNumber: info.windowNumber, pid: info.pid, app: info.app,
+          title: info.title, x: info.origX, y: info.origY, width: info.origW, height: info.origH }]).catch(() => {});
+      }
+      console.log(`[tin] evict wn=${wn} (no free slot)`);
     }
   }
   // renderer の snappedExternals を同期
@@ -2430,7 +2451,12 @@ ipcMain.on('set-win-clickthrough', (event, on) => {
 });
 ipcMain.on('set-overlay-active', (event, active) => {
   const ws = findWorkspace(event.sender);
-  if (ws) ws._hasOverlay = !!active;
+  if (!ws) return;
+  ws._hasOverlay = !!active;
+  // overlay ON になった瞬間に clickthrough を即座に OFF (IPC → _ctGuardLoop 遅延を橋渡し)
+  if (active && ws.win && !ws.win.isDestroyed()) {
+    ws.win.setIgnoreMouseEvents(false);
+  }
 });
 ipcMain.on('set-edit-mode', (event, active) => {
   const ws = findWorkspace(event.sender);
