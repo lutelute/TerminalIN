@@ -3202,31 +3202,36 @@ function startRestServer() {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
-  if (_restServer) _restServer.close();
+  // REST サーバーを強制クローズ (接続待ちで quit がブロックされないよう)
+  if (_restServer) {
+    try {
+      // Node 18.2+ では closeAllConnections() が使える
+      if (_restServer.closeAllConnections) _restServer.closeAllConnections();
+      _restServer.close();
+    } catch {}
+    _restServer = null;
+  }
 });
 
 app.on('before-quit', () => {
   app.isQuitting = true;
-  try { writeWorkspacesJsonSync(); } catch (e) { console.warn('[tin] final save failed:', e.message); }
+
+  // PTY プロセスを全て kill (node-pty が生きていると app が終了しない)
+  for (const [, ws] of workspaces) {
+    for (const [, gw] of ws.gridWindows) {
+      try { gw.pty.kill(); } catch {}
+    }
+    for (const [, p] of (ws.sidebarPtys || new Map())) {
+      try { p.kill(); } catch {}
+    }
+  }
+
+  try { writeWorkspacesJsonSync(); } catch {}
   try { if (fs.existsSync(INFO_JSON)) fs.unlinkSync(INFO_JSON); } catch {}
   try { if (fs.existsSync(SNAPPED_JSON)) fs.unlinkSync(SNAPPED_JSON); } catch {}
-
-  // quit 時にスナップ済みウィンドウを元の位置・サイズに戻す (同期)
-  // 次回起動で workspaces.json から復元されるので位置は失われない
-  try {
-    const cmds = [];
-    for (const [, ws] of workspaces) {
-      for (const [, info] of ws.snappedExternals) {
-        if (info.origX == null) continue;
-        cmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
-          x: info.origX, y: info.origY, width: info.origW, height: info.origH });
-      }
-    }
-    if (cmds.length && axHelper) {
-      axHelper.moveWindows(cmds, false);
-      console.log(`[tin] quit: restored ${cmds.length} snapped windows to original position`);
-    }
-  } catch (e) { console.warn('[tin] quit restore failed:', e.message); }
+  // ※ スナップ済みウィンドウの元位置復元は before-quit では行わない。
+  //   axHelper.moveWindows が無応答アプリで hang して quit をブロックするため。
+  //   次回 TiN 起動時に workspaces.json から snap 復元する設計で十分。
 });
 
 app.on('window-all-closed', () => app.quit());
