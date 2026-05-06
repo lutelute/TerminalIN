@@ -160,40 +160,109 @@
   #gp-toolbar button:hover { background: #eee; }
   #gp-toolbar span { font-size: 11px; color: #666; margin-right: 4px; }
 
-  /* ── Flexible Grid (Beta): Preset bar ── */
-  .gp-preset-bar {
-    display: none;
-    gap: 6px; padding: 6px 8px 2px;
-    flex-wrap: wrap; align-items: center;
+  /* ── Grid Layout Editor Popup ── */
+  #grid-layout-popup {
+    position: fixed;
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.07);
+    padding: 14px;
+    z-index: 10002;
+    width: 300px;
+    display: flex; flex-direction: column; gap: 10px;
+    user-select: none;
   }
-  body.gp-edit .gp-preset-bar { display: flex; }
-  .gp-preset-btn {
+  #grid-layout-popup h3 {
+    font-size: 11px; font-weight: 700; color: rgba(0,0,0,0.5);
+    letter-spacing: 0.08em; text-transform: uppercase; margin: 0;
+  }
+  /* プリセット行 */
+  .glp-presets {
+    display: flex; gap: 5px; flex-wrap: wrap;
+  }
+  .glp-preset-btn {
     display: flex; flex-direction: column; align-items: center; gap: 3px;
-    padding: 4px 6px; border-radius: 6px; border: 1.5px solid transparent;
-    background: rgba(255,255,255,0.7); cursor: pointer; transition: all 0.12s;
+    padding: 5px 6px; border-radius: 7px; border: 1.5px solid transparent;
+    background: rgba(0,0,0,0.04); cursor: pointer; transition: all 0.12s;
   }
-  .gp-preset-btn:hover { background: rgba(60,120,230,0.1); border-color: rgba(60,120,230,0.35); }
-  .gp-preset-btn.active { background: rgba(60,120,230,0.14); border-color: rgba(60,120,230,0.6); }
-  .gp-preset-btn span { font-size: 8px; color: rgba(0,0,0,0.5); font-weight: 600; }
-  .gp-preset-btn.active span { color: rgba(60,120,230,0.9); }
+  .glp-preset-btn:hover { background: rgba(60,120,230,0.08); border-color: rgba(60,120,230,0.3); }
+  .glp-preset-btn.active { background: rgba(60,120,230,0.12); border-color: rgba(60,120,230,0.6); }
+  .glp-preset-btn span { font-size: 9px; color: rgba(0,0,0,0.45); font-weight: 600; }
+  .glp-preset-btn.active span { color: rgba(60,120,230,0.9); }
 
-  /* 仕切り線ハンドル */
-  .gp-divider-handle {
-    position: absolute; z-index: 30;
-    background: rgba(60,120,230,0.25); border-radius: 3px;
-    cursor: pointer; transition: all 0.15s;
+  /* エディタグリッド */
+  .glp-grid-wrap {
+    position: relative;
+  }
+  .glp-grid {
+    display: grid;
+    gap: 6px;
+    padding: 6px;
+    background: rgba(100,140,220,0.07);
+    border-radius: 8px;
+    width: 100%; aspect-ratio: 1.6;
+    box-sizing: border-box;
+    cursor: crosshair;
+  }
+  .glp-cell {
+    background: rgba(255,255,255,0.9);
+    border-radius: 5px;
+    border: 1.5px solid rgba(100,140,220,0.2);
+    transition: background 0.1s, border-color 0.1s;
     display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; color: rgba(0,0,0,0.25);
+    position: relative;
   }
-  .gp-divider-handle:hover { background: rgba(60,120,230,0.7); }
-  .gp-divider-handle.removed {
-    background: transparent;
-    border: 1.5px dashed rgba(60,120,230,0.25);
+  .glp-cell.selecting {
+    background: rgba(60,120,230,0.18);
+    border-color: rgba(60,120,230,0.6);
+    color: rgba(60,120,230,0.8);
   }
-  .gp-divider-handle.removed:hover { background: rgba(60,120,230,0.1); border-color: rgba(60,120,230,0.5); }
-  /* 縦ハンドル (列間) */
-  .gp-divider-handle.col-div { width: 10px; }
-  /* 横ハンドル (行間) */
-  .gp-divider-handle.row-div { height: 10px; }
+  .glp-cell.merged {
+    background: rgba(60,120,230,0.12);
+    border: 2px solid rgba(60,120,230,0.5);
+    color: rgba(60,120,230,0.75);
+    cursor: pointer;
+  }
+  .glp-cell.merged:hover { background: rgba(60,120,230,0.2); border-color: rgba(60,120,230,0.8); }
+  .glp-cell.selected-merged {
+    background: rgba(230,100,40,0.15);
+    border: 2px solid rgba(220,80,20,0.6);
+    color: rgba(200,70,10,0.8);
+  }
+  .glp-merge-label {
+    font-size: 9px; font-weight: 600; pointer-events: none;
+  }
+
+  /* アクションバー */
+  .glp-actions {
+    display: flex; gap: 6px; align-items: center;
+    min-height: 28px;
+  }
+  .glp-action-hint {
+    flex: 1; font-size: 10px; color: rgba(0,0,0,0.4); font-style: italic;
+  }
+  .glp-btn {
+    padding: 5px 12px; border-radius: 6px; border: none;
+    font-size: 11px; font-weight: 600; cursor: pointer;
+  }
+  .glp-btn.primary { background: rgba(60,120,230,0.9); color: #fff; }
+  .glp-btn.primary:hover { background: rgba(40,100,210,1); }
+  .glp-btn.danger { background: rgba(220,60,60,0.1); color: rgba(180,30,30,0.9); }
+  .glp-btn.danger:hover { background: rgba(220,60,60,0.2); }
+  .glp-btn.secondary { background: rgba(0,0,0,0.07); color: rgba(0,0,0,0.6); }
+  .glp-btn.secondary:hover { background: rgba(0,0,0,0.12); }
+
+  /* フッター */
+  .glp-footer {
+    display: flex; gap: 6px; justify-content: flex-end; padding-top: 2px;
+    border-top: 1px solid rgba(0,0,0,0.06);
+  }
+
+  /* レイアウトボタン（ヘッダー内） */
+  .grid-layout-btn {
+    /* 既存の .grid-opt に準拠 */
+  }
 
   /* ── Active / Inactive 状態 ── */
   /* アクティブ: クリアで明るい (vibrancy: active で常時明るい背景)
@@ -954,7 +1023,6 @@
 <div id="grid-panel">
   <div class="gp-frame"></div>
   <div class="gp-grid-container" id="gp-grid"></div>
-  <div class="gp-preset-bar" id="gp-preset-bar"></div>
   <div id="gp-toolbar">
     <span>Grid Edit</span>
     <button onclick="gpResetRatios()">Reset</button>
@@ -2033,6 +2101,13 @@ function render() {
   editBtn.title = 'Edit Grid Ratios';
   editBtn.addEventListener('click', () => ipcRenderer.send('enter-grid-edit'));
   selector.appendChild(editBtn);
+  // Layout Editor ボタン
+  const layoutBtn = document.createElement('button');
+  layoutBtn.className = 'grid-opt';
+  layoutBtn.textContent = '\u229e';
+  layoutBtn.title = 'Grid Layout Editor \u2014 \u30bb\u30eb\u7d50\u5408/\u5206\u5272';
+  layoutBtn.addEventListener('click', (e) => { e.stopPropagation(); openGridLayoutPopup(layoutBtn); });
+  selector.appendChild(layoutBtn);
   // Retile ボタン (snapped ウィンドウを slot に揃え直す)
   const retileBtn = document.createElement('button');
   retileBtn.className = 'grid-opt';
@@ -2802,11 +2877,365 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
   });
 }
 
+// ── Grid Layout Editor ──
+let gpSlotLayout = null;
+
+// slotLayout から editor 用の cellMap を構築
+function glpBuildCellMap(cols, rows, slotLayout) {
+  // cellMap[id] = { id, col, row, colSpan, rowSpan }
+  const map = new Map();
+  if (slotLayout) {
+    for (const cell of slotLayout) map.set(cell.id, cell);
+  } else {
+    for (let r = 0; r < rows; r++)
+      for (let c = 0; c < cols; c++) {
+        const id = r * cols + c;
+        map.set(id, { id, col: c, row: r, colSpan: 1, rowSpan: 1 });
+      }
+  }
+  return map;
+}
+
+// セルIDのグリッド占有情報を返す（どのセルIDがどのグリッド座標を占有するか）
+function glpBuildOccupancyGrid(cols, rows, cellMap) {
+  // occupancy[r][c] = cellId
+  const occ = Array.from({length: rows}, () => Array(cols).fill(-1));
+  for (const [id, cell] of cellMap) {
+    for (let dr = 0; dr < cell.rowSpan; dr++)
+      for (let dc = 0; dc < cell.colSpan; dc++)
+        occ[cell.row + dr][cell.col + dc] = id;
+  }
+  return occ;
+}
+
+// 選択範囲（矩形）内のすべてのセルIDを取得
+function glpGetCellsInRange(occ, r1, c1, r2, c2) {
+  const minR = Math.min(r1, r2), maxR = Math.max(r1, r2);
+  const minC = Math.min(c1, c2), maxC = Math.max(c1, c2);
+  const ids = new Set();
+  for (let r = minR; r <= maxR; r++)
+    for (let c = minC; c <= maxC; c++)
+      if (occ[r][c] >= 0) ids.add(occ[r][c]);
+  return ids;
+}
+
+// slotLayout から新しい配列を生成するヘルパー
+function glpBuildLayout(cols, rows, cellMap) {
+  const layout = [...cellMap.values()].sort((a, b) => a.id - b.id);
+  // すべて colSpan=rowSpan=1 ならデフォルト（null）扱い
+  if (layout.every(c => c.colSpan === 1 && c.rowSpan === 1) && layout.length === cols * rows)
+    return null;
+  return layout;
+}
+
+function openGridLayoutPopup(anchorEl) {
+  // 既存ポップアップがあれば閉じる
+  const existing = document.getElementById('grid-layout-popup');
+  if (existing) { existing.remove(); notifyOverlay(false); return; }
+
+  notifyOverlay(true);
+  const cols = gridCols, rows = gridRows;
+  let currentCellMap = glpBuildCellMap(cols, rows, gpSlotLayout);
+  let occ = glpBuildOccupancyGrid(cols, rows, currentCellMap);
+
+  // ── ポップアップ本体 ──
+  const popup = document.createElement('div');
+  popup.id = 'grid-layout-popup';
+
+  // タイトル
+  const title = document.createElement('h3');
+  title.textContent = 'Grid Layout';
+  popup.appendChild(title);
+
+  // ── プリセット行 ──
+  const presetBar = document.createElement('div');
+  presetBar.className = 'glp-presets';
+
+  const presets = [
+    { id: 'default', label: '均等',   merges: [] },
+    ...(cols >= 2 && rows >= 2 ? [
+      { id: 'left-big',   label: '左大',  merges: [{col:0,      row:0, colSpan:1,    rowSpan:rows}] },
+      { id: 'right-big',  label: '右大',  merges: [{col:cols-1, row:0, colSpan:1,    rowSpan:rows}] },
+      { id: 'top-big',    label: '上大',  merges: [{col:0,      row:0, colSpan:cols, rowSpan:1}] },
+      { id: 'bottom-big', label: '下大',  merges: [{col:0, row:rows-1, colSpan:cols, rowSpan:1}] },
+    ] : []),
+  ];
+
+  const makeMiniSVG = (merges) => {
+    const W = 32, H = 26, gap = 2, pad = 2;
+    const cw = (W - pad*2 - gap*(cols-1)) / cols;
+    const rh = (H - pad*2 - gap*(rows-1)) / rows;
+    const covered = new Set();
+    let rects = '';
+    for (const m of merges) {
+      const x = pad + m.col*(cw+gap), y = pad + m.row*(rh+gap);
+      const w = m.colSpan*cw+(m.colSpan-1)*gap, h = m.rowSpan*rh+(m.rowSpan-1)*gap;
+      rects += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="rgba(60,120,230,0.6)"/>`;
+      for (let dr=0;dr<m.rowSpan;dr++) for (let dc=0;dc<m.colSpan;dc++) covered.add((m.row+dr)*cols+(m.col+dc));
+    }
+    for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) {
+      if (!covered.has(r*cols+c))
+        rects += `<rect x="${(pad+c*(cw+gap)).toFixed(1)}" y="${(pad+r*(rh+gap)).toFixed(1)}" width="${cw.toFixed(1)}" height="${rh.toFixed(1)}" rx="1.5" fill="rgba(100,140,220,0.3)"/>`;
+    }
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${rects}</svg>`;
+  };
+
+  for (const preset of presets) {
+    const btn = document.createElement('button');
+    btn.className = 'glp-preset-btn';
+    btn.innerHTML = makeMiniSVG(preset.merges);
+    const lbl = document.createElement('span');
+    lbl.textContent = preset.label;
+    btn.appendChild(lbl);
+    btn.addEventListener('click', () => {
+      // cellMap を再構築
+      const covered = new Set();
+      const newMap = new Map();
+      for (const m of preset.merges) {
+        const id = m.row * cols + m.col;
+        newMap.set(id, { id, col: m.col, row: m.row, colSpan: m.colSpan, rowSpan: m.rowSpan });
+        for (let dr=0;dr<m.rowSpan;dr++) for (let dc=0;dc<m.colSpan;dc++) covered.add((m.row+dr)*cols+(m.col+dc));
+      }
+      for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) {
+        if (!covered.has(r*cols+c)) {
+          const id = r*cols+c;
+          newMap.set(id, {id, col:c, row:r, colSpan:1, rowSpan:1});
+        }
+      }
+      currentCellMap = newMap;
+      occ = glpBuildOccupancyGrid(cols, rows, currentCellMap);
+      selectedRange = null; selectedMergedId = null;
+      redrawGrid();
+      updateActions();
+      // プリセットボタンのアクティブ状態更新
+      presetBar.querySelectorAll('.glp-preset-btn').forEach((b, i) => {
+        b.classList.toggle('active', presets[i].id === preset.id);
+      });
+    });
+    presetBar.appendChild(btn);
+  }
+  popup.appendChild(presetBar);
+
+  // ── エディタグリッド ──
+  const gridWrap = document.createElement('div');
+  gridWrap.className = 'glp-grid-wrap';
+  const gridEl = document.createElement('div');
+  gridEl.className = 'glp-grid';
+  gridEl.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  gridEl.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+  gridWrap.appendChild(gridEl);
+  popup.appendChild(gridWrap);
+
+  // ── アクションバー ──
+  const actionsBar = document.createElement('div');
+  actionsBar.className = 'glp-actions';
+  const hintEl = document.createElement('span');
+  hintEl.className = 'glp-action-hint';
+  hintEl.textContent = 'セルをドラッグして選択';
+  actionsBar.appendChild(hintEl);
+  const mergeBtn = document.createElement('button');
+  mergeBtn.className = 'glp-btn primary';
+  mergeBtn.textContent = '結合';
+  mergeBtn.style.display = 'none';
+  const splitBtn = document.createElement('button');
+  splitBtn.className = 'glp-btn danger';
+  splitBtn.textContent = '分割';
+  splitBtn.style.display = 'none';
+  actionsBar.appendChild(mergeBtn);
+  actionsBar.appendChild(splitBtn);
+  popup.appendChild(actionsBar);
+
+  // ── フッター ──
+  const footer = document.createElement('div');
+  footer.className = 'glp-footer';
+  const resetBtn = document.createElement('button');
+  resetBtn.className = 'glp-btn secondary';
+  resetBtn.textContent = 'リセット';
+  const doneBtn = document.createElement('button');
+  doneBtn.className = 'glp-btn primary';
+  doneBtn.textContent = 'Done';
+  footer.appendChild(resetBtn);
+  footer.appendChild(doneBtn);
+  popup.appendChild(footer);
+
+  document.body.appendChild(popup);
+
+  // ── ポップアップ位置 ──
+  const ar = anchorEl.getBoundingClientRect();
+  popup.style.top = (ar.bottom + 4) + 'px';
+  const popW = 300;
+  const left = Math.min(ar.left, window.innerWidth - popW - 8);
+  popup.style.left = Math.max(8, left) + 'px';
+
+  // ── 状態 ──
+  let selectedRange = null;   // { r1, c1, r2, c2 } ドラッグ選択範囲
+  let selectedMergedId = null; // クリック選択した結合セルのID
+  let dragStart = null;        // ドラッグ開始セル { r, c }
+
+  function redrawGrid() {
+    gridEl.innerHTML = '';
+    // occ を再構築（currentCellMap が更新されている可能性）
+    occ = glpBuildOccupancyGrid(cols, rows, currentCellMap);
+
+    // cellMap を col/row 順で描画
+    const sortedCells = [...currentCellMap.values()].sort((a, b) => a.row !== b.row ? a.row - b.row : a.col - b.col);
+
+    for (const cell of sortedCells) {
+      const div = document.createElement('div');
+      div.className = 'glp-cell';
+      div.dataset.r = cell.row;
+      div.dataset.c = cell.col;
+      div.dataset.id = cell.id;
+      div.style.gridColumn = `${cell.col + 1} / span ${cell.colSpan}`;
+      div.style.gridRow    = `${cell.row + 1} / span ${cell.rowSpan}`;
+
+      const isMerged = cell.colSpan > 1 || cell.rowSpan > 1;
+      if (isMerged) {
+        div.classList.add('merged');
+        if (selectedMergedId === cell.id) div.classList.add('selected-merged');
+        const lbl = document.createElement('span');
+        lbl.className = 'glp-merge-label';
+        lbl.textContent = `${cell.colSpan}×${cell.rowSpan}`;
+        div.appendChild(lbl);
+      } else {
+        // ドラッグ選択ハイライト
+        if (selectedRange) {
+          const { r1, c1, r2, c2 } = selectedRange;
+          const minR = Math.min(r1,r2), maxR = Math.max(r1,r2);
+          const minC = Math.min(c1,c2), maxC = Math.max(c1,c2);
+          if (cell.row >= minR && cell.row <= maxR && cell.col >= minC && cell.col <= maxC) {
+            div.classList.add('selecting');
+          }
+        }
+        const lbl = document.createElement('span');
+        lbl.className = 'glp-merge-label';
+        lbl.textContent = cell.id + 1;
+        div.appendChild(lbl);
+      }
+
+      // イベント
+      div.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        if (isMerged) {
+          // 結合セルをクリック → 分割選択
+          selectedRange = null;
+          selectedMergedId = (selectedMergedId === cell.id) ? null : cell.id;
+          redrawGrid(); updateActions();
+          return;
+        }
+        // ドラッグ開始
+        selectedMergedId = null;
+        dragStart = { r: cell.row, c: cell.col };
+        selectedRange = { r1: cell.row, c1: cell.col, r2: cell.row, c2: cell.col };
+        redrawGrid(); updateActions();
+      });
+      div.addEventListener('mouseenter', () => {
+        if (!dragStart) return;
+        selectedRange = { r1: dragStart.r, c1: dragStart.c, r2: cell.row, c2: cell.col };
+        redrawGrid(); updateActions();
+      });
+
+      gridEl.appendChild(div);
+    }
+  }
+
+  function updateActions() {
+    mergeBtn.style.display = 'none';
+    splitBtn.style.display = 'none';
+    if (selectedRange) {
+      const { r1, c1, r2, c2 } = selectedRange;
+      const minR = Math.min(r1,r2), maxR = Math.max(r1,r2);
+      const minC = Math.min(c1,c2), maxC = Math.max(c1,c2);
+      const cellCount = (maxR - minR + 1) * (maxC - minC + 1);
+      if (cellCount >= 2) {
+        // 選択範囲内に結合済みがないかチェック
+        const ids = glpGetCellsInRange(occ, minR, minC, maxR, maxC);
+        const hasMerged = [...ids].some(id => {
+          const c = currentCellMap.get(id);
+          return c && (c.colSpan > 1 || c.rowSpan > 1);
+        });
+        if (!hasMerged) {
+          mergeBtn.style.display = '';
+          hintEl.textContent = `${cellCount}セルを結合`;
+        } else {
+          hintEl.textContent = '結合済みセルを含む選択は結合できません';
+        }
+      } else {
+        hintEl.textContent = 'セルをドラッグして選択';
+      }
+    } else if (selectedMergedId !== null) {
+      splitBtn.style.display = '';
+      hintEl.textContent = '結合を解除します';
+    } else {
+      hintEl.textContent = 'セルをドラッグして選択';
+    }
+  }
+
+  // マウスアップでドラッグ終了
+  const _mouseUpHandler = () => { dragStart = null; };
+  window.addEventListener('mouseup', _mouseUpHandler);
+
+  // 結合ボタン
+  mergeBtn.addEventListener('click', () => {
+    if (!selectedRange) return;
+    const { r1, c1, r2, c2 } = selectedRange;
+    const minR = Math.min(r1,r2), maxR = Math.max(r1,r2);
+    const minC = Math.min(c1,c2), maxC = Math.max(c1,c2);
+    // 選択範囲内のすべてのセルを結合
+    const ids = glpGetCellsInRange(occ, minR, minC, maxR, maxC);
+    for (const id of ids) currentCellMap.delete(id);
+    const newId = minR * cols + minC;
+    currentCellMap.set(newId, { id: newId, col: minC, row: minR, colSpan: maxC - minC + 1, rowSpan: maxR - minR + 1 });
+    selectedRange = null; selectedMergedId = null;
+    occ = glpBuildOccupancyGrid(cols, rows, currentCellMap);
+    redrawGrid(); updateActions();
+  });
+
+  // 分割ボタン
+  splitBtn.addEventListener('click', () => {
+    if (selectedMergedId === null) return;
+    const cell = currentCellMap.get(selectedMergedId);
+    if (!cell) return;
+    currentCellMap.delete(selectedMergedId);
+    for (let dr = 0; dr < cell.rowSpan; dr++)
+      for (let dc = 0; dc < cell.colSpan; dc++) {
+        const id = (cell.row + dr) * cols + (cell.col + dc);
+        currentCellMap.set(id, { id, col: cell.col + dc, row: cell.row + dr, colSpan: 1, rowSpan: 1 });
+      }
+    selectedMergedId = null; selectedRange = null;
+    occ = glpBuildOccupancyGrid(cols, rows, currentCellMap);
+    redrawGrid(); updateActions();
+  });
+
+  // リセット
+  resetBtn.addEventListener('click', () => {
+    currentCellMap = glpBuildCellMap(cols, rows, null);
+    occ = glpBuildOccupancyGrid(cols, rows, currentCellMap);
+    selectedRange = null; selectedMergedId = null;
+    redrawGrid(); updateActions();
+  });
+
+  // Done
+  doneBtn.addEventListener('click', () => {
+    const layout = glpBuildLayout(cols, rows, currentCellMap);
+    ipcRenderer.invoke('set-slot-layout', { layout }).then(() => {
+      gpSlotLayout = layout;
+      render();
+    });
+    popup.remove();
+    window.removeEventListener('mouseup', _mouseUpHandler);
+    notifyOverlay(false);
+  });
+
+  redrawGrid();
+  updateActions();
+}
+
 // ── Grid panel (right side) ──
 {
   let gpCols = 2, gpRows = 2;
   let gpColRatios = null, gpRowRatios = null;
-  let gpSlotLayout = null; // 柔軟グリッド: slotLayout (null = 均等)
+  // gpSlotLayout はグローバルスコープで宣言済み
   // gpEditMode はグローバルスコープで宣言済み
 
   function gpGetCumulative(ratios, n) {
@@ -2876,7 +3305,6 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
     document.querySelectorAll('.gp-divider').forEach(el => el.remove());
     if (gpEditMode) {
       gpRenderEditLines();
-      gpRenderDividerHandles();
     }
   }
 
@@ -2955,263 +3383,6 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
     document.addEventListener('mouseup', onUp);
   }
 
-  // ── 柔軟グリッド: ヘルパー ──
-
-  // merges 定義から slotLayout を構築
-  function buildLayoutFromMerges(cols, rows, merges) {
-    const covered = new Set();
-    const layout = [];
-    for (const m of merges) {
-      const id = m.row * cols + m.col;
-      layout.push({ id, col: m.col, row: m.row, colSpan: m.colSpan, rowSpan: m.rowSpan });
-      for (let dr = 0; dr < m.rowSpan; dr++)
-        for (let dc = 0; dc < m.colSpan; dc++)
-          covered.add((m.row + dr) * cols + (m.col + dc));
-    }
-    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-      if (!covered.has(r * cols + c))
-        layout.push({ id: r * cols + c, col: c, row: r, colSpan: 1, rowSpan: 1 });
-    }
-    layout.sort((a, b) => a.id - b.id);
-    return layout;
-  }
-
-  // 現在の slotLayout から各グリッドセル位置の占有情報を返す
-  function getCurrentCellMap() {
-    const cols = gpCols, rows = gpRows;
-    const cellMap = Array.from({length: rows}, () => Array(cols).fill(null));
-    const layout = gpSlotLayout || buildLayoutFromMerges(cols, rows, []);
-    for (const cell of layout) {
-      for (let dr = 0; dr < cell.rowSpan; dr++) {
-        for (let dc = 0; dc < cell.colSpan; dc++) {
-          if (cell.row + dr < rows && cell.col + dc < cols) {
-            cellMap[cell.row + dr][cell.col + dc] = {
-              id: cell.id, colSpan: cell.colSpan, rowSpan: cell.rowSpan,
-              isOrigin: dr === 0 && dc === 0,
-            };
-          }
-        }
-      }
-    }
-    return cellMap;
-  }
-
-  // ミニグリッド SVG アイコン (プリセットボタン用)
-  function makeMiniGridSVGWithMerge(cols, rows, merges) {
-    const W = 32, H = 26, gap = 2, pad = 2;
-    const cw = (W - pad*2 - gap*(cols-1)) / cols;
-    const rh = (H - pad*2 - gap*(rows-1)) / rows;
-    const covered = new Set();
-    let rects = '';
-    for (const m of merges) {
-      const x = pad + m.col*(cw+gap), y = pad + m.row*(rh+gap);
-      const w = m.colSpan*cw + (m.colSpan-1)*gap, h = m.rowSpan*rh + (m.rowSpan-1)*gap;
-      rects += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="rgba(60,120,230,0.6)"/>`;
-      for (let dr=0;dr<m.rowSpan;dr++) for (let dc=0;dc<m.colSpan;dc++) covered.add((m.row+dr)*cols+(m.col+dc));
-    }
-    for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) {
-      if (!covered.has(r*cols+c)) rects += `<rect x="${(pad+c*(cw+gap)).toFixed(1)}" y="${(pad+r*(rh+gap)).toFixed(1)}" width="${cw.toFixed(1)}" height="${rh.toFixed(1)}" rx="1.5" fill="rgba(100,140,220,0.3)"/>`;
-    }
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${rects}</svg>`;
-  }
-
-  // プリセットバーを構築 (Edit モード開始時に呼ぶ)
-  function gpBuildPresetBar() {
-    const bar = document.getElementById('gp-preset-bar');
-    if (!bar) return;
-    bar.innerHTML = '';
-    const label = document.createElement('span');
-    label.style.cssText = 'font-size:9px;color:rgba(0,0,0,0.4);font-weight:600;margin-right:4px;';
-    label.textContent = 'PRESET:';
-    bar.appendChild(label);
-    const cols = gpCols, rows = gpRows;
-    const presets = [
-      { id: 'default', label: '均等', merges: [] },
-      ...(cols >= 2 && rows >= 2 ? [
-        { id: 'left-big',   label: '左大',  merges: [{col:0,     row:0, colSpan:1,    rowSpan:rows}] },
-        { id: 'right-big',  label: '右大',  merges: [{col:cols-1,row:0, colSpan:1,    rowSpan:rows}] },
-        { id: 'top-big',    label: '上大',  merges: [{col:0,     row:0, colSpan:cols, rowSpan:1   }] },
-        { id: 'bottom-big', label: '下大',  merges: [{col:0, row:rows-1,colSpan:cols, rowSpan:1   }] },
-      ] : []),
-    ];
-    for (const preset of presets) {
-      const btn = document.createElement('button');
-      btn.className = 'gp-preset-btn';
-      const svgEl = document.createElement('span');
-      svgEl.innerHTML = makeMiniGridSVGWithMerge(cols, rows, preset.merges);
-      btn.appendChild(svgEl);
-      const lbl = document.createElement('span');
-      lbl.textContent = preset.label;
-      btn.appendChild(lbl);
-      btn.addEventListener('click', () => {
-        const layout = preset.merges.length > 0
-          ? buildLayoutFromMerges(cols, rows, preset.merges)
-          : null;
-        ipcRenderer.invoke('set-slot-layout', { layout }).then(() => {
-          gpSlotLayout = layout;
-          gpRender(cols, rows);
-          render();
-        });
-      });
-      bar.appendChild(btn);
-    }
-  }
-
-  // 仕切り線ハンドルを描画 (Edit モード中のみ)
-  function gpRenderDividerHandles() {
-    document.querySelectorAll('.gp-divider-handle').forEach(el => el.remove());
-    if (!gpEditMode) return;
-    const container = document.getElementById('gp-grid');
-    if (!container) return;
-    const cols = gpCols, rows = gpRows;
-    const cellMap = getCurrentCellMap();
-    const rect = container.getBoundingClientRect();
-    const gap = 8, padX = 8, padTop = 4, padBottom = 8;
-    const innerW = rect.width  - padX * 2 - gap * (cols - 1);
-    const innerH = rect.height - padTop - padBottom - gap * (rows - 1);
-    const cumC = gpGetCumulative(gpColRatios, cols);
-    const cumR = gpGetCumulative(gpRowRatios, rows);
-
-    // 列間のハンドル (縦の仕切り)
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols - 1; c++) {
-        const leftCell  = cellMap[r][c];
-        const rightCell = cellMap[r][c + 1];
-        if (!leftCell || !rightCell) continue;
-        const isMerged = leftCell.id === rightCell.id;
-
-        const x = padX + cumC[c+1] * innerW + gap * c + gap * 0.5 - 5;
-        const cellH = innerH * (cumR[r+1] - cumR[r]);
-        const h = Math.max(20, cellH * 0.6);
-        const y = padTop + cumR[r] * innerH + gap * r + (cellH - h) * 0.5;
-
-        const handle = document.createElement('div');
-        handle.className = 'gp-divider-handle col-div' + (isMerged ? ' removed' : '');
-        handle.style.cssText = `left:${x.toFixed(1)}px; top:${y.toFixed(1)}px; height:${h.toFixed(1)}px;`;
-        handle.title = isMerged ? 'クリックで分割' : 'クリックで結合';
-        handle.addEventListener('click', () => toggleColDivider(r, c));
-        container.appendChild(handle);
-      }
-    }
-
-    // 行間のハンドル (横の仕切り)
-    for (let r = 0; r < rows - 1; r++) {
-      for (let c = 0; c < cols; c++) {
-        const topCell = cellMap[r][c];
-        const botCell = cellMap[r + 1][c];
-        if (!topCell || !botCell) continue;
-        const isMerged = topCell.id === botCell.id;
-
-        const cellW = innerW * (cumC[c+1] - cumC[c]);
-        const w = Math.max(20, cellW * 0.6);
-        const x = padX + cumC[c] * innerW + gap * c + (cellW - w) * 0.5;
-        const y = padTop + cumR[r+1] * innerH + gap * r + gap * 0.5 - 5;
-
-        const handle = document.createElement('div');
-        handle.className = 'gp-divider-handle row-div' + (isMerged ? ' removed' : '');
-        handle.style.cssText = `top:${y.toFixed(1)}px; left:${x.toFixed(1)}px; width:${w.toFixed(1)}px;`;
-        handle.title = isMerged ? 'クリックで分割' : 'クリックで結合';
-        handle.addEventListener('click', () => toggleRowDivider(r, c));
-        container.appendChild(handle);
-      }
-    }
-  }
-
-  // 列間の仕切りをトグル (col c と c+1 の間、row r)
-  function toggleColDivider(r, c) {
-    const cols = gpCols, rows = gpRows;
-    const cellMap = getCurrentCellMap();
-    const leftCell  = cellMap[r][c];
-    const rightCell = cellMap[r][c + 1];
-    if (!leftCell || !rightCell) return;
-    const isMerged = leftCell.id === rightCell.id;
-
-    let newLayout;
-    if (!isMerged) {
-      // 結合: 両セルが colSpan=1, rowSpan=1 で独立している場合のみ
-      if (leftCell.colSpan !== 1 || leftCell.rowSpan !== 1) return;
-      if (rightCell.colSpan !== 1 || rightCell.rowSpan !== 1) return;
-      if (leftCell.isOrigin && rightCell.isOrigin) {
-        const layout = gpSlotLayout ? [...gpSlotLayout] : buildLayoutFromMerges(cols, rows, []);
-        const idx = layout.findIndex(cell => cell.id === leftCell.id);
-        if (idx < 0) return;
-        layout[idx] = { ...layout[idx], colSpan: 2 };
-        const ridx = layout.findIndex(cell => cell.id === rightCell.id);
-        if (ridx >= 0) layout.splice(ridx, 1);
-        newLayout = layout;
-      }
-    } else {
-      // 分割: 結合セルを個別セルに戻す
-      const layout = gpSlotLayout ? [...gpSlotLayout] : buildLayoutFromMerges(cols, rows, []);
-      const idx = layout.findIndex(cell => cell.id === leftCell.id);
-      if (idx < 0) return;
-      const cell = layout[idx];
-      const newCells = [];
-      for (let dc = 0; dc < cell.colSpan; dc++) {
-        for (let dr = 0; dr < cell.rowSpan; dr++) {
-          const id = (cell.row + dr) * cols + (cell.col + dc);
-          newCells.push({ id, col: cell.col + dc, row: cell.row + dr, colSpan: 1, rowSpan: 1 });
-        }
-      }
-      layout.splice(idx, 1, ...newCells);
-      newLayout = layout;
-    }
-    if (!newLayout) return;
-    newLayout.sort((a, b) => a.id - b.id);
-    ipcRenderer.invoke('set-slot-layout', { layout: newLayout }).then(() => {
-      gpSlotLayout = newLayout;
-      gpRender(cols, rows);
-      render();
-    });
-  }
-
-  // 行間の仕切りをトグル (row r と r+1 の間、col c)
-  function toggleRowDivider(r, c) {
-    const cols = gpCols, rows = gpRows;
-    const cellMap = getCurrentCellMap();
-    const topCell = cellMap[r][c];
-    const botCell = cellMap[r + 1][c];
-    if (!topCell || !botCell) return;
-    const isMerged = topCell.id === botCell.id;
-
-    let newLayout;
-    if (!isMerged) {
-      // 結合
-      if (topCell.colSpan !== 1 || topCell.rowSpan !== 1) return;
-      if (botCell.colSpan !== 1 || botCell.rowSpan !== 1) return;
-      if (topCell.isOrigin && botCell.isOrigin) {
-        const layout = gpSlotLayout ? [...gpSlotLayout] : buildLayoutFromMerges(cols, rows, []);
-        const idx = layout.findIndex(cell => cell.id === topCell.id);
-        if (idx < 0) return;
-        layout[idx] = { ...layout[idx], rowSpan: 2 };
-        const bidx = layout.findIndex(cell => cell.id === botCell.id);
-        if (bidx >= 0) layout.splice(bidx, 1);
-        newLayout = layout;
-      }
-    } else {
-      // 分割
-      const layout = gpSlotLayout ? [...gpSlotLayout] : buildLayoutFromMerges(cols, rows, []);
-      const idx = layout.findIndex(cell => cell.id === topCell.id);
-      if (idx < 0) return;
-      const cell = layout[idx];
-      const newCells = [];
-      for (let dc = 0; dc < cell.colSpan; dc++) {
-        for (let dr = 0; dr < cell.rowSpan; dr++) {
-          const id = (cell.row + dr) * cols + (cell.col + dc);
-          newCells.push({ id, col: cell.col + dc, row: cell.row + dr, colSpan: 1, rowSpan: 1 });
-        }
-      }
-      layout.splice(idx, 1, ...newCells);
-      newLayout = layout;
-    }
-    if (!newLayout) return;
-    newLayout.sort((a, b) => a.id - b.id);
-    ipcRenderer.invoke('set-slot-layout', { layout: newLayout }).then(() => {
-      gpSlotLayout = newLayout;
-      gpRender(cols, rows);
-      render();
-    });
-  }
 
   window.gpResetRatios = function() {
     gpColRatios = null; gpRowRatios = null;
@@ -3223,7 +3394,6 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
     notifyEditMode(false);
     document.body.classList.remove('gp-edit');
     document.querySelectorAll('.gp-col-line, .gp-row-line').forEach(el => el.remove());
-    document.querySelectorAll('.gp-divider-handle').forEach(el => el.remove());
   };
 
   ipcRenderer.on('update-grid-panel', (_e, { cols, rows, colRatios: cr, rowRatios: rr, slotLayout: sl }) => {
@@ -3243,8 +3413,6 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
     notifyEditMode(true);
     document.body.classList.add('gp-edit');
     gpRenderEditLines();
-    gpBuildPresetBar();
-    gpRenderDividerHandles();
   });
 
   gpRender(2, 2);
