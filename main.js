@@ -2253,9 +2253,15 @@ function createWorkspace(name, savedState) {
     ws.pollTimer = setInterval(pollFn, appSettings.pollIntervalMs || 4000);
   };
 
-  // ── ヘッダー保護: カーソルがヘッダー/overlay 中は clickthrough OFF を強制 ──
-  // renderer の set-win-clickthrough IPC が主制御。このタイマーは安全弁。
-  let _ctGuardFast = false;
+  // ── clickthrough 完全管理: IPC に頼らず main process だけで ON/OFF を決定 ──
+  // renderer の set-win-clickthrough IPC は backup として残すが、このループが主制御。
+  // IPC の非同期性によるクリック取りこぼしを防ぐため、ここで両方向を設定する。
+  let _ctState = false; // 現在の setIgnoreMouseEvents 状態キャッシュ (呼び出し削減)
+  const _setCT = (on) => {
+    if (_ctState === on) return;
+    _ctState = on;
+    ws.win.setIgnoreMouseEvents(on, { forward: true });
+  };
   const _ctGuardLoop = () => {
     try {
       if (!ws.win || ws.win.isDestroyed()) {
@@ -2267,16 +2273,13 @@ function createWorkspace(name, savedState) {
       const inWindow = cursor.x >= b.x && cursor.x <= b.x + b.width
                     && cursor.y >= b.y && cursor.y <= b.y + b.height;
       if (!inWindow) {
-        if (_ctGuardFast) { ws.win.setIgnoreMouseEvents(false); _ctGuardFast = false; }
+        _setCT(false);
         ws._ctGuardTimer = setTimeout(_ctGuardLoop, 800);
         return;
       }
-      _ctGuardFast = true;
-      // ヘッダー、overlay、editMode 中は必ず OFF
+      // ヘッダー / overlay / editMode → OFF、グリッドエリア → ON
       const inHeader = cursor.y < b.y + TITLEBAR_H;
-      if (inHeader || ws._hasOverlay || ws._editMode) {
-        ws.win.setIgnoreMouseEvents(false);
-      }
+      _setCT(!(inHeader || ws._hasOverlay || ws._editMode));
       ws._ctGuardTimer = setTimeout(_ctGuardLoop, 50);
     } catch {
       ws._ctGuardTimer = setTimeout(_ctGuardLoop, 200);
