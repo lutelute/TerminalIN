@@ -3224,6 +3224,17 @@ function openGridLayoutPopup(anchorEl) {
   const _mouseUpHandler=()=>{ dragStart=null; };
   window.addEventListener('mouseup',_mouseUpHandler);
 
+  // ポップアップ外クリックで閉じる（設定は適用しない）
+  const _outsideHandler = (e) => {
+    if (popup.contains(e.target)) return;
+    popup.remove();
+    window.removeEventListener('mousedown', _outsideHandler, true);
+    window.removeEventListener('mouseup', _mouseUpHandler);
+    notifyOverlay(false);
+  };
+  // setTimeout 0 で即時発火を防ぐ
+  setTimeout(() => window.addEventListener('mousedown', _outsideHandler, true), 0);
+
   mergeBtn.addEventListener('click',()=>{
     if(!selectedRange) return;
     const{r1,c1,r2,c2}=selectedRange;
@@ -3261,6 +3272,7 @@ function openGridLayoutPopup(anchorEl) {
     ipcRenderer.invoke('set-slot-layout',{layout}).then(()=>{ gpSlotLayout=layout; render(); });
     popup.remove();
     window.removeEventListener('mouseup',_mouseUpHandler);
+    window.removeEventListener('mousedown',_outsideHandler,true);
     notifyOverlay(false);
   });
 
