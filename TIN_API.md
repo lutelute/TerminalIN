@@ -332,6 +332,32 @@ slot_id = row * cols + col
 
 ---
 
+### POST /api/v1/workspace/new
+新しい TiN ワークスペースウィンドウを作成する。
+
+```bash
+curl -s -X POST http://127.0.0.1:37123/api/v1/workspace/new \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"AI-比較テスト"}'
+```
+
+レスポンス: `{"ok": true, "id": 4, "name": "AI-比較テスト"}`
+
+---
+
+### POST /api/v1/workspace/close
+TiN ワークスペースウィンドウを閉じる。
+
+```bash
+curl -s -X POST http://127.0.0.1:37123/api/v1/workspace/close \
+  -H 'Content-Type: application/json' \
+  -d '{"id": 4}'
+```
+
+レスポンス: `{"ok": true, "id": 4}`
+
+---
+
 ## 旧 API（後方互換）
 
 以下は引き続き使用可能（v1 系の方が高機能）:

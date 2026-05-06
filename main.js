@@ -3312,6 +3312,16 @@ function startRestServer() {
       return restReply(res, 200, { ok: true, id: ws.id, name: ws.name });
     }
 
+    // POST /api/v1/workspace/close — TiN ワークスペースを閉じる
+    // body: { id: number }
+    if (route === 'POST /api/v1/workspace/close') {
+      const body = await parseBody(req);
+      const ws = workspaces.get(body.id);
+      if (!ws) return restReply(res, 404, { ok: false, error: 'workspace not found' });
+      if (ws.win && !ws.win.isDestroyed()) ws.win.close();
+      return restReply(res, 200, { ok: true, id: body.id });
+    }
+
     // GET /api/v1/status
     if (route === 'GET /api/v1/status') {
       const wsArr = [];
