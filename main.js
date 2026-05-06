@@ -1790,24 +1790,61 @@ ipcMain.handle('swap-grid-slots', async (event, { src, dst }) => {
 ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return;
+  // 新サイズに収まらないスナップを押し出してから変更
+  const validSlotIds = new Set(Array.from({ length: cols * rows }, (_, i) => i));
+  evictOverflowSnapped(ws, validSlotIds);
   ws.gridCols = cols;
   ws.gridRows = rows;
   ws.colRatios = null;
   ws.rowRatios = null;
-  ws.slotLayout = null; // サイズ変更時は結合を解除
+  ws.slotLayout = null;
   if (ws.win && !ws.win.isDestroyed()) {
     ws.win.webContents.send('update-grid-panel', { cols, rows, colRatios: null, rowRatios: null, slotLayout: null });
   }
-  beginStabilize('set-grid-size', ws); // リサイズ中の watchdog 誤発火を抑制
+  beginStabilize('set-grid-size', ws);
   retileAll(ws);
   scheduleSaveWorkspaces();
 });
+
+// ── 有効スロットに収まらないスナップウィンドウを押し出す ──
+function evictOverflowSnapped(ws, validSlotIds) {
+  const toEvict = [];
+  for (const [wn, info] of ws.snappedExternals) {
+    if (!validSlotIds.has(info.slot)) toEvict.push(wn);
+  }
+  if (!toEvict.length) return;
+  console.log(`[tin] evict ${toEvict.length} overflowing snapped windows`);
+  for (const wn of toEvict) {
+    const info = ws.snappedExternals.get(wn);
+    ws.snappedExternals.delete(wn);
+    ws._lastKnownSnappedWns.delete(wn);
+    snappedIndexRemove(wn);
+    if (axHelper && axHelper.setWindowSticky) {
+      try { axHelper.setWindowSticky([wn], false); } catch {}
+    }
+    if (info && info.origX !== undefined) {
+      batchMove([{ windowNumber: info.windowNumber, pid: info.pid, app: info.app,
+        title: info.title, x: info.origX, y: info.origY, width: info.origW, height: info.origH }]).catch(() => {});
+    }
+  }
+  // renderer の snappedExternals を同期
+  if (ws.win && !ws.win.isDestroyed()) {
+    const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot }));
+    ws.win.webContents.send('hydrate-snapped', hydrate);
+  }
+  scheduleSyncSnapped();
+}
 
 // ── 柔軟グリッド: slotLayout を設定 ──
 ipcMain.handle('set-slot-layout', (event, { layout }) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return;
-  ws.slotLayout = layout; // null でリセット
+  // 結合後の有効スロットIDに収まらないスナップを押し出す
+  const validSlotIds = layout
+    ? new Set(layout.map(cell => cell.id))
+    : new Set(Array.from({ length: ws.gridCols * ws.gridRows }, (_, i) => i));
+  evictOverflowSnapped(ws, validSlotIds);
+  ws.slotLayout = layout;
   if (ws.win && !ws.win.isDestroyed()) {
     ws.win.webContents.send('update-grid-panel', {
       cols: ws.gridCols, rows: ws.gridRows,
