@@ -661,6 +661,27 @@ async function recoverSnappedWindows() {
       snappedIndexAdd(live.windowNumber, ws);
     }
     if (toRelink.length > 0) console.log(`[tin] recovered ${toRelink.length} snapped in "${ws.name}"`);
+    // 見つからないエントリを evict（別 Space 確認後に削除）
+    let evicted = 0;
+    for (const [k, info] of ws.snappedExternals) {
+      if (allLive.find(w => w.windowNumber === k)) continue; // 生きている
+      // title prefix でも見つからない場合は別 Space 確認
+      let foundElsewhere = false;
+      if (axHelper && axHelper.listWindowsAllSpaces) {
+        try { foundElsewhere = axHelper.listWindowsAllSpaces().some(w => w.windowNumber === k); } catch {}
+      }
+      if (!foundElsewhere) {
+        ws.snappedExternals.delete(k);
+        ws._lastKnownSnappedWns.delete(k);
+        snappedIndexRemove(k);
+        evicted++;
+      }
+    }
+    if (evicted > 0) {
+      compactSlots(ws);
+      console.log(`[tin] evicted ${evicted} stale snapped in "${ws.name}"`);
+    }
+
     // retile で現在の sidebar 位置に基づいて再配置
     try { await retileAll(ws); } catch {}
     // renderer 更新
