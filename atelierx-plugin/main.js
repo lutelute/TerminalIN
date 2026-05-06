@@ -18,7 +18,7 @@ const { shell } = require('electron');
 const TIN_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'TiN');
 const INFO_FILE = path.join(TIN_DIR, 'info.json');
 const SNAPPED_FILE = path.join(TIN_DIR, 'snapped.json');
-const POLL_INTERVAL = 500;
+const POLL_INTERVAL = 3000;  // 500ms → 3000ms: 同期 readFileSync を頻発させない
 const INFO_STALE_MS = 15 * 60 * 1000; // 15分以上更新がない info.json は stale とみなす
 const SUPPORTED_PROTOCOLS = new Set(['1.0']);
 
@@ -46,13 +46,14 @@ function normalizeAppName(name) {
 
 // ── ユーティリティ ──
 
-function safeReadJSON(filePath) {
+// 非同期版: main thread をブロックしない
+async function safeReadJSON(filePath) {
   try {
-    if (!fs.existsSync(filePath)) return null;
-    const raw = fs.readFileSync(filePath, 'utf-8');
+    const raw = await fs.promises.readFile(filePath, 'utf-8');
     return JSON.parse(raw);
   } catch (e) {
-    if (api) api.error('safeReadJSON failed:', filePath, e.message);
+    // ENOENT (ファイル未存在) は正常ケース — ログ不要
+    if (e.code !== 'ENOENT' && api) api.error('safeReadJSON failed:', filePath, e.message);
     return null;
   }
 }
@@ -66,8 +67,8 @@ function isTinProcessAlive(info) {
 }
 
 // TiN の存在検出 + capability 更新
-function detectTin() {
-  const info = safeReadJSON(INFO_FILE);
+async function detectTin() {
+  const info = await safeReadJSON(INFO_FILE);
   if (isTinProcessAlive(info)) {
     tinInfo = info;
     tinCapabilities = new Set(info.capabilities || []);
@@ -151,10 +152,10 @@ function cardHasSnappedWindow(card, lookup) {
 
 // ── 同期ロジック ──
 
-function syncDecorators() {
+async function syncDecorators() {
   if (!api) return;
 
-  const snapped = safeReadJSON(SNAPPED_FILE) || { snappedWindows: [] };
+  const snapped = (await safeReadJSON(SNAPPED_FILE)) || { snappedWindows: [] };
   const hash = JSON.stringify(snapped.snappedWindows);
   if (hash === lastSnappedHash) return;
   lastSnappedHash = hash;
@@ -256,12 +257,12 @@ function registerCardActions() {
 // ── ライフサイクル ──
 
 module.exports = {
-  onload(_api) {
+  async onload(_api) {
     api = _api;
     api.log('TiN Bridge loading...');
 
     // TiN 検出 & capability 判定
-    const tinAvailable = detectTin();
+    const tinAvailable = await detectTin();
     if (tinAvailable) {
       api.log(`TiN detected: v${tinInfo.version}, capabilities: ${[...tinCapabilities].join(', ')}`);
       registerCardActions();
@@ -269,41 +270,35 @@ module.exports = {
       api.log('TiN not running or not installed. Plugin will stay inactive.');
     }
 
-    // 初回同期 (TiN起動時のみ意味がある、未起動でも空 snapped なので安全)
-    syncDecorators();
+    // 初回同期
+    syncDecorators().catch(() => {});
 
     // ファイル監視 (macOS の fs.watch は不安定な場合があるので try/catch)
     try {
-      if (fs.existsSync(SNAPPED_FILE)) {
-        watchHandleSnapped = fs.watch(SNAPPED_FILE, () => syncDecorators());
-      }
+      watchHandleSnapped = fs.watch(SNAPPED_FILE, () => syncDecorators().catch(() => {}));
     } catch (e) {
       api.log('fs.watch(snapped) failed, falling back to polling only');
     }
     try {
-      if (fs.existsSync(INFO_FILE)) {
-        watchHandleInfo = fs.watch(INFO_FILE, () => {
-          const wasAvailable = !!tinInfo;
-          const nowAvailable = detectTin();
-          if (wasAvailable !== nowAvailable) {
-            api.log(`TiN availability changed: ${wasAvailable} → ${nowAvailable}`);
-            // capability 再登録
-            for (const id of registeredActionIds) {
-              try { api.unregisterCardAction(id); } catch {}
-            }
-            if (nowAvailable) registerCardActions();
+      watchHandleInfo = fs.watch(INFO_FILE, async () => {
+        const wasAvailable = !!tinInfo;
+        const nowAvailable = await detectTin();
+        if (wasAvailable !== nowAvailable) {
+          api.log(`TiN availability changed: ${wasAvailable} → ${nowAvailable}`);
+          for (const id of registeredActionIds) {
+            try { api.unregisterCardAction(id); } catch {}
           }
-        });
-      }
+          if (nowAvailable) registerCardActions();
+        }
+      });
     } catch (e) {
       api.log('fs.watch(info) failed');
     }
 
-    // ポーリング fallback (fs.watch が発火しないmacOS bug対策)
-    pollTimer = setInterval(() => {
-      // TiN 状態変化検出
+    // ポーリング fallback (fs.watch が発火しないmacOS bug対策) — 3000ms で非同期実行
+    pollTimer = setInterval(async () => {
       const wasAvailable = !!tinInfo;
-      const nowAvailable = detectTin();
+      const nowAvailable = await detectTin();
       if (wasAvailable !== nowAvailable) {
         api.log(`TiN availability changed (poll): ${wasAvailable} → ${nowAvailable}`);
         for (const id of registeredActionIds) {
@@ -311,14 +306,13 @@ module.exports = {
         }
         if (nowAvailable) registerCardActions();
       }
-      syncDecorators();
+      syncDecorators().catch(() => {});
     }, POLL_INTERVAL);
 
     // カード変更購読 → 装飾を再評価
     api.onCardsChange(() => {
-      // カードが変わるとマッチング結果が変わる可能性 → hash リセット
       lastSnappedHash = '';
-      syncDecorators();
+      syncDecorators().catch(() => {});
     });
 
     api.log('TiN Bridge loaded');
