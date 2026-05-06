@@ -138,10 +138,14 @@ def main():
     ids = ", ".join(str(w) for w in snapped_wns)
     subprocess.run(["osascript","-e",
         f'tell application "Terminal"\n'
-        f'  repeat with w in every window\n'
-        f'    if (id of w) in {{{ids}}} then close w\n'
+        f'  activate\n'
+        f'  repeat with i from (count of windows) to 1 by -1\n'
+        f'    set w to window i\n'
+        f'    if (id of w) is in {{{ids}}} then\n'
+        f'      close w saving no\n'
+        f'    end if\n'
         f'  end repeat\n'
-        f'end tell'], capture_output=True, timeout=8)
+        f'end tell'], capture_output=True, timeout=15)
     print("   ✅ 完了")
 
 if __name__ == "__main__":

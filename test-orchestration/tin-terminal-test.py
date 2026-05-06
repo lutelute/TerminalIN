@@ -161,13 +161,13 @@ def main():
     # new_wn は AppleScript の id of newWin で取得した値なので id of w と確実に一致する
     close_script = (
         'tell application "Terminal"\n'
-        '    repeat with w in every window\n'
-        '        try\n'
-        f'            if (id of w) = {new_wn} then\n'
-        '                close w\n'
-        '                exit repeat\n'
-        '            end if\n'
-        '        end try\n'
+        '    activate\n'
+        f'    repeat with i from (count of windows) to 1 by -1\n'
+        '        set w to window i\n'
+        f'        if (id of w) = {new_wn} then\n'
+        '            close w saving no\n'
+        '            exit repeat\n'
+        '        end if\n'
         '    end repeat\n'
         'end tell'
     )
