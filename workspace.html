@@ -98,21 +98,27 @@
     padding: 4px 8px 8px;  /* 上は狭く、左右・下は標準 */
     background: transparent;
   }
-  /* グリッドオーバーレイ: 複数アプリのグリッドモードのときだけ表示 */
-  #gp-grid { opacity: 0; transition: opacity 0.15s; pointer-events: none; }
+  /* グリッドオーバーレイ */
+  #gp-grid { opacity: 0; transition: opacity 0.25s; pointer-events: none; }
+  body.show-empty-slots #gp-grid,
   body.show-grid-overlay #gp-grid { opacity: 1; }
-  .gp-cell {
-    background: transparent;
-    box-shadow: inset 0 0 0 1px rgba(100,140,220,0.15);
-    border-radius: 4px;
-  }
-  /* スナップ済み(アプリあり)のスロットは枠を非表示。空きスロットだけ薄く表示 */
-  body.show-grid-overlay #gp-grid .gp-cell.cell-occupied { box-shadow: none; }
-  body.show-grid-overlay #gp-grid .gp-cell.cell-active   { box-shadow: none; }
-  /* ポップアップ / ドロワー表示中はグリッド枠を隠す（背後に透けて見える問題を防ぐ） */
+  /* ポップアップ / ドロワー表示中は非表示 */
   body:has(.grid-size-popup, #tab-ctx-menu, .slot-picker) #gp-grid,
   body.drawer-open #gp-grid { opacity: 0 !important; }
+
+  /* グリッド全体に薄い板 — 空きエリアをひとつの領域として示す */
+  body.show-empty-slots .gp-grid-container,
+  body.show-grid-overlay .gp-grid-container {
+    background: rgba(110,145,230,0.07);
+    border-radius: 8px;
+  }
+  .gp-cell { background: rgba(255,255,255,0.08); border-radius: 4px; }
   .gp-cell-empty { background: transparent; }
+  /* スナップ済みスロットは完全透明 — 板の上に何も出ない */
+  body.show-empty-slots #gp-grid .gp-cell.cell-occupied,
+  body.show-empty-slots #gp-grid .gp-cell.cell-active,
+  body.show-grid-overlay #gp-grid .gp-cell.cell-occupied,
+  body.show-grid-overlay #gp-grid .gp-cell.cell-active { opacity: 0; }
 
   /* 分割線なし */
   .gp-divider { display: none; }
@@ -2551,6 +2557,9 @@ function render() {
   const totalItems = snappedExternals.size + Object.keys(gridSlots).length;
   const showOverlay = currentViewMode === 'grid' && totalItems >= 2;
   document.body.classList.toggle('show-grid-overlay', showOverlay);
+  // 空きスロット常時薄表示: グリッドモードで空きがある時
+  const hasEmpty = totalItems < gridCols * gridRows;
+  document.body.classList.toggle('show-empty-slots', currentViewMode === 'grid' && hasEmpty);
 }
 
 // ── IPC ──
