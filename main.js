@@ -2253,29 +2253,57 @@ function createWorkspace(name, savedState) {
     ws.pollTimer = setInterval(pollFn, appSettings.pollIntervalMs || 4000);
   };
 
-  // ── ヘッダー保護: カーソルがヘッダー上なら強制的に click-through OFF ──
-  // alwaysOnTop:false の場合 setIgnoreMouseEvents(true) でイベントが届かなくなるため
-  // main プロセスからカーソル座標をポーリングして安全に制御する。
-  // ウィンドウ内: 100ms、ウィンドウ外: 800ms の adaptive setTimeout ループ。
-  // setInterval(150ms) より外でのnative call を ~8倍削減。
+  // ── clickthrough 完全制御 (main process タイマー) ──
+  // renderer の非同期 IPC を廃止し main で決定することで IPC 遅延ゼロを実現。
+  // 判定: overlay/editMode → OFF強制 / グリッドエリア上 → ON / それ以外 → OFF
+  // 外: 800ms、内: 50ms ループ (50ms = ドラッグ開始前に確実に反映される)
   let _ctGuardFast = false;
+  let _ctLast = null; // 直前の状態をキャッシュして不要な setIgnoreMouseEvents 呼び出しを減らす
   const _ctGuardLoop = () => {
-    if (!ws.win || ws.win.isDestroyed()) return;
-    const cursor = screen.getCursorScreenPoint();
-    const b = ws.win.getBounds();
-    const inWindow = cursor.x >= b.x && cursor.x <= b.x + b.width
-                  && cursor.y >= b.y && cursor.y <= b.y + b.height;
-    if (!inWindow) {
-      if (_ctGuardFast) { ws.win.setIgnoreMouseEvents(false); _ctGuardFast = false; }
-      ws._ctGuardTimer = setTimeout(_ctGuardLoop, 800);
-      return;
+    try {
+      if (!ws.win || ws.win.isDestroyed()) {
+        ws._ctGuardTimer = setTimeout(_ctGuardLoop, 500);
+        return;
+      }
+      const cursor = screen.getCursorScreenPoint();
+      const b = ws.win.getBounds();
+      const inWindow = cursor.x >= b.x && cursor.x <= b.x + b.width
+                    && cursor.y >= b.y && cursor.y <= b.y + b.height;
+      if (!inWindow) {
+        if (_ctGuardFast) {
+          ws.win.setIgnoreMouseEvents(false);
+          _ctGuardFast = false;
+          _ctLast = false;
+        }
+        ws._ctGuardTimer = setTimeout(_ctGuardLoop, 800);
+        return;
+      }
+      _ctGuardFast = true;
+
+      // overlay (popup/drawer) または edit mode 中は必ず OFF
+      if (ws._hasOverlay || ws._editMode) {
+        if (_ctLast !== false) { ws.win.setIgnoreMouseEvents(false); _ctLast = false; }
+        ws._ctGuardTimer = setTimeout(_ctGuardLoop, 50);
+        return;
+      }
+
+      // カーソルがグリッドエリア上か判定
+      const gridArea = getGridArea(ws);
+      const onGrid = gridArea &&
+        cursor.x >= gridArea.x && cursor.x <= gridArea.x + gridArea.width &&
+        cursor.y >= gridArea.y && cursor.y <= gridArea.y + gridArea.height;
+
+      if (onGrid) {
+        if (_ctLast !== true) { ws.win.setIgnoreMouseEvents(true, { forward: true }); _ctLast = true; }
+      } else {
+        if (_ctLast !== false) { ws.win.setIgnoreMouseEvents(false); _ctLast = false; }
+      }
+      ws._ctGuardTimer = setTimeout(_ctGuardLoop, 50);
+    } catch {
+      ws._ctGuardTimer = setTimeout(_ctGuardLoop, 200);
     }
-    _ctGuardFast = true;
-    const inHeader = cursor.y < b.y + TITLEBAR_H;
-    if (inHeader) ws.win.setIgnoreMouseEvents(false);
-    ws._ctGuardTimer = setTimeout(_ctGuardLoop, 100);
   };
-  ws._ctGuardTimer = setTimeout(_ctGuardLoop, 100);
+  ws._ctGuardTimer = setTimeout(_ctGuardLoop, 50);
 
   win.on('closed', async () => {
     if (ws.pollTimer) clearInterval(ws.pollTimer);
@@ -2336,12 +2364,17 @@ ipcMain.on('raise-all', (event) => {
   if (ws) raiseAllWorkspaceWindows(ws, true);
 });
 
-// グリッドパネル上でウィンドウレベルのクリックスルーを切り替える
-ipcMain.on('set-win-clickthrough', (event, on) => {
+// renderer からのオーバーレイ状態通知 (popup/drawer/editmode が開いている間は OFF 強制)
+ipcMain.on('set-overlay-active', (event, active) => {
   const ws = findWorkspace(event.sender);
-  if (!ws || !ws.win || ws.win.isDestroyed()) return;
-  ws.win.setIgnoreMouseEvents(on, { forward: true });
+  if (ws) ws._hasOverlay = !!active;
 });
+ipcMain.on('set-edit-mode', (event, active) => {
+  const ws = findWorkspace(event.sender);
+  if (ws) ws._editMode = !!active;
+});
+// 旧 IPC は no-op (renderer 側の残骸呼び出しに備えて残す)
+ipcMain.on('set-win-clickthrough', () => {});
 
 // 統合ウィンドウ方式では raise-all-from-overlay / set-overlay-clickthrough は不要 (no-op)
 ipcMain.on('raise-all-from-overlay', () => {});
@@ -3172,12 +3205,26 @@ app.on('will-quit', () => {
 
 app.on('before-quit', () => {
   app.isQuitting = true;
-  // quit 前に workspace 状態を確実に書き出す (debounce timer を待たない)
   try { writeWorkspacesJsonSync(); } catch (e) { console.warn('[tin] final save failed:', e.message); }
-  // 統合ステートファイルのクリーンアップ (クライアントが "TiN 未起動" と判定できるように)
-  // workspaces.json は残す (次回起動で復元するため)
   try { if (fs.existsSync(INFO_JSON)) fs.unlinkSync(INFO_JSON); } catch {}
   try { if (fs.existsSync(SNAPPED_JSON)) fs.unlinkSync(SNAPPED_JSON); } catch {}
+
+  // quit 時にスナップ済みウィンドウを元の位置・サイズに戻す (同期)
+  // 次回起動で workspaces.json から復元されるので位置は失われない
+  try {
+    const cmds = [];
+    for (const [, ws] of workspaces) {
+      for (const [, info] of ws.snappedExternals) {
+        if (info.origX == null) continue;
+        cmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
+          x: info.origX, y: info.origY, width: info.origW, height: info.origH });
+      }
+    }
+    if (cmds.length && axHelper) {
+      axHelper.moveWindows(cmds, false);
+      console.log(`[tin] quit: restored ${cmds.length} snapped windows to original position`);
+    }
+  } catch (e) { console.warn('[tin] quit restore failed:', e.message); }
 });
 
 app.on('window-all-closed', () => app.quit());

@@ -913,6 +913,7 @@ const titleInput = document.getElementById('title-input');
 function toggleDrawer(forceState) {
   const open = forceState !== undefined ? forceState : !document.body.classList.contains('drawer-open');
   document.body.classList.toggle('drawer-open', open);
+  notifyOverlay(open); // ドロワー開閉を main に通知
 }
 
 // ── グリッド / Tab モード切り替え ──
@@ -1442,6 +1443,7 @@ async function openSlotPicker(anchorBtn, w) {
   }
   picker.appendChild(grid);
   document.body.appendChild(picker);
+  notifyOverlay(true); // slot-picker 表示 → clickthrough OFF
 
   // viewport 内に必ず収める (ヘッダー68px + margin でクリップ回避)
   const r = anchorBtn.getBoundingClientRect();
@@ -1467,14 +1469,15 @@ async function openSlotPicker(anchorBtn, w) {
   requestAnimationFrame(() => { picker.style.opacity = '1'; picker.style.transform = 'scale(1)'; });
 
   // 外クリックで閉じる
+  const closePicker = () => { notifyOverlay(false); };
   const closer = (e) => {
     if (!picker.contains(e.target) && e.target !== anchorBtn) {
-      picker.remove(); _pickerEl = null;
+      picker.remove(); _pickerEl = null; closePicker();
       document.removeEventListener('mousedown', closer, true);
       document.removeEventListener('keydown', keyCloser);
     }
   };
-  const keyCloser = (e) => { if (e.key === 'Escape') { picker.remove(); _pickerEl = null; document.removeEventListener('mousedown', closer, true); document.removeEventListener('keydown', keyCloser); } };
+  const keyCloser = (e) => { if (e.key === 'Escape') { picker.remove(); _pickerEl = null; closePicker(); document.removeEventListener('mousedown', closer, true); document.removeEventListener('keydown', keyCloser); } };
   setTimeout(() => {
     document.addEventListener('mousedown', closer, true);
     document.addEventListener('keydown', keyCloser);
@@ -1630,12 +1633,13 @@ function openGridSizePopup(anchorEl) {
   popup.style.top = (rect.bottom + 2) + 'px';
   popup.style.left = rect.left + 'px';
   document.body.appendChild(popup);
-  // ポップアップ表示後に cols 入力にフォーカス
+  notifyOverlay(true); // popup 表示 → clickthrough OFF
   setTimeout(() => { colInput.select(); }, 30);
 
   const closePopup = (ev) => {
     if (!popup.contains(ev.target) && ev.target !== anchorEl) {
       popup.remove();
+      notifyOverlay(false);
       document.removeEventListener('click', closePopup);
     }
   };
@@ -2627,64 +2631,18 @@ document.getElementById('content').addEventListener('mousedown', (e) => {
   triggerRaiseAll();
 });
 
-// ── Grid panel click-through (ウィンドウレベル) ──
-// pointer-events:none はCSS内のみ。実際のクリックスルーには setIgnoreMouseEvents が必要。
+// ── clickthrough は main process タイマーで完全制御 ──
+// renderer から IPC で制御する旧方式を廃止。
+// main の _ctGuardLoop (50ms) がカーソル座標を見て setIgnoreMouseEvents を決定する。
+// renderer はポップアップ/ドロワー/editMode の状態だけ通知する。
 let gpEditMode = false; // グリッドJSブロックとこのブロックで共有
-{
-  const gridPanel = document.getElementById('grid-panel');
-  let _ctState = false;
 
-  function setClickthrough(on) {
-    if (_ctState === on) return;
-    _ctState = on;
-    ipcRenderer.send('set-win-clickthrough', on);
-  }
-
-  function evalClickthrough(clientX, clientY) {
-    if (gpEditMode) { setClickthrough(false); return; }
-
-    // ① カーソル下に z-index > 100 の要素があればポップアップ/ドロワー等の UI
-    //   → click-through 無効 (グリッドサイズポップアップ・Space ピッカー等すべてに対応)
-    const hasOverlay = document.elementsFromPoint(clientX, clientY).some(el => {
-      const z = parseInt(getComputedStyle(el).zIndex, 10);
-      return !isNaN(z) && z > 100;
-    });
-    if (hasOverlay) { setClickthrough(false); return; }
-
-    // ② ヘッダー (#sidebar) 上か content area (#grid-panel) 上か判定
-    const gridRect = gridPanel.getBoundingClientRect();
-    const onGrid = clientX >= gridRect.left && clientX <= gridRect.right
-                && clientY >= gridRect.top  && clientY <= gridRect.bottom;
-    setClickthrough(onGrid);
-  }
-
-  let _mouseIsDown = false;
-
-  window.addEventListener('mousemove', (e) => {
-    // ドラッグ中はclickthrough状態を変えない — Terminal.app でのマウス選択を保護
-    if (_mouseIsDown) return;
-    evalClickthrough(e.clientX, e.clientY);
-  });
-
-  window.addEventListener('mousedown', (e) => {
-    _mouseIsDown = true;
-    // grid panel 外のクリックのみ evalClickthrough を呼ぶ。
-    // grid panel 上では clickthrough がすでに ON のはず。
-    // ON の状態で evalClickthrough を呼ぶと IPC 遅延中に TiN が click を横取りする。
-    const gridRect = gridPanel.getBoundingClientRect();
-    const onGrid = e.clientX >= gridRect.left && e.clientX <= gridRect.right
-                && e.clientY >= gridRect.top  && e.clientY <= gridRect.bottom;
-    if (!onGrid) evalClickthrough(e.clientX, e.clientY);
-  }, true);
-
-  window.addEventListener('mouseup', () => { _mouseIsDown = false; }, true);
-
-  window.addEventListener('mouseleave', () => {
-    _mouseIsDown = false;
-    setClickthrough(false);
-  });
-  // blur で OFF にしない: click-through ON でターミナルをクリックすると blur が発火し、
-  // 次クリックを TiN が横取りする原因になる。ヘッダー保護は main の _ctGuardTimer が担当。
+// overlay 状態を main に通知するヘルパー
+function notifyOverlay(active) {
+  ipcRenderer.send('set-overlay-active', active);
+}
+function notifyEditMode(active) {
+  ipcRenderer.send('set-edit-mode', active);
 }
 
 // ── Collapse ──
@@ -2870,6 +2828,7 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
   };
   window.gpExitEditMode = function() {
     gpEditMode = false;
+    notifyEditMode(false);
     document.body.classList.remove('gp-edit');
     document.querySelectorAll('.gp-col-line, .gp-row-line').forEach(el => el.remove());
   };
@@ -2887,6 +2846,7 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
 
   ipcRenderer.on('enter-grid-edit-mode', () => {
     gpEditMode = true;
+    notifyEditMode(true);
     document.body.classList.add('gp-edit');
     gpRenderEditLines();
   });
