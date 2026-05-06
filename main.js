@@ -185,7 +185,7 @@ const DEFAULT_HOTKEYS = {
   slot1: '', slot2: '', slot3: '', slot4: '',
 };
 const DEFAULT_SETTINGS = {
-  pollIntervalMs: 2000,
+  pollIntervalMs: 3000,
   dragEndMode: 'position',  // 'position' | 'full' | 'off'
   defaultGridCols: 2,
   defaultGridRows: 2,
@@ -1530,7 +1530,7 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
     // ── sticky 方式: snapped windows は snap 時に sticky 化済み ──
     // sticky window は全 Space に常時表示されるため、TiN を移動するだけで
     // snapped window も新 Space に追従する。
-    // 50ms タイマー (_groupyFollowTimer) が位置を TiN に合わせて再配置する。
+    // 100ms タイマー (_groupyFollowTimer) が位置を TiN に合わせて再配置する。
 
     // TiN 自身を移動（CGS、自プロセスなので確実）
     const tinMoved = axHelper.moveToSpace ? axHelper.moveToSpace(electronWns, direction) : 0;
@@ -1955,7 +1955,7 @@ function createWorkspace(name, savedState) {
     if (ws.snappedExternals.size > 0) _groupyDirty = true;
   };
 
-  // 外部ウィンドウ追従タイマー (50ms = 20fps)
+  // 外部ウィンドウ追従タイマー (100ms = 10fps)
   // move イベントから分離して main thread のブロックを回避
   const _groupyFollowTimer = setInterval(() => {
     if (!_groupyDirty || !ws.snappedExternals.size || !axHelper || ws.win?.isDestroyed()) return;
@@ -1967,7 +1967,7 @@ function createWorkspace(name, savedState) {
         app: info.app, title: info.title, windowIndex: info.windowIndex || 0, ...b });
     }
     if (cmds.length) fireAndForgetMove(cmds, true);
-  }, 50);
+  }, 100);
   // ウィンドウ close 時にタイマーを停止
   win.once('closed', () => clearInterval(_groupyFollowTimer));
 
