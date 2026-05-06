@@ -173,10 +173,10 @@
   .glp-tab-content { display:none; flex-direction:column; gap:10px; }
   .glp-tab-content.active { display:flex; }
   /* SIZE タブ: サイズプリセット */
-  .glp-size-presets { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; }
+  .glp-size-presets { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; }
   .glp-size-item {
-    display:flex; flex-direction:column; align-items:center; gap:4px;
-    padding:6px 4px; border-radius:7px; border:1.5px solid transparent;
+    display:flex; flex-direction:column; align-items:center; gap:2px;
+    padding:4px 3px; border-radius:6px; border:1.5px solid transparent;
     background:rgba(0,0,0,0.03); cursor:pointer; transition:all 0.12s;
   }
   .glp-size-item:hover { background:rgba(60,120,230,0.08); border-color:rgba(60,120,230,0.3); }
@@ -829,22 +829,22 @@
   body.compact .grid-dot { height: 14px; font-size: 8px; }
 
   /* Slot card (drag&drop 対応 + slot 番号バッジ) */
-  .slot-card { cursor: grab; }
+  .slot-card { cursor: grab; position: relative; }
   .slot-card:active { cursor: grabbing; }
   .slot-card.dragging { opacity: 0.35; }
-  .slot-card.drag-over { outline: 2px dashed rgba(40,120,210,0.5); outline-offset: -2px; }
-  /* line の間挿入インジケータ (上/下に 3px 太線) */
-  .slot-card { position: relative; }
-  .slot-card.drag-over-top::before,
-  .slot-card.drag-over-bottom::after {
-    content: ''; position: absolute; left: 0; right: 0;
-    height: 3px; background: rgba(40,120,210,0.85);
-    border-radius: 2px;
-    box-shadow: 0 0 6px rgba(40,120,210,0.5);
-    pointer-events: none;
+  .slot-card.drag-over {
+    outline: 2px dashed rgba(40,120,210,0.65);
+    outline-offset: -2px;
+    background: rgba(40,120,210,0.06) !important;
   }
-  .slot-card.drag-over-top::before { top: -2px; }
-  .slot-card.drag-over-bottom::after { bottom: -2px; }
+  /* 結合バッジ (縦×N / 横×N / N×M) */
+  .slot-span-badge {
+    font-size: 8px; font-weight: 700;
+    color: rgba(60,120,230,0.75);
+    background: rgba(60,120,230,0.1);
+    padding: 1px 5px; border-radius: 3px;
+    flex-shrink: 0;
+  }
   .slot-badge {
     display: inline-flex; align-items: center; justify-content: center;
     min-width: 16px; height: 16px; padding: 0 4px;
@@ -2442,19 +2442,35 @@ function render() {
     _gridSection.appendChild(strip);
   }
 
-  // slot cards — 全スロット (空き含む) をスロット順で表示
-  for (let i = 0; i < gridCols * gridRows; i++) {
-    const entry = slotEntries.get(i);
+  // slot cards — 縦リスト（配置はdots-stripが担当）
+  const slotCells = gpSlotLayout
+    ? [...gpSlotLayout].sort((a,b) => a.row!==b.row ? a.row-b.row : a.col-b.col)
+    : Array.from({length: gridCols*gridRows}, (_,k) => ({
+        id: k, col: k%gridCols, row: Math.floor(k/gridCols), colSpan: 1, rowSpan: 1
+      }));
+
+  for (const cell of slotCells) {
+    const { id: slotId, colSpan, rowSpan } = cell;
+    const entry = slotEntries.get(slotId);
+    const isSpanned = colSpan > 1 || rowSpan > 1;
     const card = document.createElement('div');
     card.className = 'ext-item slot-card';
-    card.dataset.slot = i;
+    card.dataset.slot = slotId;
+
     const slotBadge = document.createElement('span');
     slotBadge.className = 'slot-badge';
-    slotBadge.textContent = String(i + 1);
+    slotBadge.textContent = String(slotId + 1);
     card.appendChild(slotBadge);
 
+    if (isSpanned) {
+      const sb = document.createElement('span');
+      sb.className = 'slot-span-badge';
+      sb.textContent = colSpan > 1 && rowSpan > 1
+        ? `${colSpan}×${rowSpan}` : colSpan > 1 ? `横×${colSpan}` : `縦×${rowSpan}`;
+      card.appendChild(sb);
+    }
+
     if (!entry) {
-      // ── 空きスロット プレースホルダー ──
       card.classList.add('empty-slot');
       const titleSpan = document.createElement('span');
       titleSpan.className = 'ext-title';
@@ -2467,7 +2483,7 @@ function render() {
       snapBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         const frontWin = externalWindows.find(w => w.windowNumber === frontmostWindowNumber);
-        if (frontWin && !snappedExternals.has(frontWin.windowNumber)) snapExternal(frontWin, i);
+        if (frontWin && !snappedExternals.has(frontWin.windowNumber)) snapExternal(frontWin, slotId);
       });
       card.appendChild(snapBtn);
       _gridSection.appendChild(card);
@@ -2484,12 +2500,12 @@ function render() {
       card.appendChild(gridBadge);
       const titleSpan = document.createElement('span');
       titleSpan.className = 'ext-title';
-      titleSpan.textContent = `Terminal #${i + 1}`;
+      titleSpan.textContent = `Terminal #${slotId + 1}`;
       card.appendChild(titleSpan);
       const closeBtn = document.createElement('span');
       closeBtn.className = 'card-close';
-      closeBtn.textContent = '\u00d7';
-      closeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeGridTerminal(i); });
+      closeBtn.textContent = '×';
+      closeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeGridTerminal(slotId); });
       card.appendChild(closeBtn);
     } else {
       const { wn, info } = entry;
@@ -2503,7 +2519,7 @@ function render() {
       titleSpan.textContent = t;
       card.appendChild(titleSpan);
       card.style.cursor = 'grab';
-      card.title = 'Click: locate & raise window | Drag: swap slot';
+      card.title = 'Click: locate & raise | Drag: swap slot';
       card.addEventListener('click', (e) => {
         if (card._draggingNow) return;
         if (e.target.classList.contains('ext-btn') || e.target.classList.contains('slot-badge')) return;
@@ -2523,48 +2539,34 @@ function render() {
       btn.addEventListener('click', (e) => { e.stopPropagation(); unsnapExternal(wn); });
       card.appendChild(btn);
     }
-    // drag&drop — Pointer Events 版 (HTML5 DnD は Electron で drop が届かない症状あり)
+
+    // drag-to-swap
     card.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       if (e.target.closest('.ext-btn, .card-close, .slot-badge')) return;
-      const srcSlot = i;
+      const srcSlot = slotId;
       const startX = e.clientX, startY = e.clientY;
-      let dragging = false;
-      let dstCard = null;
-      let dstBefore = true;
-      const clearIndicators = () => {
-        document.querySelectorAll('.slot-card').forEach(c => c.classList.remove('drag-over-top', 'drag-over-bottom'));
-      };
+      let dragging = false, dstCard = null;
+      const clearOver = () => document.querySelectorAll('.slot-card.drag-over').forEach(c => c.classList.remove('drag-over'));
       const onMove = (ev) => {
         if (!dragging) {
           if (Math.abs(ev.clientX - startX) < 4 && Math.abs(ev.clientY - startY) < 4) return;
-          dragging = true;
-          card.classList.add('dragging');
-          card._draggingNow = true;
+          dragging = true; card.classList.add('dragging'); card._draggingNow = true;
         }
-        const el = document.elementFromPoint(ev.clientX, ev.clientY);
-        const tc = el && el.closest ? el.closest('.slot-card') : null;
-        clearIndicators();
-        if (tc && tc !== card) {
-          const rect = tc.getBoundingClientRect();
-          dstBefore = ev.clientY < rect.top + rect.height / 2;
-          tc.classList.add(dstBefore ? 'drag-over-top' : 'drag-over-bottom');
-          dstCard = tc;
-        } else {
-          dstCard = null;
-        }
+        const tc = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.slot-card');
+        clearOver();
+        if (tc && tc !== card) { tc.classList.add('drag-over'); dstCard = tc; }
+        else dstCard = null;
       };
       const onUp = () => {
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
-        clearIndicators();
-        card.classList.remove('dragging');
+        clearOver(); card.classList.remove('dragging');
         if (dragging && dstCard) {
           const dstSlot = Number(dstCard.dataset.slot);
           if (Number.isFinite(dstSlot) && dstSlot !== srcSlot) {
-            reorderSlotsLocally(srcSlot, dstSlot, dstBefore);
-            render();
-            ipcRenderer.invoke('reorder-grid-slot', { src: srcSlot, dst: dstSlot, before: dstBefore });
+            swapSlotsLocally(srcSlot, dstSlot); render();
+            ipcRenderer.invoke('swap-grid-slots', { src: srcSlot, dst: dstSlot });
           }
         }
         setTimeout(() => { card._draggingNow = false; }, 0);
@@ -2572,6 +2574,7 @@ function render() {
       window.addEventListener('mousemove', onMove);
       window.addEventListener('mouseup', onUp);
     });
+
     _gridSection.appendChild(card);
   }
 
@@ -2928,6 +2931,13 @@ function toggleCollapse() {
 collapseBtn.addEventListener('click', toggleCollapse);
 ipcRenderer.on('toggle-compact', toggleCollapse);
 
+ipcRenderer.on('update-grid-panel', (_e, { cols, rows, slotLayout }) => {
+  if (cols) gridCols = cols;
+  if (rows) gridRows = rows;
+  gpSlotLayout = slotLayout ?? null;
+  render();
+});
+
 // ── Window active/inactive state ──
 window.addEventListener('focus', () => document.body.classList.remove('window-inactive'));
 window.addEventListener('blur', () => document.body.classList.add('window-inactive'));
@@ -3027,14 +3037,14 @@ function openGridLayoutPopup(anchorEl) {
 
   // ── ① サイズプリセット ──
   const presetSec = document.createElement('div');
-  presetSec.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
+  presetSec.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
 
   const SIZE_PRESETS = [
     ['1×2',1,2],['2×1',2,1],['1×3',1,3],['3×1',3,1],
     ['2×2',2,2],['2×3',2,3],['3×2',3,2],['3×3',3,3],
   ];
   const presetGrid = document.createElement('div');
-  presetGrid.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:5px;';
+  presetGrid.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:4px;';
   for (const [label, c, r] of SIZE_PRESETS) {
     const btn = document.createElement('button');
     btn.className = 'glp-size-item' + (c===editCols && r===editRows ? ' active' : '');
@@ -3042,10 +3052,12 @@ function openGridLayoutPopup(anchorEl) {
     btn.addEventListener('click', (ev) => {
       ev.stopPropagation();
       editCols = c; editRows = r;
-      currentCellMap = glpBuildCellMap(editCols, editRows, null); // サイズ変更時は結合リセット
+      currentCellMap = glpBuildCellMap(editCols, editRows, null);
       occ = glpBuildOccupancyGrid(editCols, editRows, currentCellMap);
       selectedRange = null; selectedMergedId = null;
+      cIn.value = c; rIn.value = r;
       presetGrid.querySelectorAll('.glp-size-item').forEach((b,i) => b.classList.toggle('active', SIZE_PRESETS[i][1]===c && SIZE_PRESETS[i][2]===r));
+      buildLayoutPresets();
       redrawGrid(); updateActions();
     });
     presetGrid.appendChild(btn);
@@ -3055,33 +3067,29 @@ function openGridLayoutPopup(anchorEl) {
   // カスタムサイズ入力
   const customRow = document.createElement('div');
   customRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
-  const cLabel = document.createElement('label'); cLabel.textContent = 'カスタム'; cLabel.style.cssText = 'font-size:10px;color:rgba(0,0,0,0.4);flex-shrink:0;';
+  const cLabel = document.createElement('label'); cLabel.textContent = 'Custom'; cLabel.style.cssText = 'font-size:10px;color:rgba(0,0,0,0.4);flex-shrink:0;';
   const cIn = document.createElement('input'); cIn.type='number'; cIn.min='1'; cIn.max='20'; cIn.value=editCols;
-  cIn.style.cssText = 'width:34px;text-align:center;font-size:11px;border:1px solid rgba(0,0,0,0.15);border-radius:4px;padding:3px 4px;';
+  cIn.style.cssText = 'width:30px;text-align:center;font-size:11px;border:1px solid rgba(0,0,0,0.15);border-radius:4px;padding:2px 3px;';
   const xLbl = document.createElement('span'); xLbl.textContent='×'; xLbl.style.cssText='font-size:11px;color:rgba(0,0,0,0.35);';
   const rIn = document.createElement('input'); rIn.type='number'; rIn.min='1'; rIn.max='20'; rIn.value=editRows;
-  rIn.style.cssText = 'width:34px;text-align:center;font-size:11px;border:1px solid rgba(0,0,0,0.15);border-radius:4px;padding:3px 4px;';
+  rIn.style.cssText = 'width:30px;text-align:center;font-size:11px;border:1px solid rgba(0,0,0,0.15);border-radius:4px;padding:2px 3px;';
   const applyCustom = () => {
     const nc=Math.max(1,Math.min(20,parseInt(cIn.value)||1)), nr=Math.max(1,Math.min(20,parseInt(rIn.value)||1));
+    if (nc===editCols && nr===editRows) return;
     editCols=nc; editRows=nr;
     currentCellMap=glpBuildCellMap(nc,nr,null);
     occ=glpBuildOccupancyGrid(nc,nr,currentCellMap);
     selectedRange=null; selectedMergedId=null;
     presetGrid.querySelectorAll('.glp-size-item').forEach((b,i) => b.classList.toggle('active', SIZE_PRESETS[i][1]===nc && SIZE_PRESETS[i][2]===nr));
+    buildLayoutPresets();
     redrawGrid(); updateActions();
   };
   [cIn,rIn].forEach(inp => {
-    inp.addEventListener('input', () => {
-      const nc=Math.max(1,Math.min(20,parseInt(cIn.value)||1)), nr=Math.max(1,Math.min(20,parseInt(rIn.value)||1));
-      presetGrid.querySelectorAll('.glp-size-item').forEach((b,i) => b.classList.toggle('active', SIZE_PRESETS[i][1]===nc && SIZE_PRESETS[i][2]===nr));
-    });
-    inp.addEventListener('keydown', e => { if(e.key==='Enter') applyCustom(); e.stopPropagation(); });
+    inp.addEventListener('input', applyCustom);
+    inp.addEventListener('keydown', e => e.stopPropagation());
     inp.addEventListener('click', e => e.stopPropagation());
   });
-  const applyBtn = document.createElement('button'); applyBtn.className='glp-btn primary'; applyBtn.textContent='Apply';
-  applyBtn.style.cssText='padding:3px 8px;font-size:10px;margin-left:auto;';
-  applyBtn.addEventListener('click', applyCustom);
-  customRow.appendChild(cLabel); customRow.appendChild(cIn); customRow.appendChild(xLbl); customRow.appendChild(rIn); customRow.appendChild(applyBtn);
+  customRow.appendChild(cLabel); customRow.appendChild(cIn); customRow.appendChild(xLbl); customRow.appendChild(rIn);
   presetSec.appendChild(customRow);
   popup.appendChild(presetSec);
 
