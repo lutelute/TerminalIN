@@ -786,10 +786,12 @@
     display: flex; align-items: center; gap: 6px;
     padding: 3px 2px;
   }
-  .grid-dots-row { display: flex; gap: 3px; flex: 1; min-width: 0; }
+  .grid-dots-row {
+    display: grid; gap: 3px; flex: 1; min-width: 0;
+    /* gridTemplateColumns/Rows は JS で設定 */
+  }
   .grid-dot {
-    flex: 1; height: 18px;
-    min-width: 18px;
+    height: 22px; min-width: 0;
     border-radius: 4px;
     background: rgba(0,0,0,0.04);
     border: 1px solid rgba(0,0,0,0.07);
@@ -1080,7 +1082,6 @@
 
 <!-- ドロワーパネル (サイドバーリスト) -->
 <div id="drawer-panel">
-  <div id="drawer-grid-preview"></div>
   <div id="drawer-content"></div>
 </div>
 
@@ -1131,7 +1132,6 @@ function toggleDrawer(forceState) {
   const open = forceState !== undefined ? forceState : !document.body.classList.contains('drawer-open');
   document.body.classList.toggle('drawer-open', open);
   notifyOverlay(open);
-  if (open) updateDrawerPreview();
 }
 
 // ── グリッド / Tab モード切り替え ──
@@ -2373,17 +2373,28 @@ function render() {
     if (typeof info.slot === 'number') slotEntries.set(info.slot, { slot: info.slot, type: 'ext', wn, info });
   }
 
-  // GRID dots strip — slot 状態を 1 行で可視化 (drag target)
+  // GRID dots strip — 現在の grid 形状（slotLayout 対応）で可視化
   {
     const totalSlots = gridCols * gridRows;
     const strip = document.createElement('div');
     strip.className = 'grid-dots-strip';
     const dotsRow = document.createElement('div');
     dotsRow.className = 'grid-dots-row';
-    for (let i = 0; i < totalSlots; i++) {
+    dotsRow.style.gridTemplateColumns = `repeat(${gridCols}, 1fr)`;
+    dotsRow.style.gridTemplateRows    = `repeat(${gridRows}, 1fr)`;
+
+    const dotCells = gpSlotLayout
+      ? [...gpSlotLayout].sort((a,b) => a.row!==b.row ? a.row-b.row : a.col-b.col)
+      : Array.from({length: totalSlots}, (_,i) => ({ id:i, col:i%gridCols, row:Math.floor(i/gridCols), colSpan:1, rowSpan:1 }));
+
+    for (const cell of dotCells) {
+      const i = cell.id;
       const dot = document.createElement('div');
       dot.className = 'grid-dot';
       dot.dataset.slot = i;
+      dot.style.gridColumn = `${cell.col+1} / span ${cell.colSpan}`;
+      dot.style.gridRow    = `${cell.row+1} / span ${cell.rowSpan}`;
+
       const entry = slotEntries.get(i);
       if (entry && entry.type === 'pty') {
         dot.classList.add('filled-pty');
@@ -2396,7 +2407,6 @@ function render() {
         const app = (live && live.app) || entry.info.app || '';
         if (isFinderApp(app)) dot.classList.add('filled-ext-finder');
         if (entry.wn === frontmostWindowNumber && frontmostWindowNumber > 0) dot.classList.add('focused');
-        // ラベル: window title の頭文字 (英/日 1 文字目、大文字化)
         const rawTitle = (live && live.title) || entry.info.title || '';
         const firstChar = rawTitle.trim().charAt(0).toUpperCase() || (isFinderApp(app) ? 'F' : 'T');
         dot.textContent = firstChar;
@@ -2406,7 +2416,6 @@ function render() {
         dot.textContent = '\u25a1';
         dot.title = `Slot ${i + 1}: Empty — drop here to move`;
       }
-      // drag&drop (slot 入れ替え)
       dot.addEventListener('dragstart', (e) => {
         if (!dot.draggable) return;
         e.dataTransfer.effectAllowed = 'move';
@@ -2414,19 +2423,13 @@ function render() {
         dot.classList.add('dragging');
       });
       dot.addEventListener('dragend', () => dot.classList.remove('dragging'));
-      dot.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-        dot.classList.add('drag-over');
-      });
+      dot.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; dot.classList.add('drag-over'); });
       dot.addEventListener('dragleave', () => dot.classList.remove('drag-over'));
       dot.addEventListener('drop', (e) => {
-        e.preventDefault();
-        dot.classList.remove('drag-over');
+        e.preventDefault(); dot.classList.remove('drag-over');
         const src = Number(e.dataTransfer.getData('text/plain'));
         if (!Number.isFinite(src) || src === i) return;
-        swapSlotsLocally(src, i);
-        render();
+        swapSlotsLocally(src, i); render();
         ipcRenderer.invoke('swap-grid-slots', { src, dst: i });
       });
       dotsRow.appendChild(dot);
@@ -2756,9 +2759,6 @@ function render() {
   // 空きスロット常時薄表示: グリッドモードで空きがある時
   const hasEmpty = totalItems < gridCols * gridRows;
   document.body.classList.toggle('show-empty-slots', currentViewMode === 'grid' && hasEmpty);
-
-  // Drawer プレビューを更新
-  if (document.body.classList.contains('drawer-open')) updateDrawerPreview();
 }
 
 // ── IPC ──
@@ -3338,8 +3338,7 @@ function openGridLayoutPopup(anchorEl) {
   updateActions();
 }
 
-// ── Drawer グリッドプレビュー ──
-function updateDrawerPreview() {
+function _unusedDrawerPreview() {
   const previewEl = document.getElementById('drawer-grid-preview');
   if (!previewEl) return;
   previewEl.innerHTML = '';
