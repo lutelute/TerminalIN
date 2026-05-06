@@ -1938,7 +1938,10 @@ function showTabCtxMenu(x, y, { wn, isPty, slotKey }) {
   menu.style.left = Math.min(x, window.innerWidth - mw - 8) + 'px';
   menu.style.top = Math.max(68 + 4, Math.min(y, window.innerHeight - mh - 8)) + 'px';
 
-  const close = (e) => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('mousedown', close); } };
+  notifyOverlay(true);
+  const close = (e) => {
+    if (!menu.contains(e.target)) { menu.remove(); notifyOverlay(false); document.removeEventListener('mousedown', close); }
+  };
   setTimeout(() => document.addEventListener('mousedown', close), 0);
 }
 
@@ -2695,42 +2698,27 @@ let gpEditMode = false; // グリッドJSブロックとこのブロックで共
   let _cachedGridRect = gridPanel.getBoundingClientRect();
   new ResizeObserver(() => { _cachedGridRect = gridPanel.getBoundingClientRect(); }).observe(gridPanel);
 
-  // mousemove を rAF でスロットル — elementsFromPoint+getComputedStyle の連続実行を防ぐ
-  let _mmRafId = null;
-  let _mmLatestE = null;
+  // mousemove: rAF throttle 廃止 — overlay フラグで軽量判定、遅延ゼロ
   window.addEventListener('mousemove', (e) => {
-    _mmLatestE = e;
-    if (_mmRafId) return;
-    _mmRafId = requestAnimationFrame(() => {
-      _mmRafId = null;
-      const ev = _mmLatestE;
-      if (gpEditMode) { setClickthrough(false); return; }
-
-      // カーソル下に z-index > 100 の要素があればポップアップ/ドロワー等の UI
-      const hasOverlay = document.elementsFromPoint(ev.clientX, ev.clientY).some(el => {
-        const z = parseInt(getComputedStyle(el).zIndex, 10);
-        return !isNaN(z) && z > 100;
-      });
-      if (hasOverlay) { setClickthrough(false); return; }
-
-      // ヘッダー (#sidebar) 上か content area (#grid-panel) 上か判定
-      const gridRect = _cachedGridRect;
-      const onGrid = ev.clientX >= gridRect.left && ev.clientX <= gridRect.right
-                  && ev.clientY >= gridRect.top  && ev.clientY <= gridRect.bottom;
-      setClickthrough(onGrid);
-    });
+    if (gpEditMode || _hasOverlayActive) { setClickthrough(false); return; }
+    const gridRect = _cachedGridRect;
+    const onGrid = e.clientX >= gridRect.left && e.clientX <= gridRect.right
+                && e.clientY >= gridRect.top  && e.clientY <= gridRect.bottom;
+    setClickthrough(onGrid);
   });
 
-  window.addEventListener('mouseleave', () => {
-    if (_mmRafId) { cancelAnimationFrame(_mmRafId); _mmRafId = null; }
-    setClickthrough(false);
-  });
+  window.addEventListener('mouseleave', () => setClickthrough(false));
   // blur で OFF にしない: click-through ON でターミナルをクリックすると blur が発火し、
   // 次クリックを TiN が横取りする原因になる。ヘッダー保護は main の _ctGuardTimer が担当。
 }
 
 // overlay/editMode 通知ヘルパー (main の ctGuard 補助用)
-function notifyOverlay(active) { ipcRenderer.send('set-overlay-active', active); }
+// _hasOverlayActive: mousemove で elementsFromPoint を使わずに判定するためのフラグ
+let _hasOverlayActive = false;
+function notifyOverlay(active) {
+  _hasOverlayActive = active;
+  ipcRenderer.send('set-overlay-active', active);
+}
 function notifyEditMode(active) { ipcRenderer.send('set-edit-mode', active); }
 
 // ── Collapse ──
