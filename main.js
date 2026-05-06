@@ -1,6 +1,7 @@
-const { app, BrowserWindow, ipcMain, screen, Menu, powerMonitor, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Menu, powerMonitor, dialog, shell, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
 const pty = require('node-pty');
 const { spawn, exec, execFile, execSync } = require('child_process');
 const { promisify } = require('util');
@@ -164,21 +165,33 @@ const WORKSPACES_JSON = path.join(INTEGRATION_DIR, 'workspaces.json');
 const WORKSPACES_FORMAT_VERSION = 1;
 // 保存済みセッションが古すぎる場合は復元しない閾値 (24時間)
 const WORKSPACES_STALE_MS = 24 * 60 * 60 * 1000;
-// 統合ウィンドウのレイアウト定数
+// Groupy コンテナモード定数
+const TITLEBAR_H = 68;        // TiN ヘッダー高さ (hiddenInset 2行)
+const NATIVE_TITLEBAR_H = 28; // macOS ネイティブタイトルバー高さ (参考値)
+// 外部アプリは TiN ヘッダーの直下に配置 — タイトルバーを完全に表示する
+const GROUPY_Y_OFFSET = TITLEBAR_H; // 68px: 外部アプリは TiN ヘッダーの下から
+// 旧レイアウト定数 (後方互換)
 const DEFAULT_SIDEBAR_W = 280;
 const SIDEBAR_DIVIDER_W = 6;
-const TITLEBAR_H = 68; // hiddenInset 2行
 // workspace プリセット (メモリ機能)
 const PRESETS_DIR = path.join(INTEGRATION_DIR, 'presets');
 const TIN_START_TIME = Date.now();
 // アプリ設定
 const SETTINGS_JSON = path.join(INTEGRATION_DIR, 'settings.json');
+const DEFAULT_HOTKEYS = {
+  snapFrontmost:   'Command+Option+S',
+  unsnapFrontmost: 'Command+Option+W',
+  focusTiN:        'Command+Option+T',
+  slot1: '', slot2: '', slot3: '', slot4: '',
+};
 const DEFAULT_SETTINGS = {
-  pollIntervalMs: 4000,
+  pollIntervalMs: 3000,
   dragEndMode: 'position',  // 'position' | 'full' | 'off'
   defaultGridCols: 2,
   defaultGridRows: 2,
   autoLaunch: false,
+  stickyWindows: false,     // 全 Space 追従: GPU コンポジターに常時負荷をかけるため OFF 推奨
+  hotkeys: { ...DEFAULT_HOTKEYS },
 };
 let appSettings = { ...DEFAULT_SETTINGS };
 function loadSettings() {
@@ -271,10 +284,6 @@ async function writeSnappedJson() {
   await atomicWriteJSON(SNAPPED_JSON, buildSnappedPayload());
 }
 
-// snap-external で daemon.move の BEFORE に同期書き出しが必要な場面用
-function writeSnappedJsonSync() {
-  atomicWriteJSONSync(SNAPPED_JSON, buildSnappedPayload());
-}
 
 // 書き出しのデバウンス (rapid snap/unsnap/move で多重書き込みを避ける)
 let _syncTimer = null;
@@ -316,7 +325,7 @@ async function writeWorkspacesJson() {
       name: ws.name,
       sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
       sidebarWidth: ws.sidebarWidth || DEFAULT_SIDEBAR_W,
-      grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
+      grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios, slotLayout: ws.slotLayout },
       colorIndex: ws.colorIndex,
       snappedExternals: snapped,
     });
@@ -555,6 +564,11 @@ async function restoreAllPending() {
     }
     await batchMove(allMoveCmds);
     console.log(`[tin] batch restore: moved ${allMoveCmds.length} windows in 1 call`);
+    // sticky 化 — stickyWindows 設定が ON の場合のみ (OFF = コンポジター負荷なし)
+    if (appSettings.stickyWindows && axHelper && axHelper.setWindowSticky) {
+      const wns = allMoveCmds.map(c => c.windowNumber);
+      try { axHelper.setWindowSticky(wns, true); console.log(`[tin] batch restore: sticky set for ${wns.length} windows`); } catch {}
+    }
   }
   scheduleSyncSnapped();
 }
@@ -601,11 +615,8 @@ function listWindowsForUI() {
 // Fire-and-forget: sidebar ドラッグ中のリアルタイム retile 用。応答待ちで
 // event loop をブロックしないので、次の move イベントをすぐ処理できる。
 function fireAndForgetMove(windows, positionOnly = false) {
-  if (!windows.length) return;
-  if (axHelper) {
-    try { axHelper.moveWindows(windows, positionOnly); return; } catch {}
-  }
-  osascriptMove(windows).catch(() => {});
+  if (!windows.length || !axHelper) return;
+  try { axHelper.moveWindows(windows, positionOnly); } catch {}
 }
 
 // ── Stabilization guard ──
@@ -614,7 +625,7 @@ function fireAndForgetMove(windows, positionOnly = false) {
 // We set `stabilizingUntil` on these events to suppress release logic
 // for a while afterward.
 let stabilizingUntil = 0; // グローバル fallback (sleep/display 系イベント用)
-const STABILIZE_MS = 60000;
+const STABILIZE_MS = 30000;
 let retileAfterStabilize = null;
 let recoveryTimers = [];
 
@@ -675,7 +686,7 @@ function beginStabilize(reason, ws) {
   console.log(`[tin] stabilizing for ${STABILIZE_MS}ms (reason: ${reason})`);
   recoveryTimers.forEach(t => clearTimeout(t));
   recoveryTimers = [];
-  [1000, 3000, 8000, 20000, 60000].forEach(delay => {
+  [1000, 3000, 8000, 15000, 30000].forEach(delay => {
     const t = setTimeout(() => {
       recoverSnappedWindows().catch(e => console.warn('[tin] recovery failed:', e.message));
     }, delay);
@@ -726,18 +737,14 @@ function normalizeAppName(name) {
 // set bounds と違ってグローバル座標で解釈される。
 async function batchMove(cmds) {
   if (!cmds.length) return;
+  if (!axHelper) return;
   const t0 = Date.now();
-  if (axHelper) {
-    try {
-      const moved = axHelper.moveWindows(cmds, false);
-      const dt = Date.now() - t0;
-      if (dt > 30) console.log(`[tin] batchMove(native): ${dt}ms ${cmds.length}win moved=${moved}`);
-      if (moved === cmds.length) return;
-    } catch {}
-  }
-  await osascriptMove(cmds);
-  const dt = Date.now() - t0;
-  if (dt > 50) console.log(`[tin] batchMove(osascript): ${dt}ms ${cmds.length}win`);
+  try {
+    const moved = axHelper.moveWindows(cmds, false);
+    const dt = Date.now() - t0;
+    if (dt > 30) console.log(`[tin] batchMove(native): ${dt}ms ${cmds.length}win moved=${moved}`);
+  } catch {}
+  // osascript fallback は廃止 — System Events が全アプリに Automation 権限を要求するため
 }
 
 // System Events を使ったウィンドウ移動 fallback。
@@ -780,33 +787,14 @@ async function osascriptMove(cmds) {
 // アクティブ化すると TiN がその後ろに隠れてしまうため。
 async function raiseSpecificWindows(cmds) {
   if (!cmds.length) return;
-  const t0 = Date.now();
-  if (axHelper) {
-    try {
-      const raised = axHelper.raiseWindows(cmds);
-      const dt = Date.now() - t0;
-      if (dt > 30) console.log(`[tin] raise(native): ${dt}ms ${cmds.length}win raised=${raised}`);
-      if (raised === cmds.length) return;
-    } catch {}
-  }
-  // osascript fallback (AXRaise via System Events)
-  const byApp = new Map();
-  for (const cmd of cmds) {
-    if (!cmd.app) continue;
-    const normalizedApp = normalizeAppName(cmd.app);
-    if (!byApp.has(normalizedApp)) byApp.set(normalizedApp, []);
-    byApp.get(normalizedApp).push(cmd);
-  }
-  const jobs = [];
-  for (const [appName, wins] of byApp) {
-    const raiseLines = wins.map(w => {
-      const t = (w.title || '').substring(0, 20).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      return `    try\n      perform action "AXRaise" of (first window whose name contains "${t}")\n    end try`;
-    }).join('\n');
-    const script = `tell application "System Events" to tell process "${appName}"\n${raiseLines}\nend tell`;
-    jobs.push(runOsascript(script, 2000));
-  }
-  if (jobs.length) await Promise.all(jobs);
+  if (!axHelper) return;
+  try {
+    const t0 = Date.now();
+    axHelper.raiseWindows(cmds);
+    const dt = Date.now() - t0;
+    if (dt > 30) console.log(`[tin] raise(native): ${dt}ms ${cmds.length}win`);
+  } catch {}
+  // osascript fallback は使わない — spawn ~200ms の遅延がタブ選択のもたつきの原因
 }
 
 // ── Helpers ──
@@ -827,44 +815,66 @@ function isExternalSnapped(windowNumber) {
   return _globalSnappedIndex.get(windowNumber) || null;
 }
 
-// ── Grid geometry ──
-// 統合ウィンドウ方式: グリッドエリアはウィンドウの右パネル内。
-// タイトルバー(68px)を除いたコンテンツ領域の、サイドバー幅+ディバイダー幅 以降の部分。
+// ── Grid geometry (Groupy コンテナモード) ──
+// TiN ヘッダー (68px) の直下にアプリを配置。タイトルバーは完全に表示される。
 function getGridArea(ws) {
   if (!ws.win || ws.win.isDestroyed()) return null;
   const b = ws.win.getBounds();
-  const sidebarW = ws.sidebarWidth || DEFAULT_SIDEBAR_W;
-  // グリッドパネルはサイドバーと横並び (y はウィンドウ上端と同じ)
-  const x = b.x + sidebarW + SIDEBAR_DIVIDER_W;
-  const y = b.y;
-  const width = Math.max(100, b.width - sidebarW - SIDEBAR_DIVIDER_W);
-  const height = b.height;
-  return { x, y, width, height };
+  return {
+    x: b.x,
+    y: b.y + GROUPY_Y_OFFSET,
+    width: Math.max(200, b.width),
+    height: Math.max(100, b.height - GROUPY_Y_OFFSET),
+  };
 }
 
 function getSlotBounds(ws, slot) {
   const area = getGridArea(ws);
   if (!area) return null;
-  const cols = ws.gridCols, rows = ws.gridRows;
-  const gap = 4;
-  const col = slot % cols, row = Math.floor(slot / cols);
 
-  // ratio ベースの計算 (未設定なら均等分割)
+  // ── Tab モード: 全スロットを同じ全画面位置に配置、AX raise でアクティブを前面に ──
+  // オフスクリーンパーキング不可（CGWindowList の OnScreenOnly から消える → unsnap 誤発火）
+  if (ws.viewMode === 'tab') {
+    return { x: area.x, y: area.y, width: area.width, height: area.height };
+  }
+
+  // ── Grid モード: 通常のグリッドレイアウト ──
+  // gap/padding は workspace.html の .gp-grid-container と一致させる
+  // CSS: gap:8px, padding: 4px 8px 8px (top=4, right=8, bottom=8, left=8)
+  const cols = ws.gridCols, rows = ws.gridRows;
+  const gap = 8, padX = 8, padTop = 4, padBottom = 8;
+
   const colRatios = (ws.colRatios && ws.colRatios.length === cols) ? ws.colRatios : Array(cols).fill(1/cols);
   const rowRatios = (ws.rowRatios && ws.rowRatios.length === rows) ? ws.rowRatios : Array(rows).fill(1/rows);
 
-  const totalW = area.width - gap * (cols - 1);
-  const totalH = area.height - gap * (rows - 1);
+  const innerW = area.width  - padX * 2 - gap * (cols - 1);
+  const innerH = area.height - padTop - padBottom - gap * (rows - 1);
+
+  // ── 柔軟グリッド: slotLayout がある場合は colSpan/rowSpan を考慮 ──
+  let cellCol, cellRow, cellColSpan, cellRowSpan;
+  if (ws.slotLayout) {
+    const cell = ws.slotLayout.find(c => c.id === slot);
+    if (!cell) return null;
+    cellCol = cell.col; cellRow = cell.row;
+    cellColSpan = cell.colSpan; cellRowSpan = cell.rowSpan;
+  } else {
+    cellCol = slot % cols; cellRow = Math.floor(slot / cols);
+    cellColSpan = 1; cellRowSpan = 1;
+  }
 
   let xOff = 0, yOff = 0;
-  for (let i = 0; i < col; i++) xOff += totalW * colRatios[i] + gap;
-  for (let i = 0; i < row; i++) yOff += totalH * rowRatios[i] + gap;
+  for (let i = 0; i < cellCol; i++) xOff += innerW * colRatios[i] + gap;
+  for (let i = 0; i < cellRow; i++) yOff += innerH * rowRatios[i] + gap;
+
+  let w = 0, h = 0;
+  for (let i = 0; i < cellColSpan; i++) w += innerW * colRatios[cellCol + i] + (i > 0 ? gap : 0);
+  for (let i = 0; i < cellRowSpan; i++) h += innerH * rowRatios[cellRow + i] + (i > 0 ? gap : 0);
 
   return {
-    x: Math.round(area.x + xOff),
-    y: Math.round(area.y + yOff),
-    width: Math.round(totalW * colRatios[col]),
-    height: Math.round(totalH * rowRatios[row]),
+    x: Math.round(area.x + padX + xOff),
+    y: Math.round(area.y + padTop + yOff),
+    width: Math.round(w),
+    height: Math.round(h),
   };
 }
 
@@ -951,6 +961,12 @@ function nextFreeSlot(ws) {
   const used = new Set();
   for (const [slot] of ws.gridWindows) used.add(slot);
   for (const [, info] of ws.snappedExternals) used.add(info.slot);
+  if (ws.slotLayout) {
+    for (const cell of ws.slotLayout) {
+      if (!used.has(cell.id)) return cell.id;
+    }
+    return -1;
+  }
   const total = ws.gridCols * ws.gridRows;
   for (let i = 0; i < total; i++) if (!used.has(i)) return i;
   return -1;
@@ -1144,6 +1160,10 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
         await new Promise(r => setTimeout(r, 80));
       }
       if (pos) await batchMove([{ windowNumber, pid, app: appName, title, windowIndex: windowIndex || 0, ...pos }]);
+      if (appSettings.stickyWindows && axHelper && axHelper.setWindowSticky) {
+        axHelper.setWindowSticky([windowNumber], true);
+        console.log(`[tin] snap: wn=${windowNumber} → sticky=true`);
+      }
     } catch {}
   })();
   scheduleSaveWorkspaces();
@@ -1161,11 +1181,14 @@ ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
   ws._lastKnownSnappedWns.delete(windowNumber);
   snappedIndexRemove(windowNumber);
   compactSlots(ws);
+  // sticky 解除 (unsnap 前に実施)
+  if (axHelper && axHelper.setWindowSticky) {
+    try { axHelper.setWindowSticky([windowNumber], false); } catch {}
+  }
   // 元の位置・サイズに戻す。AX expansion は Terminal.app silent fail するので osascript 補完。
   const restoreCmd = [{ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
     x: info.origX, y: info.origY, width: info.origW, height: info.origH }];
   await batchMove(restoreCmd);
-  osascriptMove(restoreCmd).catch(() => {});
   await retileAll(ws);
   raiseAllWorkspaceWindows(ws, true).catch(() => {});
   scheduleSyncSnapped();
@@ -1272,11 +1295,116 @@ ipcMain.handle('get-grid-state', (event) => {
   return { cols: ws.gridCols, rows: ws.gridRows, slots };
 });
 
+// ── Global Hotkeys ──────────────────────────────────────────────────────────
+
+// フロントウィンドウを対象 workspace の次の空きスロットにスナップ
+async function snapFrontmostWindow(ws) {
+  if (!axHelper) return;
+  const wn = axHelper.getFrontmostWindowNumber();
+  if (!wn) return;
+  if (isExternalSnapped(wn)) return; // 既にスナップ済み
+  const allWins = axHelper.listWindows();
+  const win = allWins.find(w => w.windowNumber === wn);
+  if (!win || win.app === 'TiN') return;
+  const slot = nextFreeSlot(ws);
+  if (slot < 0) return;
+  ws.snappedExternals.set(wn, {
+    app: win.app, pid: win.pid, title: win.title, windowNumber: wn,
+    windowIndex: win.windowIndex || 0, slot,
+    origX: win.x, origY: win.y, origW: win.width, origH: win.height,
+    snappedAt: Date.now(),
+  });
+  ws._lastKnownSnappedWns.add(wn);
+  snappedIndexAdd(wn, ws);
+  scheduleSyncSnapped(0);
+  const pos = getSlotBounds(ws, slot);
+  if (pos) {
+    try {
+      if (axHelper.moveWindowsToActiveSpace) {
+        axHelper.moveWindowsToActiveSpace([wn]);
+        await new Promise(r => setTimeout(r, 80));
+      }
+      await batchMove([{ windowNumber: wn, pid: win.pid, app: win.app, title: win.title, ...pos }]);
+      if (appSettings.stickyWindows && axHelper.setWindowSticky) axHelper.setWindowSticky([wn], true);
+    } catch {}
+  }
+  scheduleSaveWorkspaces();
+}
+
+// フロントウィンドウをスナップ解除
+async function unsnapFrontmostWindow(ws) {
+  if (!axHelper) return;
+  const wn = axHelper.getFrontmostWindowNumber();
+  if (!wn) return;
+  const info = ws.snappedExternals.get(wn);
+  if (!info) return;
+  ws.snappedExternals.delete(wn);
+  ws._lastKnownSnappedWns.delete(wn);
+  snappedIndexRemove(wn);
+  compactSlots(ws);
+  scheduleSyncSnapped(0);
+  if (axHelper.setWindowSticky) try { axHelper.setWindowSticky([wn], false); } catch {}
+  const cmds = [{ windowNumber: wn, pid: info.pid, app: info.app, title: info.title,
+    x: info.origX, y: info.origY, width: info.origW, height: info.origH }];
+  try { await osascriptMove(cmds); } catch {}
+  await retileAll(ws);
+  scheduleSaveWorkspaces();
+}
+
+function registerHotkeys() {
+  globalShortcut.unregisterAll();
+  const hk = { ...DEFAULT_HOTKEYS, ...(appSettings.hotkeys || {}) };
+
+  // アクティブな (or 最初の) workspace を返すヘルパー
+  const activeWs = () => [...workspaces.values()][0];
+
+  const actions = {
+    snapFrontmost:   () => { const ws = activeWs(); if (ws) snapFrontmostWindow(ws).catch(() => {}); },
+    unsnapFrontmost: () => { const ws = activeWs(); if (ws) unsnapFrontmostWindow(ws).catch(() => {}); },
+    focusTiN: () => {
+      for (const [, ws] of workspaces) {
+        if (ws.win && !ws.win.isDestroyed()) { ws.win.show(); ws.win.focus(); }
+      }
+    },
+    slot1: () => { const ws = activeWs(); if (ws) ipcMain.emit('set-active-tab-hotkey', ws, 0); },
+    slot2: () => { const ws = activeWs(); if (ws) ipcMain.emit('set-active-tab-hotkey', ws, 1); },
+    slot3: () => { const ws = activeWs(); if (ws) ipcMain.emit('set-active-tab-hotkey', ws, 2); },
+    slot4: () => { const ws = activeWs(); if (ws) ipcMain.emit('set-active-tab-hotkey', ws, 3); },
+  };
+
+  for (const [key, acc] of Object.entries(hk)) {
+    if (!acc || !actions[key]) continue;
+    try {
+      const ok = globalShortcut.register(acc, actions[key]);
+      if (!ok) console.warn(`[tin] hotkey conflict: ${acc} (${key})`);
+    } catch (e) {
+      console.warn(`[tin] hotkey register failed: ${acc} — ${e.message}`);
+    }
+  }
+}
+
+// slot切替をホットキーから直接実行
+ipcMain.on('set-active-tab-hotkey', (ws, slot) => {
+  if (!ws || !ws.win || ws.win.isDestroyed()) return;
+  ws.activeTabSlot = slot;
+  ws.viewMode = 'tab';
+  beginStabilize('set-active-tab', ws);
+  retileAll(ws).then(() => {
+    const activeWns = [];
+    for (const [wn, info] of ws.snappedExternals) {
+      if (info.slot === slot) activeWns.push({ windowNumber: wn, pid: info.pid, app: info.app, title: info.title });
+    }
+    if (activeWns.length && axHelper && axHelper.raiseWindows) axHelper.raiseWindows(activeWns);
+  }).catch(() => {});
+  ws.win.webContents.send('tab-switched-hotkey', slot);
+});
+
 // Settings IPC
 ipcMain.handle('get-settings', () => ({ ...appSettings }));
 ipcMain.handle('save-settings', (_event, newSettings) => {
   const prev = { ...appSettings };
-  appSettings = { ...DEFAULT_SETTINGS, ...(newSettings || {}) };
+  appSettings = { ...DEFAULT_SETTINGS, ...(newSettings || {}),
+    hotkeys: { ...DEFAULT_HOTKEYS, ...(newSettings?.hotkeys || {}) } };
   saveSettings();
   // 即座に反映: auto-launch
   if (appSettings.autoLaunch !== prev.autoLaunch) {
@@ -1290,6 +1418,8 @@ ipcMain.handle('save-settings', (_event, newSettings) => {
       if (ws._pollRestart) ws._pollRestart();
     }
   }
+  // hotkeys 変更時は再登録
+  registerHotkeys();
   return { ok: true, settings: { ...appSettings } };
 });
 
@@ -1307,6 +1437,10 @@ ipcMain.handle('retile-now', async (event) => {
       cmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
       wns.push(info.windowNumber);
     }
+  }
+  // sticky 再設定 (stickyWindows ON 時のみ)
+  if (appSettings.stickyWindows && wns.length && axHelper && axHelper.setWindowSticky) {
+    try { axHelper.setWindowSticky(wns, true); } catch {}
   }
   // snapped ウィンドウ + このワークスペースの TiN 全ウィンドウをまとめて現在 Space に引き寄せる
   const sidebarWn = getElectronWinNumber(ws.win);
@@ -1414,105 +1548,32 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
 
   beginStabilize('push-to-space', ws);
   try {
-    // ── 移動戦略 ──
-    // 1. yabai SA が有効: yabai で確実に移動（検証済み）
-    // 2. yabai SA 無効: sticky → TiN 移動 → Space 切り替わり後に unsticky
-    //    CGS は他プロセスのウィンドウを直接移動できないため、
-    //    sticky (全 Space 表示) にしておき TiN 移動後の自動 Space 切り替えで追従させる
+    // ── sticky 方式: snapped windows は snap 時に sticky 化済み ──
+    // sticky window は全 Space に常時表示されるため、TiN を移動するだけで
+    // snapped window も新 Space に追従する。
+    // 100ms タイマー (_groupyFollowTimer) が位置を TiN に合わせて再配置する。
 
-    // 1. yabai で移動を試みる（偽陽性を検証）
-    let yabaiMoved = [];
-    if (snappedWns.length > 0) {
-      yabaiMoved = await moveWindowsViaYabai(snappedWns, direction, targetSpaceId);
-      if (yabaiMoved.length > 0)
-        console.log(`[tin] yabai moved=[${yabaiMoved}]`);
-    }
+    // TiN 自身を移動（CGS、自プロセスなので確実）
+    const tinMoved = axHelper.moveToSpace ? axHelper.moveToSpace(electronWns, direction) : 0;
+    console.log(`[tin] push-to-space tinMoved=${tinMoved} snappedSticky=${snappedWns.length}`);
 
-    // 2. yabai が動かなかった分: sticky → TiN 移動 → yabai Space focus → unsticky
-    const notMovedByYabai = snappedWns.filter(wn => !yabaiMoved.includes(wn));
-    if (notMovedByYabai.length > 0 && axHelper.setWindowSticky) {
-      axHelper.setWindowSticky(notMovedByYabai, true);
-    }
-
-    // 3. TiN を移動
-    const tinMoved = axHelper.moveToSpace(electronWns, direction);
-    console.log(`[tin] push-to-space tinMoved=${tinMoved}`);
-
-    // 4. 目標 Space に強制切り替えしてから unsticky
-    //    yabai -m space --focus <index> は SA 不要で動作する
-    let cgsFallbackMoved = 0;
-    if (notMovedByYabai.length > 0 && axHelper.setWindowSticky) {
-      let switched = false;
-
-      // targetIndex を取得（getSpacesList の index フィールド）
-      let targetIndex = null;
-      if (targetSpaceId && axHelper.getSpacesList) {
-        try {
-          const sp = axHelper.getSpacesList().find(s => Number(s.id) === Number(targetSpaceId));
-          if (sp) targetIndex = sp.index;
-        } catch {}
-      }
-
-      // yabai -m space --focus で target Space に強制切り替え（SA 不要）
-      if (targetIndex) {
-        const p = getYabaiPath();
-        if (p) {
-          try {
-            await execAsync(`${p} -m space --focus ${targetIndex}`, { timeout: 2000 });
-            switched = true;
-            console.log(`[tin] yabai space focus ${targetIndex} OK`);
-          } catch (e) {
-            const msg = e.stderr?.trim() || e.message;
-            // "already focused" は目標 Space に既にいる = 成功扱い
-            if (msg.includes('already focused')) switched = true;
-            console.log(`[tin] yabai space focus ${targetIndex}: ${msg}`);
-          }
-        }
-      }
-
-      // macOS の自動切り替えを待つ（yabai なしのフォールバック）
-      if (!switched && targetSpaceId && axHelper.getSpacesList) {
-        for (let i = 0; i < 20; i++) {
-          await new Promise(r => setTimeout(r, 50));
-          try {
-            const cur = axHelper.getSpacesList().find(s => s.isCurrent);
-            if (cur && Number(cur.id) === Number(targetSpaceId)) { switched = true; break; }
-          } catch {}
-        }
-      }
-
-      // target Space に切り替わった状態で CGS 移動を再試行
-      // ユーザーが target Space にいるとき、CGS の Space 操作権限が変わる可能性がある
-      if (switched && targetSpaceId && axHelper.moveWindowsToSpaceId) {
-        await new Promise(r => setTimeout(r, 150)); // Space アニメーション待機
-        try {
-          const cgsRetry = axHelper.moveWindowsToSpaceId(notMovedByYabai, targetSpaceId);
-          console.log(`[tin] cgs retry on target space: ${cgsRetry}/${notMovedByYabai.length}`);
-          cgsFallbackMoved = cgsRetry;
-        } catch {}
-      }
-
-      // sticky 解除（window が target Space に移動済みならそこに留まる）
-      await new Promise(r => setTimeout(r, 50));
-      axHelper.setWindowSticky(notMovedByYabai, false);
-      if (!cgsFallbackMoved) cgsFallbackMoved = notMovedByYabai.length;
-      console.log(`[tin] sticky→unsticky: ${notMovedByYabai.length} windows, switched=${switched}`);
-    }
-
-    // 移動後、TiN を主ディスプレイ中央に再配置して retile
-    // getDisplayNearestPoint はマルチモニター環境で間違ったディスプレイを選ぶ場合があるため
-    // getPrimaryDisplay を使用する
+    // TiN を新 Space のディスプレイに合わせて中央配置
+    // 短い待機後に実行（Space アニメーション中はディスプレイ取得が不安定）
+    await new Promise(r => setTimeout(r, 180));
     if (ws.win && !ws.win.isDestroyed()) {
       const b = ws.win.getBounds();
-      const wa = screen.getPrimaryDisplay().workArea;
-      const cx = wa.x + Math.round((wa.width - b.width) / 2);
-      const cy = wa.y + Math.round((wa.height - b.height) / 2);
-      ws.win.setBounds({ x: cx, y: cy, width: b.width, height: b.height });
-      retileAll(ws, true).catch(() => {});
-      console.log(`[tin] push-to-space centered to (${cx},${cy})`);
+      const disp = screen.getDisplayNearestPoint({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
+      const wa = disp.workArea;
+      ws.win.setBounds({
+        x: wa.x + Math.round((wa.width - b.width) / 2),
+        y: wa.y + Math.round((wa.height - b.height) / 2),
+        width: b.width, height: b.height,
+      });
+      // retileAll で sticky snapped windows を TiN の新位置に揃える
+      await retileAll(ws, true).catch(() => {});
     }
 
-    // _tinSpaceId を新 Space に更新して pollFn の誤検知を防ぐ
+    // _tinSpaceId 更新（space-follow ポーリングの誤検知防止）
     if (electronWns.length > 0 && axHelper.getSpaceForWindows) {
       try {
         const spaces = axHelper.getSpaceForWindows([electronWns[0]]);
@@ -1521,7 +1582,7 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
       } catch {}
     }
 
-    return { ok: true, moved: tinMoved + yabaiMoved.length + cgsFallbackMoved, yabai: yabaiMoved.length, cgs: cgsFallbackMoved };
+    return { ok: true, moved: tinMoved };
   } catch (e) {
     console.log(`[tin] push-to-space error: ${e.message}`);
     return { ok: false, error: e.message };
@@ -1729,16 +1790,119 @@ ipcMain.handle('swap-grid-slots', async (event, { src, dst }) => {
 ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return;
+  // 新サイズに収まらないスナップを押し出してから変更
+  const validSlotIds = new Set(Array.from({ length: cols * rows }, (_, i) => i));
+  evictOverflowSnapped(ws, validSlotIds);
   ws.gridCols = cols;
   ws.gridRows = rows;
-  // grid サイズ変更時は ratio リセット
   ws.colRatios = null;
   ws.rowRatios = null;
+  ws.slotLayout = null;
   if (ws.win && !ws.win.isDestroyed()) {
-    ws.win.webContents.send('update-grid-panel', { cols, rows, colRatios: null, rowRatios: null });
+    ws.win.webContents.send('update-grid-panel', { cols, rows, colRatios: null, rowRatios: null, slotLayout: null });
   }
+  beginStabilize('set-grid-size', ws);
   retileAll(ws);
   scheduleSaveWorkspaces();
+});
+
+// ── 有効スロットに収まらないスナップウィンドウを処理 ──
+// 空きスロットがあればシフト、なければ元位置に戻してアンスナップ
+function evictOverflowSnapped(ws, validSlotIds) {
+  // 現在有効スロット内で使用中のスロットを収集
+  const usedSlots = new Set();
+  for (const [, info] of ws.snappedExternals) {
+    if (validSlotIds.has(info.slot)) usedSlots.add(info.slot);
+  }
+
+  const overflow = [];
+  for (const [wn, info] of ws.snappedExternals) {
+    if (!validSlotIds.has(info.slot)) overflow.push(wn);
+  }
+  if (!overflow.length) return;
+
+  console.log(`[tin] overflow ${overflow.length} snapped windows — shift or evict`);
+  for (const wn of overflow) {
+    const info = ws.snappedExternals.get(wn);
+    // 空き有効スロットを探してシフト
+    let freeSlot = -1;
+    for (const id of validSlotIds) {
+      if (!usedSlots.has(id)) { freeSlot = id; break; }
+    }
+    if (freeSlot >= 0) {
+      usedSlots.add(freeSlot);
+      info.slot = freeSlot;
+      console.log(`[tin] shift wn=${wn} → slot ${freeSlot}`);
+    } else {
+      // 空きなし → アンスナップ（元位置に戻す）
+      ws.snappedExternals.delete(wn);
+      ws._lastKnownSnappedWns.delete(wn);
+      snappedIndexRemove(wn);
+      if (axHelper && axHelper.setWindowSticky) {
+        try { axHelper.setWindowSticky([wn], false); } catch {}
+      }
+      if (info && info.origX !== undefined) {
+        batchMove([{ windowNumber: info.windowNumber, pid: info.pid, app: info.app,
+          title: info.title, x: info.origX, y: info.origY, width: info.origW, height: info.origH }]).catch(() => {});
+      }
+      console.log(`[tin] evict wn=${wn} (no free slot)`);
+    }
+  }
+  // renderer の snappedExternals を同期
+  if (ws.win && !ws.win.isDestroyed()) {
+    const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot }));
+    ws.win.webContents.send('hydrate-snapped', hydrate);
+  }
+  scheduleSyncSnapped();
+}
+
+// ── 柔軟グリッド: slotLayout を設定 ──
+ipcMain.handle('set-slot-layout', (event, { layout }) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return;
+  // 結合後の有効スロットIDに収まらないスナップを押し出す
+  const validSlotIds = layout
+    ? new Set(layout.map(cell => cell.id))
+    : new Set(Array.from({ length: ws.gridCols * ws.gridRows }, (_, i) => i));
+  evictOverflowSnapped(ws, validSlotIds);
+  ws.slotLayout = layout;
+  if (ws.win && !ws.win.isDestroyed()) {
+    ws.win.webContents.send('update-grid-panel', {
+      cols: ws.gridCols, rows: ws.gridRows,
+      colRatios: ws.colRatios, rowRatios: ws.rowRatios,
+      slotLayout: layout,
+    });
+  }
+  retileAll(ws).catch(() => {});
+  scheduleSaveWorkspaces();
+});
+
+// ── Tab / Grid モード切り替え ──
+ipcMain.handle('set-view-mode', (event, { mode }) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return;
+  ws.viewMode = mode;
+  beginStabilize('set-view-mode', ws); // retile 中の watchdog 誤発火を抑制
+  retileAll(ws);
+});
+
+// Tab モードでアクティブなスロットを変更し retile + AX raise
+ipcMain.handle('set-active-tab', (event, { slot }) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return;
+  ws.activeTabSlot = Number(slot);
+  ws.viewMode = 'tab';
+  beginStabilize('set-active-tab', ws);
+  retileAll(ws).then(() => {
+    // アクティブスロットのウィンドウを前面に上げる
+    const activeWns = [];
+    for (const [wn, info] of ws.snappedExternals) {
+      if (info.slot === Number(slot)) activeWns.push({ windowNumber: wn, pid: info.pid, app: info.app, title: info.title });
+    }
+    if (activeWns.length > 0 && axHelper && axHelper.raiseWindows) {
+      axHelper.raiseWindows(activeWns);
+    }
+  }).catch(() => {});
 });
 
 ipcMain.on('rename-workspace', (event, { name }) => {
@@ -1835,6 +1999,7 @@ function createWorkspace(name, savedState) {
     sidebarWidth: savedSidebarW,
     colRatios: savedGrid && savedGrid.colRatios ? savedGrid.colRatios : null,
     rowRatios: savedGrid && savedGrid.rowRatios ? savedGrid.rowRatios : null,
+    slotLayout: savedGrid && savedGrid.slotLayout ? savedGrid.slotLayout : null,
     color: (savedState && savedState.colorIndex != null) ? WS_COLORS[savedState.colorIndex % WS_COLORS.length] : WS_COLORS[(wsId - 1) % WS_COLORS.length],
     colorIndex: (savedState && savedState.colorIndex != null) ? savedState.colorIndex : (wsId - 1) % WS_COLORS.length,
   };
@@ -1852,7 +2017,7 @@ function createWorkspace(name, savedState) {
     // サイドバー幅を CSS 変数として通知
     win.webContents.send('set-sidebar-width', { width: ws.sidebarWidth || DEFAULT_SIDEBAR_W });
     // グリッドパネルを初期化
-    win.webContents.send('update-grid-panel', { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios });
+    win.webContents.send('update-grid-panel', { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios, slotLayout: ws.slotLayout });
     // リロード後も main 側の snappedExternals を renderer に同期
     if (ws.snappedExternals.size > 0) {
       const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({
@@ -1874,15 +2039,35 @@ function createWorkspace(name, savedState) {
   // drag 中は snapped 外部ウィンドウの AX 追従を停止し、主スレッドを空ける。
   // 外部ターミナルは drag 終了時の retileAll で一括配置する。
   let _dragging = false;
+  let _groupyDirty = false; // 外部ウィンドウ追従が必要かどうか
   const onWinMove = () => {
-    // ウィンドウ移動時: embedded grid windows を即座に同期
+    // 1. embedded BrowserWindow は setBounds() で即座に同期 (ブロックしない)
     for (const [slot, gw] of ws.gridWindows) {
       if (gw.win && !gw.win.isDestroyed()) {
         const b = getSlotBounds(ws, slot);
         if (b) gw.win.setBounds(b);
       }
     }
+    // 2. 外部ウィンドウはフラグを立てるだけ — AX は 50ms タイマーで非同期実行
+    if (ws.snappedExternals.size > 0) _groupyDirty = true;
   };
+
+  // 外部ウィンドウ追従タイマー (100ms = 10fps)
+  // move イベントから分離して main thread のブロックを回避
+  const _groupyFollowTimer = setInterval(() => {
+    if (!_groupyDirty || !ws.snappedExternals.size || !axHelper || ws.win?.isDestroyed()) return;
+    _groupyDirty = false;
+    const cmds = [];
+    for (const [, info] of ws.snappedExternals) {
+      const b = getSlotBounds(ws, info.slot);
+      if (b) cmds.push({ windowNumber: info.windowNumber, pid: info.pid,
+        app: info.app, title: info.title, windowIndex: info.windowIndex || 0, ...b });
+    }
+    if (cmds.length) fireAndForgetMove(cmds, true);
+  }, 100);
+  // ウィンドウ close 時にタイマーを停止
+  win.once('closed', () => clearInterval(_groupyFollowTimer));
+
   win.on('move', onWinMove);
   win.on('resize', onWinMove);
   win.on('will-move', () => { if (!_dragging) { _dragging = true; } });
@@ -1914,15 +2099,19 @@ function createWorkspace(name, savedState) {
   ws._titleCache = new Map();
   ws._titleCacheRefreshAt = 0;
   ws._lastPollIdentity = '';  // fast-path: skip IPC when nothing changed
+  ws.viewMode = 'grid';       // 'grid' | 'tab' — Groupy 表示モード
+  ws.activeTabSlot = 0;       // Tab モードでアクティブなスロット番号
   // Poll external windows
-  // pollTimer: 2000ms。Available リスト更新は 2 秒遅延するが
-  // snap/unsnap の即時操作には影響しない。snapped の grace period は 8 回 = ~16s。
+  // pollTimer: デフォルト 1500ms。listWindows (CGWindowList, ~1ms) なので短縮しても CPU 負荷は低い。
+  // snap/unsnap の即時操作には影響しない。snapped の grace period は 3 回 miss = ~4.5s。
   const pollFn = async () => {
     if (!ws.win || ws.win.isDestroyed()) return;
     if (_dragging) return;
 
     // TiN 自身が別 Space に移動した検知 (Mission Control / 直接 Space 移動)
-    if (axHelper && axHelper.getSpaceForWindows && axHelper.moveWindowsToSpaceId &&
+    // sticky 方式: snapped windows は全 Space に存在するため CGS 移動は不要
+    // TiN が新 Space に来たら retileAll で位置を揃えるだけでよい
+    if (axHelper && axHelper.getSpaceForWindows &&
         ws.snappedExternals.size > 0 && !isStabilizing(ws)) {
       try {
         const handle = ws.win.getNativeWindowHandle();
@@ -1933,18 +2122,10 @@ function createWorkspace(name, savedState) {
           const tinSpaceId = Number(spaces[0]?.spaceId || 0);
           if (tinSpaceId > 0) {
             if (ws._tinSpaceId > 0 && tinSpaceId !== ws._tinSpaceId) {
-              const snappedWns = [...ws.snappedExternals.values()]
-                .map(i => i.windowNumber).filter(wn => typeof wn === 'number' && wn > 0);
-              if (snappedWns.length > 0) {
-                console.log(`[tin] space-follow: TiN ${ws._tinSpaceId}→${tinSpaceId}, pulling ${snappedWns.length} windows`);
-                beginStabilize('space-follow', ws);
-                axHelper.moveWindowsToSpaceId(snappedWns, tinSpaceId);
-                const b = ws.win.getBounds();
-                const disp = screen.getDisplayNearestPoint({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
-                const wa = disp.workArea;
-                ws.win.setBounds({ x: wa.x + Math.round((wa.width - b.width) / 2), y: wa.y + Math.round((wa.height - b.height) / 2), width: b.width, height: b.height });
-                setTimeout(() => retileAll(ws, true).catch(() => {}), 300);
-              }
+              console.log(`[tin] space-follow (sticky): TiN ${ws._tinSpaceId}→${tinSpaceId}, retiling ${ws.snappedExternals.size} windows`);
+              beginStabilize('space-follow', ws);
+              // sticky windows は新 Space でも同じ座標にいるため retileAll だけで揃う
+              setTimeout(() => retileAll(ws, true).catch(() => {}), 200);
             }
             ws._tinSpaceId = tinSpaceId;
           }
@@ -1989,24 +2170,31 @@ function createWorkspace(name, savedState) {
         ws._watchdogMissStreak = 0;
       }
     }
-    // Title fallback for packaged app: キャッシュヒットを先に適用
+    // liveMap 構築: windowNumber → window (O(1) lookup)
+    const liveMap = new Map();
+    for (const w of windows) liveMap.set(w.windowNumber, w);
+
+    // Title fallback: スナップ済みウィンドウのタイトルのみ osascript で補完。
+    // 全ウィンドウに適用すると 4ws × 15app × 2 osascript = ~120プロセス/5s になる。
     if (windows.length > 0) {
-      let hasUnknown = false;
+      // キャッシュヒットを先に適用 (全ウィンドウ)
       for (const w of windows) {
         if (!w.title) {
           const cached = ws._titleCache.get(w.windowNumber);
-          if (cached) { w.title = cached; }
-          else { hasUnknown = true; }
+          if (cached) w.title = cached;
         }
       }
-      // 未知 windowNumber がある場合のみ osascript で補完 (5秒レート制限)
-      if (hasUnknown) {
+      // osascript 補完: スナップ済みでタイトルが空のものだけ対象
+      const snappedMissingApps = new Set();
+      for (const [wn, info] of ws.snappedExternals) {
+        const live = liveMap.get(wn);
+        if (live && !live.title) snappedMissingApps.add(live.app);
+      }
+      if (snappedMissingApps.size > 0) {
         const now = Date.now();
-        if (now - ws._titleCacheRefreshAt > 5000) {
+        if (now - ws._titleCacheRefreshAt > 30000) { // 30秒レート制限 (5秒→30秒)
           ws._titleCacheRefreshAt = now;
-          const appSet = new Set();
-          for (const w of windows) appSet.add(w.app);
-          for (const appName of appSet) {
+          for (const appName of snappedMissingApps) {
             (async () => {
               try {
                 const [idsRes, namesRes] = await Promise.all([
@@ -2026,17 +2214,12 @@ function createWorkspace(name, savedState) {
       }
       // 古いエントリ削除 (256超過時のみ)
       if (ws._titleCache.size > 256) {
-        const liveNums = new Set();
-        for (const w of windows) liveNums.add(w.windowNumber);
+        const liveNums = new Set(windows.map(w => w.windowNumber));
         for (const k of ws._titleCache.keys()) {
           if (!liveNums.has(k)) ws._titleCache.delete(k);
         }
       }
     }
-    // liveMap 構築: windowNumber → window (Set ではなく Map で O(1) lookup)
-    const liveMap = new Map();
-    for (const w of windows) liveMap.set(w.windowNumber, w);
-
     let snappedChanged = false;
     for (const [k, info] of ws.snappedExternals) {
       let live = liveMap.get(k);
@@ -2118,9 +2301,15 @@ function createWorkspace(name, savedState) {
     }
 
     // Fast-path: build identity string and skip IPC if nothing changed
-    // 軽量な identity: windowNumber:title の連結 + snapped keys + grid keys
+    // スナップ済みウィンドウのみタイトルを含める (terminal タイトルは常時変化するため
+    // 全ウィンドウのタイトルを入れると毎 poll で IPC が発火してしまう)
+    const snappedWnSet = new Set(ws.snappedExternals.keys());
     let identity = '';
-    for (const w of windows) { identity += w.windowNumber; identity += ':'; identity += w.title; identity += ','; }
+    for (const w of windows) {
+      identity += w.windowNumber;
+      if (snappedWnSet.has(w.windowNumber)) { identity += ':'; identity += w.title; }
+      identity += ',';
+    }
     identity += '|';
     for (const k of ws.snappedExternals.keys()) { identity += k; identity += ','; }
     identity += '|';
@@ -2145,15 +2334,15 @@ function createWorkspace(name, savedState) {
     ownTitles.add(`TiN — ${ws.name} Grid`);
     for (const [slot] of ws.gridWindows) ownTitles.add(`TiN — ${ws.name} [${slot}]`);
     const windowsForUI = windowsAll.filter(w => !(w.app === 'TiN' && ownTitles.has(w.title)));
-    // snapped ext の slot 情報も renderer に送る (dots/cards の slot 可視化用)
+    // snapped ext の完全リスト（空間的に見えなくても権威あるリスト）
     const snappedSlots = {};
+    const snappedList = []; // renderer の snappedExternals を authoritative に同期するため
     for (const [wn, info] of ws.snappedExternals) {
       if (typeof info.slot === 'number') snappedSlots[wn] = info.slot;
+      snappedList.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
     }
-    // 最前面 window (focused slot ハイライト用)
-    let frontmostWn = 0;
-    try { if (axHelper && axHelper.getFrontmostWindowNumber) frontmostWn = axHelper.getFrontmostWindowNumber() || 0; } catch {}
-    ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots, snappedSlots, frontmostWn);
+    // 最前面 window (focused slot ハイライト用) — _frontmostInterval (500ms) のキャッシュを流用
+    ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots, snappedSlots, _lastFrontmost, snappedList);
   };
   ws.pollTimer = setInterval(pollFn, appSettings.pollIntervalMs || 4000);
   ws._pollRestart = () => {
@@ -2161,8 +2350,43 @@ function createWorkspace(name, savedState) {
     ws.pollTimer = setInterval(pollFn, appSettings.pollIntervalMs || 4000);
   };
 
+  // ── clickthrough 完全管理: IPC に頼らず main process だけで ON/OFF を決定 ──
+  // renderer の set-win-clickthrough IPC は backup として残すが、このループが主制御。
+  // IPC の非同期性によるクリック取りこぼしを防ぐため、ここで両方向を設定する。
+  let _ctState = false; // 現在の setIgnoreMouseEvents 状態キャッシュ (呼び出し削減)
+  const _setCT = (on) => {
+    if (_ctState === on) return;
+    _ctState = on;
+    ws.win.setIgnoreMouseEvents(on, { forward: true });
+  };
+  const _ctGuardLoop = () => {
+    try {
+      if (!ws.win || ws.win.isDestroyed()) {
+        ws._ctGuardTimer = setTimeout(_ctGuardLoop, 500);
+        return;
+      }
+      const cursor = screen.getCursorScreenPoint();
+      const b = ws.win.getBounds();
+      const inWindow = cursor.x >= b.x && cursor.x <= b.x + b.width
+                    && cursor.y >= b.y && cursor.y <= b.y + b.height;
+      if (!inWindow) {
+        _setCT(false);
+        ws._ctGuardTimer = setTimeout(_ctGuardLoop, 800);
+        return;
+      }
+      // ヘッダー / overlay / editMode → OFF、グリッドエリア → ON
+      const inHeader = cursor.y < b.y + TITLEBAR_H;
+      _setCT(!(inHeader || ws._hasOverlay || ws._editMode));
+      ws._ctGuardTimer = setTimeout(_ctGuardLoop, 50);
+    } catch {
+      ws._ctGuardTimer = setTimeout(_ctGuardLoop, 200);
+    }
+  };
+  ws._ctGuardTimer = setTimeout(_ctGuardLoop, 50);
+
   win.on('closed', async () => {
     if (ws.pollTimer) clearInterval(ws.pollTimer);
+    if (ws._ctGuardTimer) clearTimeout(ws._ctGuardTimer);
     if (ws.moveThrottle) clearTimeout(ws.moveThrottle);
     if (ws.overlayThrottle) clearTimeout(ws.overlayThrottle);
     // Close grid windows
@@ -2219,11 +2443,24 @@ ipcMain.on('raise-all', (event) => {
   if (ws) raiseAllWorkspaceWindows(ws, true);
 });
 
-// グリッドパネル上でウィンドウレベルのクリックスルーを切り替える
+// renderer からの clickthrough 制御 (renderer が grid panel 上かどうかを判定して呼ぶ)
 ipcMain.on('set-win-clickthrough', (event, on) => {
   const ws = findWorkspace(event.sender);
   if (!ws || !ws.win || ws.win.isDestroyed()) return;
   ws.win.setIgnoreMouseEvents(on, { forward: true });
+});
+ipcMain.on('set-overlay-active', (event, active) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return;
+  ws._hasOverlay = !!active;
+  // overlay ON になった瞬間に clickthrough を即座に OFF (IPC → _ctGuardLoop 遅延を橋渡し)
+  if (active && ws.win && !ws.win.isDestroyed()) {
+    ws.win.setIgnoreMouseEvents(false);
+  }
+});
+ipcMain.on('set-edit-mode', (event, active) => {
+  const ws = findWorkspace(event.sender);
+  if (ws) ws._editMode = !!active;
 });
 
 // 統合ウィンドウ方式では raise-all-from-overlay / set-overlay-clickthrough は不要 (no-op)
@@ -2509,7 +2746,7 @@ function savePreset(name) {
         name: ws.name, colorIndex: ws.colorIndex,
         sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
         sidebarWidth: ws.sidebarWidth || DEFAULT_SIDEBAR_W,
-        grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
+        grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios, slotLayout: ws.slotLayout },
         snappedExternals: snapped,
       });
     }
@@ -2701,13 +2938,25 @@ function startFrontmostPoll() {
         }
       }
     } catch {}
-  }, 500);
+  }, 1000); // 1000ms: mousedown で即時更新するので視覚的な遅れなし
 }
 
 app.whenReady().then(() => {
   writeInfoJson();
   writeSnappedJson();
   startFrontmostPoll();
+  registerHotkeys();
+  startRestServer();
+
+  // stickyWindows=false の場合: 残存 sticky を起動時に即解除 (前バージョンの遺産を清掃)
+  if (!appSettings.stickyWindows && axHelper && axHelper.setWindowSticky) {
+    try {
+      const allWins = axHelper.listWindows();
+      const nonTiN = allWins.filter(w => w.app !== 'TiN').map(w => w.windowNumber);
+      if (nonTiN.length) axHelper.setWindowSticky(nonTiN, false);
+      console.log(`[tin] cleared sticky on ${nonTiN.length} windows`);
+    } catch {}
+  }
 
   // Accessibility 権限チェック: 無いと snap / raise が silent fail するので
   // 明示的にダイアログ表示して System Settings へ誘導。
@@ -2795,7 +3044,7 @@ app.whenReady().then(() => {
             const b = getSlotBounds(ws, info.slot);
             if (b) moveCmds.push({ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title, ...b });
           }
-          if (moveCmds.length) await osascriptMove(moveCmds);
+          if (moveCmds.length) await batchMove(moveCmds);
         }
       }},
       { type: 'separator' },
@@ -2899,7 +3148,7 @@ function writeWorkspacesJsonSync() {
       name: ws.name,
       sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
       sidebarWidth: ws.sidebarWidth || DEFAULT_SIDEBAR_W,
-      grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios },
+      grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios, slotLayout: ws.slotLayout },
       colorIndex: ws.colorIndex,
       snappedExternals: snapped,
     });
@@ -2907,14 +3156,167 @@ function writeWorkspacesJsonSync() {
   atomicWriteJSONSync(WORKSPACES_JSON, payload);
 }
 
-app.on('before-quit', () => {
+// ── REST API (localhost only) — Raycast 拡張・外部ツール連携用 ──────────────
+// port は info.json に書き出し。
+const REST_PORT = 37123;
+let _restServer = null;
+
+function parseBody(req) {
+  return new Promise((resolve) => {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 4096) req.destroy(); });
+    req.on('end', () => { try { resolve(JSON.parse(body)); } catch { resolve({}); } });
+    req.on('error', () => resolve({}));
+  });
+}
+
+function restReply(res, status, obj) {
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+  res.end(JSON.stringify(obj));
+}
+
+function startRestServer() {
+  if (_restServer) return;
+  _restServer = http.createServer(async (req, res) => {
+    if (req.method === 'OPTIONS') { restReply(res, 204, {}); return; }
+    const url = new URL(req.url, `http://localhost:${REST_PORT}`);
+    const route = `${req.method} ${url.pathname}`;
+
+    // GET /api/status — ワークスペース・スナップ状態
+    if (route === 'GET /api/status') {
+      const wsArr = [];
+      for (const [, ws] of workspaces) {
+        const snapped = [];
+        for (const [wn, info] of ws.snappedExternals) {
+          snapped.push({ windowNumber: wn, app: info.app, title: info.title, slot: info.slot });
+        }
+        wsArr.push({ id: ws.id, name: ws.name, gridCols: ws.gridCols, gridRows: ws.gridRows,
+          snapped, gridTerminals: ws.gridWindows.size });
+      }
+      return restReply(res, 200, { ok: true, version: PROTOCOL_VERSION, workspaces: wsArr });
+    }
+
+    // GET /api/windows — スナップ可能なウィンドウ一覧
+    if (route === 'GET /api/windows') {
+      const wins = axHelper ? axHelper.listWindows().filter(w => w.app !== 'TiN') : [];
+      return restReply(res, 200, { ok: true, windows: wins.map(w => ({
+        windowNumber: w.windowNumber, app: w.app, title: w.title, pid: w.pid
+      })) });
+    }
+
+    // POST /api/snap — フロントウィンドウをスナップ { windowNumber?: number, workspaceId?: number }
+    if (route === 'POST /api/snap') {
+      const body = await parseBody(req);
+      const ws = (body.workspaceId ? workspaces.get(body.workspaceId) : null) || [...workspaces.values()][0];
+      if (!ws) return restReply(res, 404, { ok: false, error: 'no workspace' });
+      let targetWn = body.windowNumber;
+      if (!targetWn && axHelper) targetWn = axHelper.getFrontmostWindowNumber();
+      if (!targetWn) return restReply(res, 400, { ok: false, error: 'no window' });
+      if (isExternalSnapped(targetWn)) return restReply(res, 200, { ok: true, note: 'already snapped' });
+      const allWins = axHelper ? axHelper.listWindows() : [];
+      const win = allWins.find(w => w.windowNumber === targetWn);
+      if (!win || win.app === 'TiN') return restReply(res, 400, { ok: false, error: 'invalid window' });
+      const slot = nextFreeSlot(ws);
+      if (slot < 0) return restReply(res, 409, { ok: false, error: 'no free slot' });
+      ws.snappedExternals.set(targetWn, {
+        app: win.app, pid: win.pid, title: win.title, windowNumber: targetWn,
+        windowIndex: win.windowIndex || 0, slot,
+        origX: win.x, origY: win.y, origW: win.width, origH: win.height, snappedAt: Date.now(),
+      });
+      ws._lastKnownSnappedWns.add(targetWn);
+      snappedIndexAdd(targetWn, ws);
+      scheduleSyncSnapped(0);
+      const pos = getSlotBounds(ws, slot);
+      if (pos) {
+        (async () => {
+          try {
+            if (axHelper.moveWindowsToActiveSpace) { axHelper.moveWindowsToActiveSpace([targetWn]); await new Promise(r=>setTimeout(r,80)); }
+            await batchMove([{ windowNumber: targetWn, pid: win.pid, app: win.app, title: win.title, ...pos }]);
+            if (appSettings.stickyWindows && axHelper.setWindowSticky) axHelper.setWindowSticky([targetWn], true);
+          } catch {}
+        })();
+      }
+      scheduleSaveWorkspaces();
+      return restReply(res, 200, { ok: true, slot, workspaceId: ws.id });
+    }
+
+    // POST /api/unsnap { windowNumber: number }
+    if (route === 'POST /api/unsnap') {
+      const body = await parseBody(req);
+      let wn = body.windowNumber;
+      if (!wn && axHelper) wn = axHelper.getFrontmostWindowNumber();
+      if (!wn) return restReply(res, 400, { ok: false, error: 'no window' });
+      let found = false;
+      for (const [, ws] of workspaces) {
+        const info = ws.snappedExternals.get(wn);
+        if (!info) continue;
+        found = true;
+        ws.snappedExternals.delete(wn);
+        ws._lastKnownSnappedWns.delete(wn);
+        snappedIndexRemove(wn);
+        compactSlots(ws);
+        scheduleSyncSnapped(0);
+        if (axHelper?.setWindowSticky) try { axHelper.setWindowSticky([wn], false); } catch {}
+        osascriptMove([{ windowNumber: wn, pid: info.pid, app: info.app, title: info.title,
+          x: info.origX, y: info.origY, width: info.origW, height: info.origH }]).catch(() => {});
+        retileAll(ws).catch(() => {});
+        scheduleSaveWorkspaces();
+        break;
+      }
+      return restReply(res, found ? 200 : 404, { ok: found, error: found ? undefined : 'not snapped' });
+    }
+
+    // POST /api/focus — TiN ウィンドウをフォーカス
+    if (route === 'POST /api/focus') {
+      for (const [, ws] of workspaces) {
+        if (ws.win && !ws.win.isDestroyed()) { ws.win.show(); ws.win.focus(); }
+      }
+      return restReply(res, 200, { ok: true });
+    }
+
+    restReply(res, 404, { ok: false, error: 'not found' });
+  });
+
+  _restServer.listen(REST_PORT, '127.0.0.1', () => {
+    console.log(`[tin] REST API listening on http://127.0.0.1:${REST_PORT}`);
+  });
+  _restServer.on('error', (e) => {
+    console.warn(`[tin] REST API error: ${e.message}`);
+  });
+}
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+  // REST サーバーを強制クローズ (接続待ちで quit がブロックされないよう)
+  if (_restServer) {
+    try {
+      // Node 18.2+ では closeAllConnections() が使える
+      if (_restServer.closeAllConnections) _restServer.closeAllConnections();
+      _restServer.close();
+    } catch {}
+    _restServer = null;
+  }
+});
+
+app.on('before-quit', (e) => {
+  if (app._quitting) return; // 二重呼び出し防止
+  app._quitting = true;
   app.isQuitting = true;
-  // quit 前に workspace 状態を確実に書き出す (debounce timer を待たない)
-  try { writeWorkspacesJsonSync(); } catch (e) { console.warn('[tin] final save failed:', e.message); }
-  // 統合ステートファイルのクリーンアップ (クライアントが "TiN 未起動" と判定できるように)
-  // workspaces.json は残す (次回起動で復元するため)
+  e.preventDefault(); // 非同期 cleanup のために一時停止
+
+  // PTY を全 kill (SIGKILL で即時停止)
+  for (const [, ws] of workspaces) {
+    for (const [, gw] of ws.gridWindows) { try { gw.pty.kill('SIGKILL'); } catch {} }
+    for (const [, p] of (ws.sidebarPtys || new Map())) { try { p.kill('SIGKILL'); } catch {} }
+  }
+
+  try { writeWorkspacesJsonSync(); } catch {}
   try { if (fs.existsSync(INFO_JSON)) fs.unlinkSync(INFO_JSON); } catch {}
   try { if (fs.existsSync(SNAPPED_JSON)) fs.unlinkSync(SNAPPED_JSON); } catch {}
+
+  // node-pty の ThreadSafeFunction が JS cleanup で crash するのを避けるため
+  // PTY kill 後に 50ms 待ってから process.exit() で直接終了する
+  setTimeout(() => process.exit(0), 50);
 });
 
 app.on('window-all-closed', () => app.quit());

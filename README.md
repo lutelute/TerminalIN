@@ -1,79 +1,308 @@
-![TerminalIN Banner](assets/banner.png)
+# TiN — TerminalIN
 
-# TerminalIN
+macOS 向け Groupy スタイルのウィンドウコンテナ。Terminal・Finder・Word・Excel・Chrome など任意のアプリを 1 つのタブ付きウィンドウにまとめて管理し、デスクトップ間を一体で移動できます。
 
-macOS terminal workspace manager. Group, snap, and manage multiple terminal windows as a unified workspace.
+---
 
-## Features
+## 概要
 
-- **Snap & Release** — Snap external Terminal.app / iTerm2 windows into a 2x2 or 3x3 grid
-- **Workspace Focus** — Click the workspace sidebar to bring all snapped terminals to front
-- **Grid Terminals** — Embedded Electron terminal windows (xterm.js + node-pty) alongside external terminals
-- **Sidebar Control** — Compact, always-on-top sidebar with workspace management
-- **Multi-Display** — Adaptive grid sizing based on your display configuration
+TiN は「複数のアプリを 1 つのウィンドウに収める」ためのツールです。
 
-## Quick Start
+- **タブバー** — snapped アプリがタブとして並ぶ。クリックで切り替え
+- **グリッド** — 複数アプリを同時に並べて表示（1×2、2×2、カスタムサイズなど）
+- **一体移動** — TiN をドラッグするだけで snapped アプリが全部ついてくる（50ms 以内）
+- **任意アプリ対応** — Terminal・Finder だけでなく Word・Excel・Chrome・VSCode など macOS の全アプリを Snap 可能
+- **デスクトップ追従** — ◀▶ ボタンで TiN と全 snapped アプリをまとめて Space 移動
+
+---
+
+## インストール
+
+### 必要環境
+
+- macOS 15 (Sequoia) 以降
+- Node.js 20 以上
+- **Accessibility 権限** — システム設定 > プライバシーとセキュリティ > アクセシビリティ に TiN を追加
+
+### ビルド
 
 ```bash
-# Install dependencies
+git clone https://github.com/lutelute/TerminalIN
+cd TerminalIN
 npm install
-
-# Run in development mode
-npx electron .
-
-# Build for macOS
-npm run build
+npm run dist             # dist/ に TiN-*.zip が生成される
+bash scripts/install.sh  # /Applications/TiN.app にインストール
 ```
 
-## Architecture
+### 開発モード
 
-```
-Sidebar (Electron, alwaysOnTop)
-├── Embedded terminals (xterm.js)
-├── Snapped external terminals (Terminal.app, iTerm2, etc.)
-└── Grid terminals (Electron BrowserWindows)
-
-Swift Daemon (background process)
-├── Window enumeration (CGWindowList)
-├── Window positioning (AXUIElement)
-└── Window raising (activate + AXRaise)
+```bash
+npm run dev              # DevTools 付きで起動
 ```
 
-## Requirements
+---
 
-- macOS 14+
-- Node.js 20+
-- Accessibility permission (System Settings > Privacy > Accessibility)
+## SIP 設定（Space 移動を使う場合）
 
-## Integration with Other Tools
+snapped アプリの Space 間一括移動には yabai Scripting Addition (SA) が必要です。
 
-TiN v1.2.0+ exposes a public integration protocol for third-party tools to
-read TiN's state and send commands.
+**Recovery Mode で SIP を部分的に無効化：**
 
-- **State files** (read-only, `~/Library/Application Support/TiN/`):
-  - `info.json` — TiN process info and capability list
-  - `snapped.json` — currently snapped windows
-- **URL scheme** (fire-and-forget):
-  - `tin://raise?app=X&windowNumber=Y` — raise a specific window
-  - `tin://workspace/focus` — raise active workspace
-  - `tin://workspace/switch?id=N` — switch workspace
-  - `tin://terminal/new?cwd=X` — create grid terminal
+1. Mac を再起動 → 電源ボタン長押し → オプション → ターミナル
 
-See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the full specification.
+```bash
+csrutil enable --without debug --without fs
+```
 
-### AtelierX Integration
+2. 通常起動後：
 
-If you use [AtelierX](https://github.com/lutelute/AtelierX) (window kanban
-board), install the companion plugin to have AtelierX automatically exclude
-TiN-managed terminals from its Grid arrangement:
+```bash
+brew install koekeishiya/formulae/yabai
+yabai --start-service
+sudo yabai --load-sa
+```
 
-1. In AtelierX: **Settings → Plugins → Install from GitHub**
-2. Enter `lutelute/TerminalIN:atelierx-plugin`
-3. Enable the plugin
+> **Apple Silicon (M1〜M4) の注意点**
+>
+> Darwin 25 (macOS 16) 以降では SA ロードに追加の nvram 設定が必要な場合があります。
+> `nvram boot-args="-arm64e_preview_abi"` は Recovery Mode の「低セキュリティ」モードでのみ設定可能です。
+>
+> SA なしでも TiN 本体の移動・グリッド表示・タブ切り替え・任意アプリの Snap は動作します。
+> SA がない場合、Space 移動時に snapped アプリは元のデスクトップに残ります（TiN 本体のみ移動）。
 
-The plugin lives in this repository under [`atelierx-plugin/`](atelierx-plugin/).
-It is **not** bundled into the TiN.app DMG — TiN works fully standalone.
+---
 
-## License
+## 基本操作
+
+### ヘッダーバー（上部 68px）
+
+```
+☰  ワークスペース名  ──────────────────────────  ⊞
+                    タブ1  タブ2  タブ3  +   3×2  ✏  ↺  ◀  ▶  ↗  ✓
+```
+
+| ボタン | 機能 |
+|--------|------|
+| **☰** | ドロワーパネルを開く／閉じる |
+| **⊞ / ⊡** | グリッドモード ⇔ タブモード 切り替え |
+| **タブ** | snapped アプリのタブ。クリックでそのアプリを前面化 |
+| **×** | タブの × でそのアプリを unsnap |
+| **+** | 新しい組み込み PTY ターミナルを追加 |
+| **3×2** | グリッドサイズを変更（クリックでメニュー、スクロールで順送り） |
+| **✏** | グリッド分割比率を手動調整（ドラッグで各セルのサイズ変更） |
+| **↺** | Retile — 全 snapped アプリを現在の Space に集めてグリッドに再配置 |
+| **◀ ▶** | TiN と全 snapped アプリを前／次のデスクトップへ移動 |
+| **↗** | デスクトップを選んで移動（ピッカーポップアップ） |
+| **✓ / !** | yabai 状態インジケーター（✓ = yabai 起動中、! = 未検出） |
+
+---
+
+## ウィンドウのスナップ
+
+### 手順
+
+1. **☰** をクリックしてドロワーを開く
+2. **Terminal / Finder / Apps / TiN** タブから目的のウィンドウを探す
+3. **Snap** ボタンをクリック → スロットピッカーが開く
+4. 配置したいグリッドのスロットをクリック → TiN のグリッドに配置される
+
+### 対応アプリカテゴリ
+
+| タブ | 対象 |
+|------|------|
+| **Terminal** | Terminal.app・iTerm2・Alacritty・Warp など |
+| **Finder** | Finder のウィンドウ |
+| **Apps** | Word・Excel・PowerPoint・Chrome・Firefox・VSCode・Obsidian など macOS の全アプリ |
+| **TiN** | 別の TiN ワークスペース |
+
+> アプリが一覧に表示されない場合は、そのアプリのウィンドウが開いているか確認してください。
+> 最小化されたウィンドウや別の Space に隠れているウィンドウは表示されないことがあります。
+
+### スナップ中の動作
+
+- snapped ウィンドウは自動的に **sticky（全デスクトップ表示）** になる
+- TiN をドラッグすると snapped ウィンドウが **50ms 以内**に追従
+- TiN をデスクトップ間移動すると snapped ウィンドウも新しいデスクトップに揃う
+
+### スナップ解除
+
+- タブの **×** ボタンをクリック
+- ドロワー GRID セクションの **Release** ボタンをクリック
+- 解除されたウィンドウは元の位置・サイズに戻り、sticky も解除される
+
+---
+
+## 表示モード
+
+### グリッドモード（デフォルト ⊞）
+
+複数の snapped アプリを同時に並べて表示します。
+
+- **1×2**: 2 つのウィンドウを上下に並べる
+- **2×1**: 2 つのウィンドウを左右に並べる
+- **2×2**: 4 つのウィンドウを 2 列 2 行に並べる
+- **カスタム**: 最大 20×20 まで自由に指定可能
+
+グリッドサイズは **サイズボタン**（`3×2` 等）のクリックでメニューが開きます。メニュー内のカスタム入力欄に列数・行数を入力するとリアルタイムでプレビューが更新され、OK で確定されます。
+
+### タブモード（⊡）
+
+タブをクリックすると、そのアプリだけが全画面表示され、他のアプリはバックグラウンドに退避します。ブラウザのタブのような感覚で複数アプリを切り替えられます。
+
+**グリッド ⇔ タブ** の切り替えは **⊞ / ⊡** ボタンで行います。
+
+---
+
+## グリッドサイズのカスタマイズ
+
+ヘッダーのサイズボタン（`3×2` 等）をクリックするとポップアップが開きます。
+
+- **プリセット**: 1×2、2×1、1×3、3×1、2×2、2×3、3×2、3×3
+- **カスタム入力**: 列数・行数を直接入力（最大 20×20）。入力中にプレビュー SVG がリアルタイム更新
+- **スクロール**: サイズボタン上でマウスホイールを回してプリセットを順送り
+
+---
+
+## デスクトップ間の移動
+
+### ボタンで移動（◀ ▶）
+
+TiN ヘッダーの ◀ / ▶ ボタンで、TiN と全 snapped アプリが前後のデスクトップに移動します。
+
+**動作の仕組み（sticky 方式）：**
+1. snapped アプリは sticky（全デスクトップ表示）になっている
+2. TiN が新しいデスクトップに移動
+3. 約 200ms 後に retileAll が走り、アプリが TiN の新位置に揃う
+
+### デスクトップを指定して移動（↗）
+
+↗ ボタンでデスクトップ一覧のポップアップが開きます。目的のデスクトップをクリックすると移動します。
+
+### Mission Control 経由の移動
+
+Mission Control（F3 または Control+↑）で TiN ウィンドウを別のデスクトップにドラッグすると、約 4 秒後のポーリングが変化を検知して retileAll を実行します。
+
+> **yabai SA なしの場合**: TiN 本体のみが移動し、snapped アプリは元のデスクトップに残ります。
+> 移動後に ↺（Retile）を押すと snapped アプリが TiN の新位置に揃います。
+
+---
+
+## PTY ターミナル（組み込みターミナル）
+
+TiN はグリッド内に Electron 組み込みの PTY ターミナルを持てます。外部アプリと異なり TiN ウィンドウ内に埋め込まれるため、Space 移動を含む全操作が確実に同期します。
+
+- **+** ボタンで新しい PTY ターミナルを追加
+- タブの **×** で削除
+- ドロワーの **CONSOLE** セクションで展開して直接操作可能
+
+---
+
+## ドロワーパネル
+
+☰ ボタンで開くドロワーパネルは 2 つのセクションで構成されています。
+
+### GRID セクション
+
+- 現在スナップ済みのウィンドウ一覧（スロット番号・タイトル）
+- **Release** ボタンで個別解除
+- **Release All** ボタンで一括解除
+- スロットドット — ドラッグ & ドロップでスロット順序を入れ替え
+
+### AVAILABLE セクション
+
+- **Terminal / Finder / Apps / TiN** の 4 タブでウィンドウを分類
+- 検索ボックスでリアルタイムフィルタ
+- **Snap** ボタンをクリック → スロットピッカーで配置先を選択
+
+---
+
+## ワークスペース管理
+
+TiN は複数のワークスペース（TiN ウィンドウ）を持てます。各ワークスペースは独立した snapped アプリのセットを管理します。
+
+- ワークスペース名をクリックして編集（Enter で確定、Escape でキャンセル）
+- 再起動後も snap 状態・グリッドサイズ・ウィンドウサイズが自動復元
+- ワークスペースごとにアクセントカラーを設定可能
+
+---
+
+## アーキテクチャ
+
+```
+TiN.app (Electron)
+├── main.js              — メインプロセス
+│   ├── workspace 管理・IPC ハンドラ
+│   ├── pollFn (4 秒ごとにウィンドウ状態を更新)
+│   └── snap / unsnap / retile / Space 移動ロジック
+├── workspace.html       — レンダラー (Groupy UI)
+│   ├── タブバー（snapped アプリのタブ）
+│   ├── ドロワーパネル（Terminal / Finder / Apps / TiN）
+│   └── グリッドオーバーレイ（透明・外部アプリが透けて見える）
+└── native/ax-helper.mm  — N-API native addon
+    ├── AXUIElement 操作（位置・サイズ・raise）
+    ├── CGS API（Space 情報・sticky）
+    └── CGWindowList（layer==0 の全アプリウィンドウを列挙）
+```
+
+**daemon バイナリなし** — AX 操作はすべて TiN 本体プロセス内で実行するため、CDHash 変動による TCC 権限消失問題が発生しません。
+
+---
+
+## 統合プロトコル
+
+外部ツールとの連携用に状態ファイルと URL スキームを公開しています。
+
+**状態ファイル** (`~/Library/Application Support/TiN/`):
+- `info.json` — TiN バージョン・capabilities
+- `snapped.json` — 現在 snapped 中のウィンドウ一覧（AtelierX 等との連携用）
+
+**URL スキーム:**
+```
+tin://raise?app=Terminal&windowNumber=145
+tin://workspace/focus
+tin://terminal/new?cwd=/path/to/dir
+```
+
+---
+
+## トラブルシューティング
+
+### Snap ボタンが見つからない
+
+☰ をクリックしてドロワーを開いてください。Terminal・Finder・Apps の各タブにウィンドウが一覧表示されます。
+
+### Apps タブに目的のアプリが表示されない
+
+- アプリのウィンドウが画面上に表示されているか確認してください（最小化・別 Space は検出されません）
+- ウィンドウサイズが 50×50px 以下の場合は除外されます
+
+### ウィンドウが Grid に配置されない
+
+- グリッドサイズ（`3×2` 等）の空きスロットがあるか確認
+- Retile（↺）ボタンをクリックして強制再配置
+
+### Space 移動で snapped アプリが残る
+
+- ヘッダーの ✓ / ! インジケーターを確認。! の場合は yabai が未検出
+- yabai SA が必要な場合は `sudo yabai --load-sa` を実行
+- SA なしの場合は移動後に ↺ で手動再配置してください
+
+### グリッドサイズがズレている・スロット数がおかしい
+
+- ↺（Retile）で強制再配置
+- TiN を再起動（snap 状態は自動復元されます）
+
+### タブ名が消える・認識がおかしい
+
+- ↺（Retile）で強制同期
+- TiN を再起動
+
+### Terminal.app のウィンドウサイズが戻らない
+
+macOS の Terminal.app は AX での拡大方向のリサイズが失敗する既知のバグがあります。unsnap 後に手動でサイズを調整してください。
+
+---
+
+## ライセンス
 
 ISC

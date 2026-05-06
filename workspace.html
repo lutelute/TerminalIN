@@ -11,42 +11,76 @@
     overflow: hidden;
     font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif;
     color: #1a1a2e;
-    display: flex; flex-direction: row;
-    background: transparent;  /* ウィンドウ全体は透明 — サイドバーのみ不透明 */
+    display: flex; flex-direction: column;  /* Groupy: 縦積み (header + content) */
+    background: transparent;
     transition: opacity 0.15s;
   }
 
-  /* ── Sidebar panel ── */
+  /* ── Groupy ヘッダー (全幅 68px) ── */
   #sidebar {
-    width: var(--sidebar-w, 280px);
-    min-width: 160px;
+    width: 100%;
     flex-shrink: 0;
     display: flex; flex-direction: column;
-    overflow: hidden;
+    overflow: visible;   /* ドロワーが下にはみ出るため */
     position: relative;
-    background: #ffffff;  /* サイドバーのみ不透明 */
+    background: #ffffff;
+    z-index: 100;
   }
+  /* サイドバーリスト・コンソール・ステータスは通常は非表示 */
+  #content, #console-fixed, #status { display: none !important; }
+  /* サイドバー分割線も不要 */
+  #sidebar-divider { display: none !important; }
 
-  /* ── Sidebar divider ── */
-  #sidebar-divider {
-    width: 6px;
-    flex-shrink: 0;
-    cursor: col-resize;
-    background: rgba(0,0,0,0.04);
-    border-left: 1px solid rgba(0,0,0,0.07);
-    transition: background 0.15s;
-    position: relative; z-index: 10;
+  /* ── ドロワーパネル (サイドバートグル時に表示) ── */
+  #drawer-panel {
+    position: fixed;
+    top: 68px; left: 0;
+    width: 280px;
+    max-height: calc(100vh - 68px);
+    background: #ffffff;
+    border-right: 1px solid rgba(0,0,0,0.1);
+    border-bottom: 1px solid rgba(0,0,0,0.1);
+    border-radius: 0 0 10px 0;
+    box-shadow: 4px 4px 16px rgba(0,0,0,0.12);
+    z-index: 9000;
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+    transform: translateX(-100%);
+    transition: transform 0.18s cubic-bezier(0.4,0,0.2,1);
   }
-  #sidebar-divider:hover, #sidebar-divider.dragging {
-    background: rgba(60,120,230,0.18);
-    border-left-color: rgba(60,120,230,0.35);
+  body.drawer-open #drawer-panel {
+    display: flex;
+    transform: translateX(0);
   }
-  body.collapsed #sidebar-divider { display: none; }
+  #drawer-content { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 5px; }
+  #drawer-content::-webkit-scrollbar { width: 5px; }
+  #drawer-content::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 3px; }
+  /* ドロワー外クリックで閉じるオーバーレイ — ヘッダー(68px)の下のみカバー */
+  #drawer-overlay {
+    position: fixed;
+    top: 68px; left: 0; right: 0; bottom: 0;  /* ヘッダーはカバーしない */
+    z-index: 8999;
+    display: none;
+  }
+  body.drawer-open #drawer-overlay { display: block; }
 
-  /* ── Grid panel (右) ── */
+  /* ドロワーボタン */
+  .drawer-btn {
+    width: 26px; height: 26px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; color: rgba(40,40,80,0.4);
+    cursor: pointer; flex-shrink: 0;
+    -webkit-app-region: no-drag;
+    transition: background 0.12s, color 0.12s;
+  }
+  .drawer-btn:hover { background: rgba(0,0,0,0.06); color: rgba(40,40,80,0.8); }
+  body.drawer-open .drawer-btn { color: rgba(60,120,230,0.7); background: rgba(60,120,230,0.08); }
+
+  /* ── コンテンツエリア (全幅、透明、外部アプリが透けて見える) ── */
   #grid-panel {
     flex: 1;
-    min-width: 100px;
+    width: 100%;
     position: relative;
     overflow: hidden;
     background: transparent;
@@ -54,21 +88,37 @@
   }
   body.gp-edit #grid-panel { pointer-events: auto; }
   #gp-toolbar { pointer-events: auto; }
-  body.collapsed #grid-panel { display: none; }
 
   /* C案: セルのborderは使わず、コンテナ側に中央線を疑似要素で描く */
   .gp-frame { display: none; }
   .gp-grid-container {
     position: absolute; inset: 0;
     display: grid; pointer-events: none;
-    gap: 12px;
-    padding: 12px;
-    background: rgba(0,0,0,0.07); /* gap＋padding 部分だけ塗る */
+    gap: 8px;
+    padding: 4px 8px 8px;  /* 上は狭く、左右・下は標準 */
+    background: transparent;
   }
-  .gp-cell {
-    background: transparent; /* セルは透明 — スナップウィンドウが透けて見える */
+  /* グリッドオーバーレイ */
+  #gp-grid { opacity: 0; transition: opacity 0.25s; pointer-events: none; }
+  body.show-empty-slots #gp-grid,
+  body.show-grid-overlay #gp-grid { opacity: 1; }
+  /* ポップアップ / ドロワー表示中は非表示 */
+  body:has(.grid-size-popup, #tab-ctx-menu, .slot-picker) #gp-grid,
+  body.drawer-open #gp-grid { opacity: 0 !important; }
+
+  /* グリッド全体に薄い板 — 空きエリアをひとつの領域として示す */
+  body.show-empty-slots .gp-grid-container,
+  body.show-grid-overlay .gp-grid-container {
+    background: rgba(110,145,230,0.07);
+    border-radius: 8px;
   }
+  .gp-cell { background: rgba(255,255,255,0.08); border-radius: 4px; }
   .gp-cell-empty { background: transparent; }
+  /* スナップ済みスロットは完全透明 — 板の上に何も出ない */
+  body.show-empty-slots #gp-grid .gp-cell.cell-occupied,
+  body.show-empty-slots #gp-grid .gp-cell.cell-active,
+  body.show-grid-overlay #gp-grid .gp-cell.cell-occupied,
+  body.show-grid-overlay #gp-grid .gp-cell.cell-active { opacity: 0; }
 
   /* 分割線なし */
   .gp-divider { display: none; }
@@ -110,6 +160,142 @@
   #gp-toolbar button:hover { background: #eee; }
   #gp-toolbar span { font-size: 11px; color: #666; margin-right: 4px; }
 
+  /* ── Grid Layout Editor Popup ── */
+
+  .glp-tabs { display:flex; gap:2px; border-bottom:1px solid rgba(0,0,0,0.08); margin-bottom:8px; }
+  .glp-tab {
+    padding:5px 12px; font-size:10px; font-weight:700; letter-spacing:0.05em;
+    color:rgba(0,0,0,0.4); cursor:pointer; border-radius:6px 6px 0 0;
+    border:none; background:transparent; transition:all 0.12s;
+  }
+  .glp-tab:hover { color:rgba(0,0,0,0.6); background:rgba(0,0,0,0.04); }
+  .glp-tab.active { color:rgba(60,120,230,0.9); border-bottom:2px solid rgba(60,120,230,0.7); }
+  .glp-tab-content { display:none; flex-direction:column; gap:10px; }
+  .glp-tab-content.active { display:flex; }
+  /* SIZE タブ: サイズプリセット */
+  .glp-size-presets { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; }
+  .glp-size-item {
+    display:flex; flex-direction:column; align-items:center; gap:2px;
+    padding:4px 3px; border-radius:6px; border:1.5px solid transparent;
+    background:rgba(0,0,0,0.03); cursor:pointer; transition:all 0.12s;
+  }
+  .glp-size-item:hover { background:rgba(60,120,230,0.08); border-color:rgba(60,120,230,0.3); }
+  .glp-size-item.active { background:rgba(60,120,230,0.12); border-color:rgba(60,120,230,0.6); }
+  .glp-size-item span { font-size:9px; color:rgba(0,0,0,0.45); font-weight:600; }
+  .glp-size-item.active span { color:rgba(60,120,230,0.9); }
+  .glp-custom-row { display:flex; align-items:center; gap:6px; padding-top:4px; border-top:1px solid rgba(0,0,0,0.06); }
+  .glp-custom-row label { font-size:10px; color:rgba(0,0,0,0.45); }
+  .glp-custom-row input { width:34px; text-align:center; font-size:11px; border:1px solid rgba(0,0,0,0.15); border-radius:4px; padding:3px 4px; }
+  .glp-custom-row input:focus { outline:none; border-color:rgba(60,120,230,0.6); }
+  .glp-size-preview {
+    display:flex; flex-direction:column; align-items:center; gap:4px;
+    padding:8px 8px 6px; background:rgba(100,140,220,0.05); border-radius:8px;
+    border:1px solid rgba(100,140,220,0.12); transition:all 0.15s;
+  }
+  .glp-size-preview-label { font-size:10px; color:rgba(0,0,0,0.35); font-weight:600; letter-spacing:0.04em; font-family:'SF Mono','Menlo',monospace; }
+  #grid-layout-popup {
+    position: fixed;
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.07);
+    padding: 14px;
+    z-index: 10002;
+    width: 300px;
+    display: flex; flex-direction: column; gap: 10px;
+    user-select: none;
+  }
+  #grid-layout-popup h3 {
+    font-size: 11px; font-weight: 700; color: rgba(0,0,0,0.5);
+    letter-spacing: 0.08em; text-transform: uppercase; margin: 0;
+  }
+  /* プリセット行 */
+  .glp-presets {
+    display: flex; gap: 5px; flex-wrap: wrap;
+  }
+  .glp-preset-btn {
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    padding: 5px 6px; border-radius: 7px; border: 1.5px solid transparent;
+    background: rgba(0,0,0,0.04); cursor: pointer; transition: all 0.12s;
+  }
+  .glp-preset-btn:hover { background: rgba(60,120,230,0.08); border-color: rgba(60,120,230,0.3); }
+  .glp-preset-btn.active { background: rgba(60,120,230,0.12); border-color: rgba(60,120,230,0.6); }
+  .glp-preset-btn span { font-size: 9px; color: rgba(0,0,0,0.45); font-weight: 600; }
+  .glp-preset-btn.active span { color: rgba(60,120,230,0.9); }
+
+  /* エディタグリッド */
+  .glp-grid-wrap {
+    position: relative;
+  }
+  .glp-grid {
+    display: grid;
+    gap: 6px;
+    padding: 6px;
+    background: rgba(100,140,220,0.07);
+    border-radius: 8px;
+    width: 100%; aspect-ratio: 1.6;
+    box-sizing: border-box;
+    cursor: crosshair;
+  }
+  .glp-cell {
+    background: rgba(255,255,255,0.9);
+    border-radius: 5px;
+    border: 1.5px solid rgba(100,140,220,0.2);
+    transition: background 0.1s, border-color 0.1s;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; color: rgba(0,0,0,0.25);
+    position: relative;
+  }
+  .glp-cell.selecting {
+    background: rgba(60,120,230,0.18);
+    border-color: rgba(60,120,230,0.6);
+    color: rgba(60,120,230,0.8);
+  }
+  .glp-cell.merged {
+    background: rgba(60,120,230,0.12);
+    border: 2px solid rgba(60,120,230,0.5);
+    color: rgba(60,120,230,0.75);
+    cursor: pointer;
+  }
+  .glp-cell.merged:hover { background: rgba(60,120,230,0.2); border-color: rgba(60,120,230,0.8); }
+  .glp-cell.selected-merged {
+    background: rgba(230,100,40,0.15);
+    border: 2px solid rgba(220,80,20,0.6);
+    color: rgba(200,70,10,0.8);
+  }
+  .glp-merge-label {
+    font-size: 9px; font-weight: 600; pointer-events: none;
+  }
+
+  /* アクションバー */
+  .glp-actions {
+    display: flex; gap: 6px; align-items: center;
+    min-height: 28px;
+  }
+  .glp-action-hint {
+    flex: 1; font-size: 10px; color: rgba(0,0,0,0.4); font-style: italic;
+  }
+  .glp-btn {
+    padding: 5px 12px; border-radius: 6px; border: none;
+    font-size: 11px; font-weight: 600; cursor: pointer;
+  }
+  .glp-btn.primary { background: rgba(60,120,230,0.9); color: #fff; }
+  .glp-btn.primary:hover { background: rgba(40,100,210,1); }
+  .glp-btn.danger { background: rgba(220,60,60,0.1); color: rgba(180,30,30,0.9); }
+  .glp-btn.danger:hover { background: rgba(220,60,60,0.2); }
+  .glp-btn.secondary { background: rgba(0,0,0,0.07); color: rgba(0,0,0,0.6); }
+  .glp-btn.secondary:hover { background: rgba(0,0,0,0.12); }
+
+  /* フッター */
+  .glp-footer {
+    display: flex; gap: 6px; justify-content: flex-end; padding-top: 2px;
+    border-top: 1px solid rgba(0,0,0,0.06);
+  }
+
+  /* レイアウトボタン（ヘッダー内） */
+  .grid-layout-btn {
+    /* 既存の .grid-opt に準拠 */
+  }
+
   /* ── Active / Inactive 状態 ── */
   /* アクティブ: クリアで明るい (vibrancy: active で常時明るい背景)
      非アクティブ: 灰色マスクで少し沈んだ見た目に */
@@ -143,11 +329,87 @@
     display: flex; align-items: center;
     height: 38px; width: 100%;
   }
+  /* ── Groupy タブバー (row2) ── */
   #titlebar-row2 {
-    display: flex; align-items: center;
+    display: flex; align-items: flex-end;
     height: 28px; width: 100%;
-    padding-left: 2px;
+    padding: 0 8px 0 4px;
+    overflow-x: auto; overflow-y: hidden;
+    gap: 2px;
   }
+  #titlebar-row2::-webkit-scrollbar { display: none; }
+
+  /* タブアイテム */
+  .groupy-tab {
+    display: flex; align-items: center; gap: 5px;
+    height: 24px; padding: 0 8px 0 7px;
+    border-radius: 5px 5px 0 0;
+    cursor: pointer;
+    -webkit-app-region: no-drag;
+    font-size: 11px; font-weight: 500;
+    color: rgba(40,40,80,0.55);
+    background: rgba(0,0,0,0.04);
+    border: 1px solid rgba(0,0,0,0.07);
+    border-bottom: none;
+    user-select: none; white-space: nowrap;
+    flex-shrink: 0; max-width: 160px;
+    overflow: hidden; text-overflow: ellipsis;
+    transition: background 0.1s, color 0.1s;
+  }
+  .groupy-tab:hover { background: rgba(0,0,0,0.08); color: rgba(40,40,80,0.8); }
+  .groupy-tab.active {
+    background: rgba(255,255,255,0.92);
+    color: rgba(20,20,60,0.9);
+    border-color: rgba(0,0,0,0.12);
+    font-weight: 600;
+  }
+  body.window-inactive .groupy-tab.active { background: rgba(230,230,240,0.9); }
+  .groupy-tab .tab-icon {
+    width: 13px; height: 13px; border-radius: 3px;
+    font-size: 8px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; opacity: 0.7;
+  }
+  .groupy-tab .tab-icon.term { background: rgba(40,180,100,0.2); color: #28b464; }
+  .groupy-tab .tab-icon.finder { background: rgba(30,120,255,0.15); color: #1e78ff; }
+  .groupy-tab .tab-icon.app { background: rgba(120,80,200,0.15); color: #7850c8; }
+  .groupy-tab .tab-title { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .groupy-tab .tab-close {
+    width: 14px; height: 14px; border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; color: rgba(0,0,0,0.25); flex-shrink: 0;
+    margin-left: 2px; transition: background 0.1s, color 0.1s;
+  }
+  .groupy-tab .tab-close:hover { background: rgba(220,50,50,0.15); color: rgba(200,40,40,0.8); }
+  /* タブ右クリックメニュー */
+  #tab-ctx-menu {
+    position: fixed; z-index: 99999;
+    background: rgb(38,38,40);
+    border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;
+    padding: 4px; min-width: 120px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    animation: ctxFadeIn 0.08s ease;
+  }
+  @keyframes ctxFadeIn { from { opacity:0; transform:scale(0.96); } to { opacity:1; transform:scale(1); } }
+  .ctx-item {
+    padding: 5px 12px; font-size: 12px; color: rgba(255,255,255,0.85);
+    border-radius: 5px; cursor: pointer; display: flex; align-items: center; gap: 8px;
+    -webkit-app-region: no-drag; font-weight: 500;
+  }
+  .ctx-item:hover { background: rgba(255,255,255,0.1); }
+  .ctx-item.danger { color: rgba(255,90,90,0.9); }
+  .ctx-item.danger:hover { background: rgba(255,60,60,0.12); }
+  .ctx-sep { height: 1px; background: rgba(255,255,255,0.1); margin: 3px 4px; }
+  .groupy-tab-add {
+    height: 20px; width: 20px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px; color: rgba(0,0,0,0.25);
+    cursor: pointer; flex-shrink: 0;
+    -webkit-app-region: no-drag;
+    border-radius: 4px; margin-bottom: 2px;
+    transition: color 0.1s, background 0.1s;
+  }
+  .groupy-tab-add:hover { color: rgba(0,0,0,0.6); background: rgba(0,0,0,0.06); }
   #title {
     font-size: 14px; font-weight: 700; color: rgba(30,30,60,0.85);
     cursor: text; user-select: none;
@@ -180,10 +442,14 @@
   #collapse-btn:hover { background: rgba(0,0,0,0.06); color: rgba(40,40,70,0.6); }
 
   #titlebar-grid {
-    display: flex; align-items: center; gap: 3px;
-    height: 22px;
+    display: flex; align-items: flex-end; gap: 2px;
+    height: 100%; flex: 1;
     -webkit-app-region: no-drag;
+    overflow-x: auto; overflow-y: hidden;
   }
+  #titlebar-grid::-webkit-scrollbar { display: none; }
+  /* grid-selector をタブの後ろ (右側) に配置 */
+  #titlebar-grid .grid-selector { margin-left: auto; display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
   #titlebar-grid .grid-opt {
     -webkit-app-region: no-drag;
     padding: 4px 9px; font-size: 11px; min-width: 26px;
@@ -268,8 +534,45 @@
     background: #fff; border: 1px solid rgba(0,0,0,0.12);
     border-radius: 8px; padding: 5px;
     box-shadow: 0 4px 20px rgba(0,0,0,0.18);
-    display: grid; grid-template-columns: repeat(2, 1fr); gap: 2px;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px;
+    min-width: 200px;
   }
+  .grid-size-custom-row {
+    grid-column: 1 / -1;
+    display: flex; flex-direction: row; align-items: center; gap: 5px;
+    padding: 6px 4px 3px;
+    border-top: 1px solid rgba(0,0,0,0.07);
+    margin-top: 2px;
+  }
+  .grid-size-custom-inputs {
+    display: flex; align-items: center; gap: 4px;
+  }
+  .grid-size-custom-row input {
+    width: 38px; text-align: center;
+    font-size: 11px; font-family: 'SF Mono','Menlo',monospace;
+    border: 1px solid rgba(0,0,0,0.2); border-radius: 4px;
+    padding: 3px 4px; outline: none;
+    color: rgba(0,0,0,0.75);
+  }
+  .grid-size-custom-row input:focus { border-color: rgba(60,120,230,0.6); }
+  .grid-size-custom-row .sep { font-size: 11px; color: rgba(0,0,0,0.4); }
+  .grid-size-custom-btn {
+    flex: 1; font-size: 10px; font-weight: 600;
+    border: none; border-radius: 4px; padding: 3px 6px;
+    background: rgba(60,120,230,0.12); color: rgba(40,90,200,0.85);
+    cursor: pointer;
+  }
+  .grid-size-custom-btn:hover { background: rgba(60,120,230,0.22); }
+  /* カスタムプレビュー: SVG グリッドをスクロール可能なエリアに表示 */
+  .grid-size-custom-preview {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; justify-content: center;
+    padding: 6px 4px 4px;
+    border-top: 1px solid rgba(0,0,0,0.06);
+    margin-top: 2px;
+    overflow: auto;
+  }
+  .grid-size-custom-preview svg { flex-shrink: 0; }
   .grid-size-item {
     display: flex; flex-direction: column; align-items: center; gap: 2px;
     padding: 5px 7px; border: none; background: transparent;
@@ -334,6 +637,7 @@
   .badge-term { background: rgba(40,120,210,0.12); color: rgba(20,90,180,0.85); }
   .badge-finder { background: rgba(255,170,40,0.15); color: rgba(200,120,0,0.9); }
   .badge-tin { background: rgba(130,70,220,0.14); color: rgba(100,50,180,0.9); }
+  .badge-app { background: rgba(0,145,80,0.11); color: rgba(0,115,60,0.9); }
 
   /* ── Segmented Tabs (AVAILABLE) — v1.3.4 B 案 ── */
   .avail-tabs {
@@ -372,6 +676,8 @@
   .avail-tab.finder.active .tab-count { background: rgba(200,120,0,0.15); color: rgba(200,120,0,0.95); }
   .avail-tab.tin.active { color: rgba(100,50,180,0.95); border-bottom-color: rgba(100,50,180,0.85); }
   .avail-tab.tin.active .tab-count { background: rgba(100,50,180,0.14); color: rgba(100,50,180,0.95); }
+  .avail-tab.apps.active { color: rgba(0,145,80,0.95); border-bottom-color: rgba(0,145,80,0.85); }
+  .avail-tab.apps.active .tab-count { background: rgba(0,145,80,0.12); color: rgba(0,145,80,0.95); }
   .avail-tab .tab-ai {
     font-size: 8px; font-weight: 700;
     padding: 1px 4px; border-radius: 3px;
@@ -480,10 +786,12 @@
     display: flex; align-items: center; gap: 6px;
     padding: 3px 2px;
   }
-  .grid-dots-row { display: flex; gap: 3px; flex: 1; min-width: 0; }
+  .grid-dots-row {
+    display: grid; gap: 3px; flex: 1; min-width: 0;
+    /* gridTemplateColumns/Rows は JS で設定 */
+  }
   .grid-dot {
-    flex: 1; height: 18px;
-    min-width: 18px;
+    min-height: 18px; min-width: 0;
     border-radius: 4px;
     background: rgba(0,0,0,0.04);
     border: 1px solid rgba(0,0,0,0.07);
@@ -518,25 +826,25 @@
     background: rgba(0,0,0,0.04);
     font-feature-settings: "tnum";
   }
-  body.compact .grid-dot { height: 14px; font-size: 8px; }
+  body.compact .grid-dot { min-height: 12px; font-size: 8px; }
 
   /* Slot card (drag&drop 対応 + slot 番号バッジ) */
-  .slot-card { cursor: grab; }
+  .slot-card { cursor: grab; position: relative; }
   .slot-card:active { cursor: grabbing; }
   .slot-card.dragging { opacity: 0.35; }
-  .slot-card.drag-over { outline: 2px dashed rgba(40,120,210,0.5); outline-offset: -2px; }
-  /* line の間挿入インジケータ (上/下に 3px 太線) */
-  .slot-card { position: relative; }
-  .slot-card.drag-over-top::before,
-  .slot-card.drag-over-bottom::after {
-    content: ''; position: absolute; left: 0; right: 0;
-    height: 3px; background: rgba(40,120,210,0.85);
-    border-radius: 2px;
-    box-shadow: 0 0 6px rgba(40,120,210,0.5);
-    pointer-events: none;
+  .slot-card.drag-over {
+    outline: 2px dashed rgba(40,120,210,0.65);
+    outline-offset: -2px;
+    background: rgba(40,120,210,0.06) !important;
   }
-  .slot-card.drag-over-top::before { top: -2px; }
-  .slot-card.drag-over-bottom::after { bottom: -2px; }
+  /* 結合バッジ (縦×N / 横×N / N×M) */
+  .slot-span-badge {
+    font-size: 8px; font-weight: 700;
+    color: rgba(60,120,230,0.75);
+    background: rgba(60,120,230,0.1);
+    padding: 1px 5px; border-radius: 3px;
+    flex-shrink: 0;
+  }
   .slot-badge {
     display: inline-flex; align-items: center; justify-content: center;
     min-width: 16px; height: 16px; padding: 0 4px;
@@ -569,6 +877,28 @@
     box-shadow: 0 0 0 2px rgba(220,170,30,0.75) inset, 0 0 8px rgba(255,200,60,0.4);
     transform: scale(1.05);
   }
+
+  /* Empty slot placeholder */
+  .slot-card.empty-slot {
+    cursor: default;
+    background: repeating-linear-gradient(
+      -45deg,
+      transparent, transparent 4px,
+      rgba(0,0,0,0.013) 4px, rgba(0,0,0,0.013) 8px
+    );
+    border: 1px dashed rgba(0,0,0,0.11);
+    border-radius: 5px;
+    margin: 1px 2px;
+    opacity: 0.65;
+  }
+  .slot-card.empty-slot:hover {
+    background: rgba(40,120,210,0.05);
+    border-color: rgba(40,120,210,0.3);
+    opacity: 1;
+  }
+  .slot-card.empty-slot .ext-title { color: rgba(0,0,0,0.2); }
+  .slot-card.empty-slot .snap-here-btn { visibility: hidden; }
+  .slot-card.empty-slot:hover .snap-here-btn { visibility: visible; }
 
   .card-close {
     width: 20px; height: 20px; border-radius: 5px;
@@ -691,17 +1021,81 @@
   .restore-banner li { font-size: 9px; padding: 1px 0; color: inherit; opacity: 0.85; }
   body.compact .restore-banner { display: none; }
 
+  /* ── Drawer グリッドプレビュー ── */
+  #drawer-grid-preview {
+    padding: 8px 8px 4px; border-bottom: 1px solid rgba(0,0,0,0.06); display: none;
+  }
+  body.drawer-open #drawer-grid-preview { display: block; }
+  #drawer-grid-preview .dgp-label {
+    font-size: 9px; font-weight: 700; color: rgba(0,0,0,0.35);
+    letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 5px;
+  }
+  .dgp-grid {
+    display: grid; gap: 4px; width: 100%; aspect-ratio: 1.5;
+    background: rgba(100,140,220,0.07); border-radius: 8px; padding: 5px;
+    box-sizing: border-box;
+  }
+  .dgp-cell {
+    border-radius: 5px; border: 1.5px solid rgba(100,140,220,0.18);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 600; color: rgba(0,0,0,0.3);
+    overflow: hidden; padding: 3px; text-align: center; line-height: 1.3;
+    background: transparent; transition: background 0.1s, border-color 0.1s;
+    user-select: none;
+  }
+  .dgp-cell.occupied {
+    background: rgba(60,120,230,0.12); border-color: rgba(60,120,230,0.4);
+    color: rgba(40,90,180,0.85); cursor: grab;
+  }
+  .dgp-cell.occupied:hover { background: rgba(60,120,230,0.2); border-color: rgba(60,120,230,0.65); }
+  .dgp-cell.dragging { opacity: 0.4; cursor: grabbing; }
+  .dgp-cell.drag-over { outline: 2px dashed rgba(60,120,230,0.65); outline-offset: -2px; background: rgba(60,120,230,0.08); }
+  .dgp-title { font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; pointer-events: none; }
+
+  /* ── カスタムツールチップ ── */
+  #tin-tooltip {
+    position: fixed; z-index: 99999; pointer-events: none;
+    background: rgba(18,18,28,0.93);
+    backdrop-filter: blur(10px) saturate(1.4);
+    color: #fff; border-radius: 9px;
+    padding: 7px 11px 8px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3), 0 0 0 0.5px rgba(255,255,255,0.08);
+    max-width: 220px; opacity: 0;
+    transition: opacity 0.1s;
+  }
+  #tin-tooltip.visible { opacity: 1; }
+  #tin-tooltip .tip-name {
+    display: block; font-size: 11px; font-weight: 700;
+    color: #fff; letter-spacing: 0.02em; white-space: nowrap;
+  }
+  #tin-tooltip .tip-desc {
+    display: block; font-size: 10px; color: rgba(255,255,255,0.55);
+    margin-top: 2px; line-height: 1.45;
+  }
+
 </style>
 </head>
 <body>
 
+<!-- ドロワー外クリック用オーバーレイ -->
+<div id="drawer-overlay" onclick="toggleDrawer(false)"></div>
+
+<!-- ドロワーパネル (サイドバーリスト) -->
+<div id="drawer-panel">
+  <div id="drawer-content"></div>
+</div>
+
 <div id="sidebar">
   <div id="titlebar">
     <div id="titlebar-row1">
+      <!-- ドロワートグルボタン -->
+      <div class="drawer-btn" id="drawer-toggle-btn" title="Drawer — ウィンドウリストパネルを開閉" onclick="toggleDrawer()">☰</div>
       <span id="title">TiN</span>
       <input id="title-input" type="text" />
       <div style="flex:1"></div>
-      <div id="collapse-btn" title="Collapse sidebar (Cmd+B)">‹</div>
+      <!-- モード切り替えボタン -->
+      <div id="view-mode-btn" class="drawer-btn" title="View — グリッド分割 / フルスクリーンタブ を切り替え" onclick="toggleViewMode()">⊞</div>
+      <div id="collapse-btn" title="Collapse sidebar (Cmd+B)" style="display:none">‹</div>
     </div>
     <div id="titlebar-row2">
       <div id="titlebar-grid"></div>
@@ -728,9 +1122,38 @@ const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 
 const content = document.getElementById('content');
+const drawerContent = document.getElementById('drawer-content');
 const statusEl = document.getElementById('status');
 const titleEl = document.getElementById('title');
 const titleInput = document.getElementById('title-input');
+
+// ── ドロワー表示/非表示 ──
+function toggleDrawer(forceState) {
+  const open = forceState !== undefined ? forceState : !document.body.classList.contains('drawer-open');
+  document.body.classList.toggle('drawer-open', open);
+  notifyOverlay(open);
+}
+
+// ── グリッド / Tab モード切り替え ──
+let currentViewMode = 'grid';
+function toggleViewMode() {
+  currentViewMode = currentViewMode === 'grid' ? 'tab' : 'grid';
+  const btn = document.getElementById('view-mode-btn');
+  if (btn) btn.textContent = currentViewMode === 'tab' ? '⊡' : '⊞';
+  ipcRenderer.invoke('set-view-mode', { mode: currentViewMode });
+  render();
+}
+
+// Tab モードでタブをクリックしてアクティブスロット切り替え
+function activateTab(slot) {
+  if (currentViewMode !== 'tab') {
+    currentViewMode = 'tab';
+    const btn = document.getElementById('view-mode-btn');
+    if (btn) btn.textContent = '⊡';
+  }
+  ipcRenderer.invoke('set-active-tab', { slot });
+  render();
+}
 
 let wsId = null;
 let wsName = 'TiN';
@@ -747,7 +1170,7 @@ let snappedByOther = {};
 let gridSlots = {};
 let gridCols = 2, gridRows = 2;
 // B案: AVAILABLE タブ切替 state
-let activeAvailTab = 'term'; // 'term' | 'finder' | 'tin'
+let activeAvailTab = 'term'; // 'term' | 'finder' | 'apps' | 'tin'
 let availSearchText = '';
 // input 要素を render 跨ぎで保持 (focus / 入力値維持)
 let _availSearchInput = null;
@@ -794,8 +1217,13 @@ ipcRenderer.on('set-sidebar-width', (_e, { width }) => {
 
 // 復元時の snapped Map 初期化 (main 側で既に配置済みの窓を renderer に知らせる)
 ipcRenderer.on('hydrate-snapped', (_e, list) => {
-  for (const entry of (list || [])) {
-    snappedExternals.set(entry.windowNumber, { title: entry.title, app: entry.app, slot: entry.slot });
+  // 権威リストで同期: _snapPending のものは楽観的状態を保持して除外
+  const incoming = new Map((list || []).map(e => [e.windowNumber, e]));
+  for (const [k] of snappedExternals) {
+    if (!incoming.has(k) && !_snapPending.has(k)) snappedExternals.delete(k);
+  }
+  for (const [k, entry] of incoming) {
+    snappedExternals.set(k, { title: entry.title, app: entry.app, slot: entry.slot });
   }
   render();
 });
@@ -852,22 +1280,96 @@ function renderRestoreBanner() {
 }
 
 // ── Preferences modal ──
+// Electron アクセラレーター → 表示文字列 (⌘⌥S 形式)
+function accToDisplay(acc) {
+  if (!acc) return '—';
+  return acc.replace('CommandOrControl', '⌘').replace('Command', '⌘')
+            .replace('Control', '⌃').replace('Option', '⌥').replace('Shift', '⇧')
+            .replace(/\+/g, '');
+}
+
+// キーダウンイベント → Electron アクセラレーター文字列
+function eventToAcc(e) {
+  const parts = [];
+  if (e.metaKey)  parts.push('Command');
+  if (e.ctrlKey)  parts.push('Control');
+  if (e.altKey)   parts.push('Option');
+  if (e.shiftKey) parts.push('Shift');
+  const k = e.key;
+  if (['Meta','Control','Alt','Shift'].includes(k)) return null;
+  // 特殊キー変換
+  const specialMap = { ' ': 'Space', 'ArrowUp':'Up','ArrowDown':'Down','ArrowLeft':'Left','ArrowRight':'Right',
+    'Escape':'Escape','Enter':'Return','Backspace':'Backspace','Delete':'Delete',
+    'Tab':'Tab','Home':'Home','End':'End','PageUp':'PageUp','PageDown':'PageDown' };
+  parts.push(specialMap[k] || k.toUpperCase());
+  return parts.join('+');
+}
+
+// ホットキーキャプチャ field を作成
+function makeHotkeyField(id, currentAcc) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;align-items:center;gap:6px;';
+  const field = document.createElement('div');
+  field.id = id;
+  field.dataset.acc = currentAcc || '';
+  field.tabIndex = 0;
+  field.style.cssText = 'min-width:90px;padding:3px 8px;border:1px solid rgba(0,0,0,0.2);border-radius:4px;' +
+    'font-size:12px;font-family:"SF Mono",monospace;cursor:pointer;text-align:center;background:#fff;' +
+    'color:rgba(0,0,0,0.75);user-select:none;';
+  field.textContent = accToDisplay(currentAcc);
+  const clr = document.createElement('button');
+  clr.textContent = '✕';
+  clr.style.cssText = 'font-size:10px;border:none;background:none;cursor:pointer;color:rgba(0,0,0,0.4);padding:2px 4px;';
+
+  field.addEventListener('focus', () => {
+    field.style.borderColor = 'rgba(37,99,235,0.7)';
+    field.textContent = '…キーを押してください';
+    field.style.color = 'rgba(0,0,0,0.4)';
+  });
+  field.addEventListener('blur', () => {
+    field.style.borderColor = 'rgba(0,0,0,0.2)';
+    field.style.color = 'rgba(0,0,0,0.75)';
+    field.textContent = accToDisplay(field.dataset.acc);
+  });
+  field.addEventListener('keydown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const acc = eventToAcc(e);
+    if (!acc) return;
+    field.dataset.acc = acc;
+    field.textContent = accToDisplay(acc);
+    field.style.color = 'rgba(0,0,0,0.75)';
+    field.blur();
+  });
+  clr.addEventListener('click', () => {
+    field.dataset.acc = '';
+    field.textContent = '—';
+  });
+  wrap.appendChild(field);
+  wrap.appendChild(clr);
+  return wrap;
+}
+
 async function openPreferences() {
   const settings = await ipcRenderer.invoke('get-settings');
+  const hk = { snapFrontmost:'', unsnapFrontmost:'', focusTiN:'', slot1:'', slot2:'', slot3:'', slot4:'',
+    ...(settings.hotkeys || {}) };
   let backdrop = document.getElementById('tin-prefs-backdrop');
   if (backdrop) backdrop.remove();
   backdrop = document.createElement('div');
   backdrop.id = 'tin-prefs-backdrop';
   backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:9999;';
   const panel = document.createElement('div');
-  panel.style.cssText = 'background:#fafafa;padding:20px 24px;border-radius:10px;min-width:280px;box-shadow:0 10px 30px rgba(0,0,0,0.3);font-size:13px;color:#222;';
+  panel.style.cssText = 'background:#fafafa;padding:20px 24px;border-radius:10px;min-width:320px;max-height:90vh;overflow-y:auto;' +
+    'box-shadow:0 10px 30px rgba(0,0,0,0.3);font-size:13px;color:#222;';
   panel.innerHTML = `
     <div style="font-weight:600;font-size:15px;margin-bottom:14px;">Preferences</div>
     <label style="display:block;margin-bottom:10px;">Poll 間隔
       <select id="pref-poll" style="margin-left:8px;">
-        <option value="2000">2s (即応)</option>
-        <option value="4000">4s (標準)</option>
-        <option value="8000">8s (軽量)</option>
+        <option value="1500">1.5s (高速)</option>
+        <option value="2000">2s (標準)</option>
+        <option value="4000">4s (軽量)</option>
+        <option value="8000">8s (省電力)</option>
       </select>
     </label>
     <label style="display:block;margin-bottom:10px;">Drag 終了時
@@ -884,9 +1386,21 @@ async function openPreferences() {
         <option value="2,3">2×3</option>
       </select>
     </label>
-    <label style="display:flex;align-items:center;margin-bottom:16px;">
+    <label style="display:flex;align-items:center;margin-bottom:8px;">
       <input type="checkbox" id="pref-autolaunch" style="margin-right:8px;">ログイン時に自動起動
     </label>
+    <label style="display:flex;align-items:center;margin-bottom:4px;">
+      <input type="checkbox" id="pref-sticky" style="margin-right:8px;">全 Space に追従 (sticky)
+    </label>
+    <div style="font-size:11px;color:rgba(200,60,40,0.8);margin-bottom:14px;padding-left:20px;">
+      ⚠ ON にすると他アプリが重くなる場合があります
+    </div>
+    <div style="border-top:1px solid rgba(0,0,0,0.08);margin:0 -4px 12px;padding-top:12px;">
+      <div style="font-weight:600;font-size:12px;color:rgba(0,0,0,0.5);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
+        グローバルホットキー
+      </div>
+      <div id="pref-hk-rows" style="display:grid;grid-template-columns:1fr auto;gap:6px 10px;align-items:center;"></div>
+    </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;">
       <button id="pref-cancel" style="padding:5px 12px;">Cancel</button>
       <button id="pref-save" style="padding:5px 12px;background:#2563eb;color:#fff;border:1px solid #2563eb;border-radius:4px;">Save</button>
@@ -894,19 +1408,47 @@ async function openPreferences() {
   `;
   backdrop.appendChild(panel);
   document.body.appendChild(backdrop);
-  panel.querySelector('#pref-poll').value = String(settings.pollIntervalMs || 4000);
+
+  panel.querySelector('#pref-poll').value = String(settings.pollIntervalMs || 2000);
   panel.querySelector('#pref-drag').value = settings.dragEndMode || 'position';
   panel.querySelector('#pref-grid').value = `${settings.defaultGridCols||2},${settings.defaultGridRows||2}`;
   panel.querySelector('#pref-autolaunch').checked = !!settings.autoLaunch;
+  panel.querySelector('#pref-sticky').checked = !!settings.stickyWindows;
+
+  // ホットキー行を生成
+  const hkRows = panel.querySelector('#pref-hk-rows');
+  const hkDefs = [
+    { key: 'snapFrontmost',   label: 'フロントウィンドウをスナップ' },
+    { key: 'unsnapFrontmost', label: 'フロントウィンドウをアンスナップ' },
+    { key: 'focusTiN',        label: 'TiN にフォーカス' },
+    { key: 'slot1', label: 'スロット 1 に切替 (タブモード)' },
+    { key: 'slot2', label: 'スロット 2 に切替' },
+    { key: 'slot3', label: 'スロット 3 に切替' },
+    { key: 'slot4', label: 'スロット 4 に切替' },
+  ];
+  for (const { key, label } of hkDefs) {
+    const lbl = document.createElement('div');
+    lbl.style.cssText = 'font-size:12px;color:rgba(0,0,0,0.65);';
+    lbl.textContent = label;
+    hkRows.appendChild(lbl);
+    hkRows.appendChild(makeHotkeyField(`pref-hk-${key}`, hk[key]));
+  }
+
   panel.querySelector('#pref-cancel').onclick = () => backdrop.remove();
   panel.querySelector('#pref-save').onclick = async () => {
     const [c, r] = panel.querySelector('#pref-grid').value.split(',').map(Number);
+    const hotkeys = {};
+    for (const { key } of hkDefs) {
+      hotkeys[key] = panel.querySelector(`#pref-hk-${key}`)?.dataset.acc || '';
+    }
     await ipcRenderer.invoke('save-settings', {
       pollIntervalMs: Number(panel.querySelector('#pref-poll').value),
       dragEndMode: panel.querySelector('#pref-drag').value,
       defaultGridCols: c,
       defaultGridRows: r,
       autoLaunch: panel.querySelector('#pref-autolaunch').checked,
+      stickyWindows: panel.querySelector('#pref-sticky').checked,
+      hotkeys,
     });
     backdrop.remove();
   };
@@ -1072,7 +1614,7 @@ async function openSlotPicker(anchorBtn, w) {
   picker.className = 'slot-picker';
   picker.style.cssText = `
     position:fixed; z-index:10000;
-    background:rgba(28,28,30,0.92); backdrop-filter:blur(14px);
+    background:rgb(36,36,38);
     border:1px solid rgba(255,255,255,0.08); border-radius:10px;
     padding:10px; box-shadow:0 16px 40px rgba(0,0,0,0.5);
     opacity:0; transform:scale(0.94); transition:opacity .12s ease,transform .14s ease;
@@ -1119,11 +1661,13 @@ async function openSlotPicker(anchorBtn, w) {
   }
   picker.appendChild(grid);
   document.body.appendChild(picker);
+  notifyOverlay(true); // slot-picker 表示 → clickthrough OFF
 
-  // viewport 内に必ず収める (上部アイテム時も menu bar / 端クリップ回避)
+  // viewport 内に必ず収める (ヘッダー68px + margin でクリップ回避)
   const r = anchorBtn.getBoundingClientRect();
   const pw = picker.offsetWidth, ph = picker.offsetHeight;
-  const margin = 12;
+  const margin = 8;
+  const topMin = 68 + margin; // ヘッダー(68px)の下に必ず収める
   // 横: 左側優先、入らなければ右、それでもダメなら画面端に貼る
   let left = r.left - pw - 10;
   if (left < margin) left = r.right + 10;
@@ -1131,26 +1675,27 @@ async function openSlotPicker(anchorBtn, w) {
   if (left < margin) left = margin;
   // 縦: anchor 中央に合わせる → 上下にはみ出たら anchor の下/上へフォールバック
   let top = r.top + r.height / 2 - ph / 2;
-  if (top < margin) {
+  if (top < topMin) {
     top = r.bottom + 6;  // anchor の下に置く
-    if (top + ph + margin > window.innerHeight) top = margin;
+    if (top + ph + margin > window.innerHeight) top = topMin;
   }
   if (top + ph + margin > window.innerHeight) {
     top = r.top - ph - 6;  // anchor の上に置く
-    if (top < margin) top = Math.max(margin, window.innerHeight - ph - margin);
+    if (top < topMin) top = Math.max(topMin, window.innerHeight - ph - margin);
   }
   picker.style.left = `${left}px`; picker.style.top = `${top}px`;
   requestAnimationFrame(() => { picker.style.opacity = '1'; picker.style.transform = 'scale(1)'; });
 
   // 外クリックで閉じる
+  const closePicker = () => { notifyOverlay(false); };
   const closer = (e) => {
     if (!picker.contains(e.target) && e.target !== anchorBtn) {
-      picker.remove(); _pickerEl = null;
+      picker.remove(); _pickerEl = null; closePicker();
       document.removeEventListener('mousedown', closer, true);
       document.removeEventListener('keydown', keyCloser);
     }
   };
-  const keyCloser = (e) => { if (e.key === 'Escape') { picker.remove(); _pickerEl = null; document.removeEventListener('mousedown', closer, true); document.removeEventListener('keydown', keyCloser); } };
+  const keyCloser = (e) => { if (e.key === 'Escape') { picker.remove(); _pickerEl = null; closePicker(); document.removeEventListener('mousedown', closer, true); document.removeEventListener('keydown', keyCloser); } };
   setTimeout(() => {
     document.addEventListener('mousedown', closer, true);
     document.addEventListener('keydown', keyCloser);
@@ -1194,7 +1739,7 @@ function makeMiniGridSVG(cols, rows) {
 
 function openGridSizePopup(anchorEl) {
   const existing = document.getElementById('grid-size-popup');
-  if (existing) { existing.remove(); return; }
+  if (existing) { existing.remove(); notifyOverlay(false); return; }
   const presets = [
     ['1×2', 1, 2], ['2×1', 2, 1],
     ['1×3', 1, 3], ['3×1', 3, 1],
@@ -1212,16 +1757,109 @@ function openGridSizePopup(anchorEl) {
       ev.stopPropagation();
       setGridSize(c, r);
       popup.remove();
+      notifyOverlay(false);
     });
     popup.appendChild(item);
   }
+  // カスタムサイズ入力行
+  const customRow = document.createElement('div');
+  customRow.className = 'grid-size-custom-row';
+  const colInput = document.createElement('input');
+  colInput.type = 'number'; colInput.min = '1'; colInput.max = '20';
+  colInput.value = gridCols; colInput.placeholder = 'C';
+  colInput.title = '列数 (1〜20)';
+  const sep = document.createElement('span');
+  sep.textContent = '×';
+  const rowInput = document.createElement('input');
+  rowInput.type = 'number'; rowInput.min = '1'; rowInput.max = '20';
+  rowInput.value = gridRows; rowInput.placeholder = 'R';
+  rowInput.title = '行数 (1〜20)';
+  const applyBtn = document.createElement('button');
+  applyBtn.className = 'grid-size-custom-btn';
+  applyBtn.textContent = 'OK';
+  const applyCustom = (ev) => {
+    ev?.stopPropagation?.();
+    const c = Math.max(1, Math.min(20, parseInt(colInput.value, 10) || 1));
+    const r = Math.max(1, Math.min(20, parseInt(rowInput.value, 10) || 1));
+    setGridSize(c, r);
+    popup.remove();
+    notifyOverlay(false);
+    document.removeEventListener('click', closePopup);
+  };
+  applyBtn.addEventListener('click', applyCustom);
+  // Enter で確定
+  [colInput, rowInput].forEach(inp => {
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') applyCustom();
+      e.stopPropagation();
+    });
+    inp.addEventListener('click', (e) => e.stopPropagation());
+  });
+  // C-2: 色分けグリッドアイコン（青=列/縦, 橙=行/横）
+  const colIcon = document.createElement('span');
+  colIcon.title = '列数（縦に何分割）';
+  colIcon.innerHTML = `<svg width="20" height="14" viewBox="0 0 20 14" style="display:block"><rect x="0" y="0" width="8" height="14" rx="1.5" fill="rgba(60,120,230,0.75)"/><rect x="10" y="0" width="8" height="14" rx="1.5" fill="rgba(60,120,230,0.22)"/></svg>`;
+  const rowIcon = document.createElement('span');
+  rowIcon.title = '行数（横に何分割）';
+  rowIcon.innerHTML = `<svg width="20" height="14" viewBox="0 0 20 14" style="display:block"><rect x="0" y="0" width="20" height="6" rx="1.5" fill="rgba(230,100,30,0.72)"/><rect x="0" y="8" width="20" height="6" rx="1.5" fill="rgba(230,100,30,0.22)"/></svg>`;
+
+  customRow.appendChild(colIcon);
+  customRow.appendChild(colInput);
+  customRow.appendChild(sep);
+  customRow.appendChild(rowIcon);
+  customRow.appendChild(rowInput);
+  customRow.appendChild(applyBtn);
+  popup.appendChild(customRow);
+
+  // ライブプレビュー
+  const previewDiv = document.createElement('div');
+  previewDiv.className = 'grid-size-custom-preview';
+  const updatePreview = () => {
+    const c = Math.max(1, Math.min(20, parseInt(colInput.value, 10) || 1));
+    const r = Math.max(1, Math.min(20, parseInt(rowInput.value, 10) || 1));
+    // 列が多いほど横長、行が多いほど縦長になるようアスペクト比を調整
+    const W = Math.max(160, Math.min(220, c * 36));
+    const H = Math.max(72,  Math.min(160, r * 36));
+    const gap = Math.max(2, Math.min(4, Math.floor(Math.min(W / c, H / r) * 0.1)));
+    const cw = (W - gap * (c - 1)) / c;
+    const rh = (H - gap * (r - 1)) / r;
+    // 列ごとに青の濃さを変えて縦方向を強調、行ごとにオレンジを変えて横方向を強調
+    let rects = '';
+    for (let ci = 0; ci < c; ci++) {
+      for (let ri = 0; ri < r; ri++) {
+        const x = (ci * (cw + gap)).toFixed(1);
+        const y = (ri * (rh + gap)).toFixed(1);
+        // 列の色合い: 青
+        const colAlpha = (0.55 - (ci / Math.max(c - 1, 1)) * 0.28).toFixed(2);
+        // 行の色合い: オレンジ
+        const rowAlpha = (0.38 - (ri / Math.max(r - 1, 1)) * 0.18).toFixed(2);
+        // 混合: 青ベースにオレンジをミックス
+        const fill = ci === 0 && ri === 0
+          ? `rgba(60,120,230,${colAlpha})`
+          : `rgba(${Math.round(60 + ri * 12)},${Math.round(120 - ri * 8)},${Math.round(230 - ci * 20)},${(0.32 - ci * 0.02 - ri * 0.015).toFixed(2)})`;
+        rects += `<rect x="${x}" y="${y}" width="${cw.toFixed(1)}" height="${rh.toFixed(1)}" rx="3" fill="${fill}" stroke="rgba(60,100,200,0.35)" stroke-width="0.8"/>`;
+      }
+    }
+    // ラベル (例: 5×1)
+    const label = `${c}×${r}`;
+    previewDiv.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:4px"><svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${rects}</svg><span style="font-size:10px;color:rgba(0,0,0,0.35);font-family:'SF Mono','Menlo',monospace;font-weight:600">${label}</span></div>`;
+  };
+  [colInput, rowInput].forEach(inp => inp.addEventListener('input', updatePreview));
+  updatePreview();
+  popup.appendChild(previewDiv);
+
   const rect = anchorEl.getBoundingClientRect();
+  // 右端がはみ出ないよう調整
   popup.style.top = (rect.bottom + 2) + 'px';
   popup.style.left = rect.left + 'px';
   document.body.appendChild(popup);
+  notifyOverlay(true); // popup 表示 → clickthrough OFF
+  setTimeout(() => { colInput.select(); }, 30);
+
   const closePopup = (ev) => {
     if (!popup.contains(ev.target) && ev.target !== anchorEl) {
       popup.remove();
+      notifyOverlay(false);
       document.removeEventListener('click', closePopup);
     }
   };
@@ -1236,17 +1874,25 @@ const FINDER_APPS = new Set(['Finder', 'ファインダー']);
 function isFinderApp(appName) {
   return !!appName && FINDER_APPS.has(appName);
 }
+const TERMINAL_APPS = new Set(['Terminal', 'iTerm2', 'iTerm', 'Alacritty', 'Hyper', 'WezTerm', 'Kitty', 'ターミナル', 'Warp']);
+function isTerminalApp(appName) {
+  return !!appName && TERMINAL_APPS.has(appName);
+}
 function isTiNApp(appName) {
   return appName === 'TiN';
 }
 function appBadgeHtml(appName) {
   if (isTiNApp(appName)) return '<span class="card-badge badge-tin">TiN</span>';
   if (isFinderApp(appName)) return '<span class="card-badge badge-finder">F</span>';
-  return '<span class="card-badge badge-term">T</span>';
+  if (isTerminalApp(appName)) return '<span class="card-badge badge-term">T</span>';
+  const label = (appName || '?').charAt(0).toUpperCase();
+  return `<span class="card-badge badge-app">${label}</span>`;
 }
 // GRID 内の snapped バッジ: workspace 固有色を使用
 function snappedBadgeHtml(appName) {
-  const label = isFinderApp(appName) ? 'F' : 'T';
+  const isF = isFinderApp(appName);
+  const isT = isTerminalApp(appName);
+  const label = isF ? 'F' : isT ? 'T' : (appName || '?').charAt(0).toUpperCase();
   if (wsColor) {
     return `<span class="card-badge" style="background:${wsColor.bg};color:${wsColor.fg}">${label}</span>`;
   }
@@ -1262,7 +1908,7 @@ function renderAvailRow(w, type) {
   // icon
   const icon = document.createElement('div');
   icon.className = 'row-icon';
-  icon.textContent = type === 'term' ? 'T' : type === 'finder' ? 'F' : '\u25C6';
+  icon.textContent = type === 'term' ? 'T' : type === 'finder' ? 'F' : type === 'apps' ? (w.app || '?').charAt(0).toUpperCase() : '\u25C6';
   row.appendChild(icon);
 
   // title / subtitle 分割
@@ -1364,11 +2010,12 @@ function filterAvailByQ(items, q) {
   );
 }
 
-function populateAvailList(container, terminal, finder, tin) {
+function populateAvailList(container, terminal, finder, apps, tin) {
   container.innerHTML = '';
   let items, type;
   if (activeAvailTab === 'term') { items = terminal; type = 'term'; }
   else if (activeAvailTab === 'finder') { items = finder; type = 'finder'; }
+  else if (activeAvailTab === 'apps') { items = apps; type = 'apps'; }
   else { items = tin; type = 'tin'; }
   const filtered = filterAvailByQ(items, availSearchText);
   if (filtered.length === 0) {
@@ -1387,8 +2034,9 @@ function updateAvailList() {
   const list = document.querySelector('[data-avail-list="1"]');
   if (!list) return;
   const available = externalWindows.filter(w => !snappedExternals.has(w.windowNumber));
-  const terminal = available.filter(w => !isFinderApp(w.app) && !isTiNApp(w.app));
+  const terminal = available.filter(w => isTerminalApp(w.app));
   const finder = available.filter(w => isFinderApp(w.app));
+  const apps = available.filter(w => !isTerminalApp(w.app) && !isFinderApp(w.app) && !isTiNApp(w.app));
   const tin = available.filter(w =>
     isTiNApp(w.app) && !/ Grid$/.test(w.title) && !/\[\d+\]$/.test(w.title)
   );
@@ -1401,7 +2049,7 @@ function updateAvailList() {
       _self: true,
     });
   }
-  populateAvailList(list, terminal, finder, tin);
+  populateAvailList(list, terminal, finder, apps, tin);
 }
 
 // 楽観的更新: main への invoke と並行で renderer の slot state を即座に反映
@@ -1450,6 +2098,45 @@ function swapSlotsLocally(src, dst) {
   if (dstExt) dstExt.slot = src;
 }
 
+// ── タブ右クリックコンテキストメニュー ──
+function showTabCtxMenu(x, y, { wn, isPty, slotKey }) {
+  const existing = document.getElementById('tab-ctx-menu');
+  if (existing) existing.remove();
+  const menu = document.createElement('div');
+  menu.id = 'tab-ctx-menu';
+
+  const mkItem = (icon, label, cls, fn) => {
+    const el = document.createElement('div');
+    el.className = 'ctx-item' + (cls ? ' ' + cls : '');
+    el.innerHTML = `<span>${icon}</span><span>${label}</span>`;
+    el.addEventListener('mousedown', (e) => { e.stopPropagation(); menu.remove(); fn(); });
+    menu.appendChild(el);
+  };
+
+  if (isPty) {
+    mkItem('⤢', '前面に表示', '', () => ipcRenderer.invoke('add-grid-terminal'));
+    menu.appendChild(Object.assign(document.createElement('div'), { className: 'ctx-sep' }));
+    mkItem('✕', 'ターミナルを閉じる', 'danger', () => ipcRenderer.invoke('remove-grid-terminal', { slot: Number(slotKey) }));
+  } else {
+    mkItem('⤢', '前面に表示', '', () => ipcRenderer.invoke('raise-snapped', { windowNumber: wn }));
+    menu.appendChild(Object.assign(document.createElement('div'), { className: 'ctx-sep' }));
+    mkItem('⎋', 'Unsnap', 'danger', () => ipcRenderer.invoke('unsnap-external', { windowNumber: wn }));
+  }
+
+  // 位置調整（ヘッダー内 + 画面端クリップ）
+  menu.style.left = '0'; menu.style.top = '0';
+  document.body.appendChild(menu);
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  menu.style.left = Math.min(x, window.innerWidth - mw - 8) + 'px';
+  menu.style.top = Math.max(68 + 4, Math.min(y, window.innerHeight - mh - 8)) + 'px';
+
+  notifyOverlay(true);
+  const close = (e) => {
+    if (!menu.contains(e.target)) { menu.remove(); notifyOverlay(false); document.removeEventListener('mousedown', close); }
+  };
+  setTimeout(() => document.addEventListener('mousedown', close), 0);
+}
+
 // ── Persistent DOM sections (created once, updated in-place) ──
 const _gridSection = document.createElement('div');
 _gridSection.className = 'section section-grid';
@@ -1483,8 +2170,8 @@ function render() {
   const sizeBtn = document.createElement('button');
   sizeBtn.className = 'grid-opt grid-size-cycle active';
   sizeBtn.textContent = curIdx >= 0 ? _sizeCyclePresets[curIdx][0] : `${gridCols}\u00d7${gridRows}`;
-  sizeBtn.title = '\u30af\u30ea\u30c3\u30af\u3067\u30ec\u30a4\u30a2\u30a6\u30c8\u9078\u629e | \u30b9\u30af\u30ed\u30fc\u30eb\u3067\u9806\u9001\u308a';
-  sizeBtn.addEventListener('click', (e) => { e.stopPropagation(); openGridSizePopup(sizeBtn); });
+  sizeBtn.title = 'Grid \u2014 \u30af\u30ea\u30c3\u30af\u3067\u30b5\u30a4\u30ba\u30fb\u30ec\u30a4\u30a2\u30a6\u30c8\u7de8\u96c6 | \u30b9\u30af\u30ed\u30fc\u30eb\u3067\u30b5\u30a4\u30ba\u9806\u9001\u308a';
+  sizeBtn.addEventListener('click', (e) => { e.stopPropagation(); openGridLayoutPopup(sizeBtn); });
   sizeBtn.addEventListener('wheel', (e) => {
     e.preventDefault();
     const base = curIdx < 0 ? 0 : curIdx;
@@ -1497,26 +2184,26 @@ function render() {
   const editBtn = document.createElement('button');
   editBtn.className = 'grid-opt';
   editBtn.textContent = '\u270f\ufe0f';
-  editBtn.title = 'Edit Grid Ratios';
+  editBtn.title = 'Ratio — グリッドの幅・高さ比率をドラッグで調整';
   editBtn.addEventListener('click', () => ipcRenderer.send('enter-grid-edit'));
   selector.appendChild(editBtn);
   // Retile ボタン (snapped ウィンドウを slot に揃え直す)
   const retileBtn = document.createElement('button');
   retileBtn.className = 'grid-opt';
   retileBtn.textContent = '\u21bb';
-  retileBtn.title = 'Retile — snap 済みウィンドウを現在のデスクトップに集合して grid に揃え直す';
+  retileBtn.title = 'Retile — スナップ済みウィンドウを現在のデスクトップに集合してグリッドに整列';
   retileBtn.addEventListener('click', () => ipcRenderer.invoke('retile-now'));
   selector.appendChild(retileBtn);
   const prevSpaceBtn = document.createElement('button');
   prevSpaceBtn.className = 'grid-opt';
   prevSpaceBtn.textContent = '\u25c4';
-  prevSpaceBtn.title = '前のデスクトップに移動 (TiN + snap 済みウィンドウをまとめて)';
+  prevSpaceBtn.title = 'Space ◄ — TiN + スナップ済みウィンドウをまとめて前のデスクトップへ';
   prevSpaceBtn.addEventListener('click', () => ipcRenderer.invoke('push-to-space', { direction: -1 }));
   selector.appendChild(prevSpaceBtn);
   const nextSpaceBtn = document.createElement('button');
   nextSpaceBtn.className = 'grid-opt';
   nextSpaceBtn.textContent = '\u25ba';
-  nextSpaceBtn.title = '次のデスクトップに移動 (TiN + snap 済みウィンドウをまとめて)';
+  nextSpaceBtn.title = 'Space ► — TiN + スナップ済みウィンドウをまとめて次のデスクトップへ';
   nextSpaceBtn.addEventListener('click', () => ipcRenderer.invoke('push-to-space', { direction: +1 }));
   selector.appendChild(nextSpaceBtn);
 
@@ -1524,7 +2211,7 @@ function render() {
   const spacePickerBtn = document.createElement('button');
   spacePickerBtn.className = 'grid-opt';
   spacePickerBtn.textContent = '↗';
-  spacePickerBtn.title = 'デスクトップを選んで移動…';
+  spacePickerBtn.title = 'Space ↗ — デスクトップを選んでまとめて移動';
   let _spacePickerPopup = null;
   function closeSpacePicker() {
     if (_spacePickerPopup) { _spacePickerPopup.remove(); _spacePickerPopup = null; }
@@ -1581,7 +2268,7 @@ function render() {
       const status = await ipcRenderer.invoke('get-yabai-sa-status');
       if (status.saActive) {
         saBtn.textContent = '✓';
-        saBtn.title = 'yabai SA 有効 — Space 移動が使用可能';
+        saBtn.title = 'yabai 起動中 — Space 移動は SA ロード状況に依存します（sudo yabai --load-sa）';
         saBtn.style.color = '#2a9d2a';
         saBtn.style.opacity = '0.7';
       } else {
@@ -1601,7 +2288,75 @@ function render() {
     } catch {}
   })();
 
+  // ── Groupy タブバー (row2) ──
   if (_titlebarGrid) {
+    // PTY ターミナルタブ
+    for (const [slot, data] of Object.entries(gridSlots)) {
+      const tab = document.createElement('div');
+      const isActive = frontmostWindowNumber === 0 && Number(slot) === 0;
+      tab.className = 'groupy-tab' + (isActive ? ' active' : '');
+      tab.innerHTML = `<span class="tab-icon term">T</span>`
+        + `<span class="tab-title">${data.title || `Terminal ${Number(slot)+1}`}</span>`
+        + `<span class="tab-close" data-slot="${slot}">×</span>`;
+      tab.querySelector('.tab-close').addEventListener('click', e => {
+        e.stopPropagation();
+        ipcRenderer.invoke('remove-grid-terminal', { slot: Number(slot) });
+      });
+      tab.addEventListener('contextmenu', e => {
+        e.preventDefault(); e.stopPropagation();
+        showTabCtxMenu(e.clientX, e.clientY, { isPty: true, slotKey: slot });
+      });
+      _titlebarGrid.appendChild(tab);
+    }
+    // 外部スナップ済みタブ
+    for (const [wn, info] of snappedExternals) {
+      const isActive = wn === frontmostWindowNumber;
+      const tab = document.createElement('div');
+      tab.className = 'groupy-tab' + (isActive ? ' active' : '');
+      const isFinder = isFinderApp(info.app||'');
+      const isTerm = isTerminalApp(info.app||'');
+      const iconClass = isFinder ? 'finder' : isTerm ? 'term' : 'app';
+      const iconLabel = isFinder ? 'F' : isTerm ? 'T' : (info.app||'A').charAt(0).toUpperCase();
+      const shortTitle = (info.title || info.app || 'Window').slice(0, 22);
+      tab.innerHTML = `<span class="tab-icon ${iconClass}">${iconLabel}</span>`
+        + `<span class="tab-title" title="${info.title||''}">${shortTitle}</span>`
+        + `<span class="tab-close" data-wn="${wn}">×</span>`;
+      tab.addEventListener('click', e => {
+        if (e.target.closest('.tab-close')) return;
+        frontmostWindowNumber = wn;
+        // Tab モードならこのスロットをアクティブに
+        if (currentViewMode === 'tab') {
+          activateTab(info.slot ?? 0);
+        } else {
+          render();
+          ipcRenderer.invoke('raise-snapped', { windowNumber: wn });
+        }
+      });
+      tab.querySelector('.tab-close').addEventListener('click', e => {
+        e.stopPropagation();
+        ipcRenderer.invoke('unsnap-external', { windowNumber: wn });
+      });
+      tab.addEventListener('contextmenu', e => {
+        e.preventDefault(); e.stopPropagation();
+        showTabCtxMenu(e.clientX, e.clientY, { wn, isPty: false });
+      });
+      _titlebarGrid.appendChild(tab);
+    }
+    // ☰ ドロワートグル (タブ隣)
+    const drawerTabBtn = document.createElement('div');
+    drawerTabBtn.className = 'groupy-tab-add';
+    drawerTabBtn.title = 'パネルを開く / 閉じる';
+    drawerTabBtn.textContent = '☰';
+    drawerTabBtn.addEventListener('click', () => toggleDrawer());
+    _titlebarGrid.appendChild(drawerTabBtn);
+    // + ボタン (新しい PTY ターミナル)
+    const addTabBtn = document.createElement('div');
+    addTabBtn.className = 'groupy-tab-add';
+    addTabBtn.title = '新しいターミナルを追加';
+    addTabBtn.textContent = '+';
+    addTabBtn.addEventListener('click', () => ipcRenderer.invoke('add-grid-terminal'));
+    _titlebarGrid.appendChild(addTabBtn);
+    // コントロールは row1 の右側ボタン群に移動済み (コンパクト)
     _titlebarGrid.appendChild(selector);
   } else {
     gridTitle.appendChild(selector);
@@ -1618,17 +2373,29 @@ function render() {
     if (typeof info.slot === 'number') slotEntries.set(info.slot, { slot: info.slot, type: 'ext', wn, info });
   }
 
-  // GRID dots strip — slot 状態を 1 行で可視化 (drag target)
+  // GRID dots strip — 現在の grid 形状（slotLayout 対応）で可視化
   {
     const totalSlots = gridCols * gridRows;
     const strip = document.createElement('div');
     strip.className = 'grid-dots-strip';
     const dotsRow = document.createElement('div');
     dotsRow.className = 'grid-dots-row';
-    for (let i = 0; i < totalSlots; i++) {
+    const dotRowH = document.body.classList.contains('compact') ? 14 : 22;
+    dotsRow.style.gridTemplateColumns = `repeat(${gridCols}, 1fr)`;
+    dotsRow.style.gridTemplateRows    = `repeat(${gridRows}, ${dotRowH}px)`;
+
+    const dotCells = gpSlotLayout
+      ? [...gpSlotLayout].sort((a,b) => a.row!==b.row ? a.row-b.row : a.col-b.col)
+      : Array.from({length: totalSlots}, (_,i) => ({ id:i, col:i%gridCols, row:Math.floor(i/gridCols), colSpan:1, rowSpan:1 }));
+
+    for (const cell of dotCells) {
+      const i = cell.id;
       const dot = document.createElement('div');
       dot.className = 'grid-dot';
       dot.dataset.slot = i;
+      dot.style.gridColumn = `${cell.col+1} / span ${cell.colSpan}`;
+      dot.style.gridRow    = `${cell.row+1} / span ${cell.rowSpan}`;
+
       const entry = slotEntries.get(i);
       if (entry && entry.type === 'pty') {
         dot.classList.add('filled-pty');
@@ -1641,7 +2408,6 @@ function render() {
         const app = (live && live.app) || entry.info.app || '';
         if (isFinderApp(app)) dot.classList.add('filled-ext-finder');
         if (entry.wn === frontmostWindowNumber && frontmostWindowNumber > 0) dot.classList.add('focused');
-        // ラベル: window title の頭文字 (英/日 1 文字目、大文字化)
         const rawTitle = (live && live.title) || entry.info.title || '';
         const firstChar = rawTitle.trim().charAt(0).toUpperCase() || (isFinderApp(app) ? 'F' : 'T');
         dot.textContent = firstChar;
@@ -1651,7 +2417,6 @@ function render() {
         dot.textContent = '\u25a1';
         dot.title = `Slot ${i + 1}: Empty — drop here to move`;
       }
-      // drag&drop (slot 入れ替え)
       dot.addEventListener('dragstart', (e) => {
         if (!dot.draggable) return;
         e.dataTransfer.effectAllowed = 'move';
@@ -1659,19 +2424,13 @@ function render() {
         dot.classList.add('dragging');
       });
       dot.addEventListener('dragend', () => dot.classList.remove('dragging'));
-      dot.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-        dot.classList.add('drag-over');
-      });
+      dot.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; dot.classList.add('drag-over'); });
       dot.addEventListener('dragleave', () => dot.classList.remove('drag-over'));
       dot.addEventListener('drop', (e) => {
-        e.preventDefault();
-        dot.classList.remove('drag-over');
+        e.preventDefault(); dot.classList.remove('drag-over');
         const src = Number(e.dataTransfer.getData('text/plain'));
         if (!Number.isFinite(src) || src === i) return;
-        swapSlotsLocally(src, i);
-        render();
+        swapSlotsLocally(src, i); render();
         ipcRenderer.invoke('swap-grid-slots', { src, dst: i });
       });
       dotsRow.appendChild(dot);
@@ -1684,20 +2443,57 @@ function render() {
     _gridSection.appendChild(strip);
   }
 
-  // slot cards — slot 順でソート + slot 番号バッジ + drag&drop
-  const sortedEntries = [...slotEntries.values()].sort((a, b) => a.slot - b.slot);
-  for (const entry of sortedEntries) {
+  // slot cards — 縦リスト（配置はdots-stripが担当）
+  const slotCells = gpSlotLayout
+    ? [...gpSlotLayout].sort((a,b) => a.row!==b.row ? a.row-b.row : a.col-b.col)
+    : Array.from({length: gridCols*gridRows}, (_,k) => ({
+        id: k, col: k%gridCols, row: Math.floor(k/gridCols), colSpan: 1, rowSpan: 1
+      }));
+
+  for (const cell of slotCells) {
+    const { id: slotId, colSpan, rowSpan } = cell;
+    const entry = slotEntries.get(slotId);
+    const isSpanned = colSpan > 1 || rowSpan > 1;
     const card = document.createElement('div');
     card.className = 'ext-item slot-card';
+    card.dataset.slot = slotId;
+
+    const slotBadge = document.createElement('span');
+    slotBadge.className = 'slot-badge';
+    slotBadge.textContent = String(slotId + 1);
+    card.appendChild(slotBadge);
+
+    if (isSpanned) {
+      const sb = document.createElement('span');
+      sb.className = 'slot-span-badge';
+      sb.textContent = colSpan > 1 && rowSpan > 1
+        ? `${colSpan}×${rowSpan}` : colSpan > 1 ? `横×${colSpan}` : `縦×${rowSpan}`;
+      card.appendChild(sb);
+    }
+
+    if (!entry) {
+      card.classList.add('empty-slot');
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'ext-title';
+      titleSpan.textContent = '空き';
+      card.appendChild(titleSpan);
+      const snapBtn = document.createElement('button');
+      snapBtn.className = 'ext-btn snap snap-here-btn';
+      snapBtn.textContent = 'Snap';
+      snapBtn.title = 'フロントモストウィンドウをここにスナップ';
+      snapBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const frontWin = externalWindows.find(w => w.windowNumber === frontmostWindowNumber);
+        if (frontWin && !snappedExternals.has(frontWin.windowNumber)) snapExternal(frontWin, slotId);
+      });
+      card.appendChild(snapBtn);
+      _gridSection.appendChild(card);
+      continue;
+    }
+
     if (entry.type === 'ext' && entry.wn === frontmostWindowNumber && frontmostWindowNumber > 0) {
       card.classList.add('focused');
     }
-    card.draggable = true;
-    card.dataset.slot = entry.slot;
-    const slotBadge = document.createElement('span');
-    slotBadge.className = 'slot-badge';
-    slotBadge.textContent = String(entry.slot + 1);
-    card.appendChild(slotBadge);
     if (entry.type === 'pty') {
       const gridBadge = document.createElement('span');
       gridBadge.className = 'card-badge badge-grid';
@@ -1705,12 +2501,12 @@ function render() {
       card.appendChild(gridBadge);
       const titleSpan = document.createElement('span');
       titleSpan.className = 'ext-title';
-      titleSpan.textContent = `Terminal #${entry.slot + 1}`;
+      titleSpan.textContent = `Terminal #${slotId + 1}`;
       card.appendChild(titleSpan);
       const closeBtn = document.createElement('span');
       closeBtn.className = 'card-close';
-      closeBtn.textContent = '\u00d7';
-      closeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeGridTerminal(entry.slot); });
+      closeBtn.textContent = '×';
+      closeBtn.addEventListener('click', (e) => { e.stopPropagation(); removeGridTerminal(slotId); });
       card.appendChild(closeBtn);
     } else {
       const { wn, info } = entry;
@@ -1724,11 +2520,10 @@ function render() {
       titleSpan.textContent = t;
       card.appendChild(titleSpan);
       card.style.cursor = 'grab';
-      card.title = 'Click: locate & raise window | Drag: swap slot';
+      card.title = 'Click: locate & raise | Drag: swap slot';
       card.addEventListener('click', (e) => {
         if (card._draggingNow) return;
         if (e.target.classList.contains('ext-btn') || e.target.classList.contains('slot-badge')) return;
-        // 楽観的: raise 前にハイライトを即移動 (poll 待ちで ~1s 遅延を解消)
         frontmostWindowNumber = wn;
         render();
         const liveNow = externalWindows.find(w => w.windowNumber === wn);
@@ -1745,66 +2540,50 @@ function render() {
       btn.addEventListener('click', (e) => { e.stopPropagation(); unsnapExternal(wn); });
       card.appendChild(btn);
     }
-    // drag&drop for card — Pointer Events 版 (HTML5 DnD は Electron で drop が届かない症状あり)
-    card.draggable = false;
+
+    // drag-to-swap
     card.addEventListener('mousedown', (e) => {
-      // Release/close ボタン等の上なら通常動作
       if (e.button !== 0) return;
       if (e.target.closest('.ext-btn, .card-close, .slot-badge')) return;
-      const srcSlot = entry.slot;
+      const srcSlot = slotId;
       const startX = e.clientX, startY = e.clientY;
-      let dragging = false;
-      let dstCard = null;
-      let dstBefore = true;
-      const clearIndicators = () => {
-        document.querySelectorAll('.slot-card').forEach(c => c.classList.remove('drag-over-top', 'drag-over-bottom'));
-      };
+      let dragging = false, dstCard = null;
+      const clearOver = () => document.querySelectorAll('.slot-card.drag-over').forEach(c => c.classList.remove('drag-over'));
       const onMove = (ev) => {
         if (!dragging) {
           if (Math.abs(ev.clientX - startX) < 4 && Math.abs(ev.clientY - startY) < 4) return;
-          dragging = true;
-          card.classList.add('dragging');
-          card._draggingNow = true; // click 抑制用
+          dragging = true; card.classList.add('dragging'); card._draggingNow = true;
         }
-        const el = document.elementFromPoint(ev.clientX, ev.clientY);
-        const tc = el && el.closest ? el.closest('.slot-card') : null;
-        clearIndicators();
-        if (tc && tc !== card) {
-          const rect = tc.getBoundingClientRect();
-          dstBefore = ev.clientY < rect.top + rect.height / 2;
-          tc.classList.add(dstBefore ? 'drag-over-top' : 'drag-over-bottom');
-          dstCard = tc;
-        } else {
-          dstCard = null;
-        }
+        const tc = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.slot-card');
+        clearOver();
+        if (tc && tc !== card) { tc.classList.add('drag-over'); dstCard = tc; }
+        else dstCard = null;
       };
       const onUp = () => {
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
-        clearIndicators();
-        card.classList.remove('dragging');
+        clearOver(); card.classList.remove('dragging');
         if (dragging && dstCard) {
           const dstSlot = Number(dstCard.dataset.slot);
           if (Number.isFinite(dstSlot) && dstSlot !== srcSlot) {
-            // 楽観的更新 — UI を先に反映 (poll 待ちなしで見た目が即動く)
-            reorderSlotsLocally(srcSlot, dstSlot, dstBefore);
-            render();
-            ipcRenderer.invoke('reorder-grid-slot', { src: srcSlot, dst: dstSlot, before: dstBefore });
+            swapSlotsLocally(srcSlot, dstSlot); render();
+            ipcRenderer.invoke('swap-grid-slots', { src: srcSlot, dst: dstSlot });
           }
         }
-        // click 抑制をリセット (1 tick 後、click event 後)
         setTimeout(() => { card._draggingNow = false; }, 0);
       };
       window.addEventListener('mousemove', onMove);
       window.addEventListener('mouseup', onUp);
     });
+
     _gridSection.appendChild(card);
   }
 
   if (gridCount < gridCols * gridRows) {
     const addGrid = document.createElement('div');
     addGrid.className = 'add-btn grid-add';
-    addGrid.textContent = '+ Grid terminal';
+    addGrid.textContent = '+ Term';
+    addGrid.title = '+Term — グリッドターミナルを新規追加';
     addGrid.addEventListener('click', addGridTerminal);
     _gridSection.appendChild(addGrid);
   }
@@ -1823,8 +2602,9 @@ function render() {
   const available = externalWindows.filter(w => !snappedExternals.has(w.windowNumber));
   _availSection.innerHTML = '';
   if (available.length > 0) {
-    const availableTerminal = available.filter(w => !isFinderApp(w.app) && !isTiNApp(w.app));
+    const availableTerminal = available.filter(w => isTerminalApp(w.app));
     const availableFinder = available.filter(w => isFinderApp(w.app));
+    const availableApps = available.filter(w => !isTerminalApp(w.app) && !isFinderApp(w.app) && !isTiNApp(w.app));
     // TiN Grid overlay と slot terminal は除外、sidebar のみ
     const availableTiN = available.filter(w =>
       isTiNApp(w.app) && !/ Grid$/.test(w.title) && !/\[\d+\]$/.test(w.title)
@@ -1873,6 +2653,7 @@ function render() {
     };
     tabsBar.appendChild(makeTab('term', 'Terminal', availableTerminal.length, 'terminal'));
     tabsBar.appendChild(makeTab('finder', 'Finder', availableFinder.length, 'finder'));
+    tabsBar.appendChild(makeTab('apps', 'Apps', availableApps.length, null));
     tabsBar.appendChild(makeTab('tin', 'TiN', availableTiN.length, null));
     _availSection.appendChild(tabsBar);
 
@@ -1899,7 +2680,9 @@ function render() {
       ? 'Filter terminals...'
       : activeAvailTab === 'finder'
         ? 'Filter finder windows...'
-        : 'Filter workspaces...';
+        : activeAvailTab === 'apps'
+          ? 'Filter apps...'
+          : 'Filter workspaces...';
     if (_availSearchInput.value !== availSearchText) _availSearchInput.value = availSearchText;
     searchWrap.appendChild(_availSearchInput);
     _availSection.appendChild(searchWrap);
@@ -1909,7 +2692,7 @@ function render() {
     list.className = 'avail-list';
     list.setAttribute('data-avail-list', '1');
     _availSection.appendChild(list);
-    populateAvailList(list, availableTerminal, availableFinder, availableTiN);
+    populateAvailList(list, availableTerminal, availableFinder, availableApps, availableTiN);
   }
 
   // ━━ SIDEBAR TERMINALS section (xterm containers are preserved across renders) ━━
@@ -1960,10 +2743,10 @@ function render() {
     _sideSection.appendChild(addBtn);
   }
 
-  // Attach persistent sections (console は content 外の固定領域)
+  // Attach persistent sections — ドロワーコンテンツに配置
   if (!_sectionsAttached) {
-    content.appendChild(_gridSection);
-    content.appendChild(_availSection);
+    drawerContent.appendChild(_gridSection);
+    drawerContent.appendChild(_availSection);
     document.getElementById('console-fixed').appendChild(_sideSection);
     _sectionsAttached = true;
   }
@@ -1972,6 +2755,14 @@ function render() {
   _availSection.style.display = available.length > 0 ? '' : 'none';
 
   statusEl.textContent = `${Object.keys(gridSlots).length} grid \u00b7 ${snappedExternals.size} ext \u00b7 ${embeddedTerms.length} console`;
+
+  // \u30b0\u30ea\u30c3\u30c9\u30aa\u30fc\u30d0\u30fc\u30ec\u30a4: \u8907\u6570\u30a2\u30d7\u30ea & \u30b0\u30ea\u30c3\u30c9\u30e2\u30fc\u30c9\u306e\u3068\u304d\u3060\u3051\u8868\u793a
+  const totalItems = snappedExternals.size + Object.keys(gridSlots).length;
+  const showOverlay = currentViewMode === 'grid' && totalItems >= 2;
+  document.body.classList.toggle('show-grid-overlay', showOverlay);
+  // 空きスロット常時薄表示: グリッドモードで空きがある時
+  const hasEmpty = totalItems < gridCols * gridRows;
+  document.body.classList.toggle('show-empty-slots', currentViewMode === 'grid' && hasEmpty);
 }
 
 // ── IPC ──
@@ -1989,48 +2780,89 @@ ipcRenderer.on('close-current', () => {
 });
 // render を debounce して DOM 再構築頻度を制限 (100ms)
 let _renderTimer = null;
-function scheduleRender() {
-  if (_renderTimer) return;
-  _renderTimer = setTimeout(() => { _renderTimer = null; render(); }, 100);
+let _lastRenderKey = '';
+
+function buildRenderKey() {
+  // snapped + grid の変化だけをキーにする (タイトルはドロワー表示分のみ)
+  let k = '';
+  for (const [wn, info] of snappedExternals) k += `${wn}:${info.slot},`;
+  k += '|';
+  for (const slot of Object.keys(gridSlots)) k += `${slot},`;
+  k += '|' + frontmostWindowNumber;
+  k += '|' + externalWindows.length; // ウィンドウ増減は検知
+  return k;
 }
 
-// Frontmost 更新 (main の軽量 poll から 500ms 以内に届く) — ext snap card のハイライト即反映
+function scheduleRender() {
+  if (_renderTimer) return;
+  _renderTimer = setTimeout(() => {
+    _renderTimer = null;
+    const key = buildRenderKey();
+    if (key === _lastRenderKey) return; // 変化なしはスキップ
+    _lastRenderKey = key;
+    render();
+  }, 100);
+}
+
+// タイトル変化など細かい変化は Available リストのみ再描画 (全 render より軽量)
+function scheduleAvailUpdate() {
+  if (_renderTimer) return; // render が pending なら重複不要
+  setTimeout(() => updateAvailList(), 150);
+}
+
+// Frontmost 更新 — ext snap card のハイライト即反映
 ipcRenderer.on('frontmost-update', (_e, wn) => {
   if (wn === frontmostWindowNumber) return;
   frontmostWindowNumber = wn || 0;
+  _lastRenderKey = ''; // frontmost 変化は必ず再描画
   render();
 });
 
-ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snappedSlots, frontmostWn) => {
+ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snappedSlots, frontmostWn, snappedList) => {
+  const prevLen = externalWindows.length;
   snappedByOther = otherSnapped || {};
   gridSlots = gridInfo || {};
   externalWindows = windows;
   frontmostWindowNumber = frontmostWn || 0;
-  // グリッドパネルの占有スロットを更新
-  gpOccupiedSlots = new Set([
-    ...Object.keys(gridSlots).map(Number),
-    ...Object.values(snappedSlots || {}).map(Number),
-  ]);
-  gpRender(gridCols, gridRows);
-  // slot 情報を snappedExternals に反映 (dots/cards 可視化用)
-  if (snappedSlots) {
-    for (const [wn, slot] of Object.entries(snappedSlots)) {
-      const info = snappedExternals.get(Number(wn));
-      if (info) info.slot = slot;
+
+  // snappedList が届いた場合は authoritative sync (main.js の状態を正とする)
+  let snappedChanged = false;
+  if (snappedList) {
+    const authoritative = new Map(snappedList.map(e => [e.windowNumber, e]));
+    for (const [k] of snappedExternals) {
+      if (!authoritative.has(k)) { snappedExternals.delete(k); snappedChanged = true; }
+    }
+    for (const [k, entry] of authoritative) {
+      const existing = snappedExternals.get(k);
+      if (existing) {
+        const live = windows.find(w => w.windowNumber === k);
+        if (live && live.title) existing.title = live.title;
+        if (live && live.app) existing.app = live.app;
+        if (existing.slot !== entry.slot) { existing.slot = entry.slot; snappedChanged = true; }
+      } else {
+        snappedExternals.set(k, { title: entry.title, app: entry.app, slot: entry.slot });
+        snappedChanged = true;
+      }
+    }
+  } else {
+    for (const [k, info] of snappedExternals) {
+      const live = windows.find(w => w.windowNumber === k);
+      if (live) {
+        if (live.title) info.title = live.title;
+        if (live.app) info.app = live.app;
+      }
     }
   }
-  // live window のタイトル/app で snappedExternals を同期更新
-  // (復元時やパッケージ版で初期タイトルが空の場合にここで補完される)
-  for (const [k, info] of snappedExternals) {
-    const live = windows.find(w => w.windowNumber === k);
-    if (live) {
-      if (live.title) info.title = live.title;
-      if (live.app) info.app = live.app;
-    } else {
-      snappedExternals.delete(k);
-    }
+
+  if (snappedChanged || windows.length !== prevLen) {
+    // スナップ増減・ウィンドウ数変化: グリッドと Available を両方更新
+    gpRender(gridCols, gridRows);
+    _lastRenderKey = ''; // 強制再描画
+    scheduleRender();
+  } else {
+    // タイトルのみの変化: Available リストだけ軽量更新
+    scheduleAvailUpdate();
   }
-  scheduleRender();
 });
 
 // ── Raise on sidebar click (軽量: mousedown ではなく mouseup + debounce で発火) ──
@@ -2062,21 +2894,32 @@ let gpEditMode = false; // グリッドJSブロックとこのブロックで共
     ipcRenderer.send('set-win-clickthrough', on);
   }
 
+  // getBoundingClientRect をキャッシュ — 毎 mousemove での reflow を回避
+  let _cachedGridRect = gridPanel.getBoundingClientRect();
+  new ResizeObserver(() => { _cachedGridRect = gridPanel.getBoundingClientRect(); }).observe(gridPanel);
+
+  // mousemove: rAF throttle 廃止 — overlay フラグで軽量判定、遅延ゼロ
   window.addEventListener('mousemove', (e) => {
-    if (gpEditMode) { setClickthrough(false); return; }
-    const gridRect = gridPanel.getBoundingClientRect();
-    const sidebarEl = document.getElementById('sidebar');
-    const sidebarRect = sidebarEl ? sidebarEl.getBoundingClientRect() : null;
+    if (gpEditMode || _hasOverlayActive) { setClickthrough(false); return; }
+    const gridRect = _cachedGridRect;
     const onGrid = e.clientX >= gridRect.left && e.clientX <= gridRect.right
                 && e.clientY >= gridRect.top  && e.clientY <= gridRect.bottom;
-    const onSidebar = sidebarRect
-                   && e.clientX >= sidebarRect.left && e.clientX <= sidebarRect.right
-                   && e.clientY >= sidebarRect.top  && e.clientY <= sidebarRect.bottom;
-    setClickthrough(onGrid && !onSidebar);
+    setClickthrough(onGrid);
   });
 
   window.addEventListener('mouseleave', () => setClickthrough(false));
+  // blur で OFF にしない: click-through ON でターミナルをクリックすると blur が発火し、
+  // 次クリックを TiN が横取りする原因になる。ヘッダー保護は main の _ctGuardTimer が担当。
 }
+
+// overlay/editMode 通知ヘルパー (main の ctGuard 補助用)
+// _hasOverlayActive: mousemove で elementsFromPoint を使わずに判定するためのフラグ
+let _hasOverlayActive = false;
+function notifyOverlay(active) {
+  _hasOverlayActive = active;
+  ipcRenderer.send('set-overlay-active', active);
+}
+function notifyEditMode(active) { ipcRenderer.send('set-edit-mode', active); }
 
 // ── Collapse ──
 let isCollapsed = false;
@@ -2088,6 +2931,13 @@ function toggleCollapse() {
 }
 collapseBtn.addEventListener('click', toggleCollapse);
 ipcRenderer.on('toggle-compact', toggleCollapse);
+
+ipcRenderer.on('update-grid-panel', (_e, { cols, rows, slotLayout }) => {
+  if (cols) gridCols = cols;
+  if (rows) gridRows = rows;
+  gpSlotLayout = slotLayout ?? null;
+  render();
+});
 
 // ── Window active/inactive state ──
 window.addEventListener('focus', () => document.body.classList.remove('window-inactive'));
@@ -2121,152 +2971,340 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
   });
 }
 
-// ── Grid panel (right side) ──
-{
-  let gpCols = 2, gpRows = 2;
-  let gpColRatios = null, gpRowRatios = null;
-  // gpEditMode はグローバルスコープで宣言済み
+// ── Grid Layout Editor ──
+let gpSlotLayout = null;
 
-  function gpGetCumulative(ratios, n) {
-    const cum = [0];
-    if (!ratios || ratios.length !== n) {
-      for (let i = 1; i <= n; i++) cum.push(i / n);
-    } else {
-      let s = 0;
-      for (let i = 0; i < n; i++) { s += ratios[i]; cum.push(s); }
-    }
-    return cum;
+// slotLayout から editor 用の cellMap を構築
+function glpBuildCellMap(cols, rows, slotLayout) {
+  // cellMap[id] = { id, col, row, colSpan, rowSpan }
+  const map = new Map();
+  if (slotLayout) {
+    for (const cell of slotLayout) map.set(cell.id, cell);
+  } else {
+    for (let r = 0; r < rows; r++)
+      for (let c = 0; c < cols; c++) {
+        const id = r * cols + c;
+        map.set(id, { id, col: c, row: r, colSpan: 1, rowSpan: 1 });
+      }
   }
-
-  function gpRender(cols, rows) {
-    gpCols = cols; gpRows = rows;
-    const container = document.getElementById('gp-grid');
-    if (!container) return;
-    const cumC = gpGetCumulative(gpColRatios, cols);
-    const cumR = gpGetCumulative(gpRowRatios, rows);
-    const colSizes = [];
-    for (let i = 0; i < cols; i++) colSizes.push(`${(cumC[i+1] - cumC[i]) * 100}%`);
-    const rowSizes = [];
-    for (let i = 0; i < rows; i++) rowSizes.push(`${(cumR[i+1] - cumR[i]) * 100}%`);
-    container.style.gridTemplateColumns = colSizes.join(' ');
-    container.style.gridTemplateRows = rowSizes.join(' ');
-    container.style.gap = '8px';
-    container.innerHTML = '';
-    const total = cols * rows;
-    for (let i = 0; i < total; i++) {
-      const cell = document.createElement('div');
-      cell.className = 'gp-cell';
-      container.appendChild(cell);
-    }
-    document.querySelectorAll('.gp-divider').forEach(el => el.remove());
-    if (gpEditMode) gpRenderEditLines();
-  }
-
-  // C案: 内側の分割線のみ — コンテナ内に追加してセル境界と完全一致
-  function gpRenderDividers(cols, rows, cumC, cumR) {
-    const container = document.getElementById('gp-grid');
-    document.querySelectorAll('.gp-divider').forEach(el => el.remove());
-    for (let i = 1; i < cols; i++) {
-      const line = document.createElement('div');
-      line.className = 'gp-divider';
-      line.style.cssText = `top:0;bottom:0;left:${cumC[i]*100}%;width:2px;transform:translateX(-1px);`;
-      container.appendChild(line);
-    }
-    for (let i = 1; i < rows; i++) {
-      const line = document.createElement('div');
-      line.className = 'gp-divider';
-      line.style.cssText = `left:0;right:0;top:${cumR[i]*100}%;height:2px;transform:translateY(-1px);`;
-      container.appendChild(line);
-    }
-  }
-
-  // main の poll から snapped/grid 情報を受け取って occupied slots を更新
-  let gpOccupiedSlots = new Set();
-
-  function gpRenderEditLines() {
-    document.querySelectorAll('.gp-col-line, .gp-row-line').forEach(el => el.remove());
-    if (!gpEditMode) return;
-    const panel = document.getElementById('grid-panel');
-    if (!panel) return;
-    const cumC = gpGetCumulative(gpColRatios, gpCols);
-    const cumR = gpGetCumulative(gpRowRatios, gpRows);
-    for (let i = 1; i < gpCols; i++) {
-      const line = document.createElement('div');
-      line.className = 'gp-col-line';
-      line.style.left = `${cumC[i] * 100}%`;
-      line.addEventListener('mousedown', (e) => gpStartLineDrag(e, 'col', i));
-      panel.appendChild(line);
-    }
-    for (let i = 1; i < gpRows; i++) {
-      const line = document.createElement('div');
-      line.className = 'gp-row-line';
-      line.style.top = `${cumR[i] * 100}%`;
-      line.addEventListener('mousedown', (e) => gpStartLineDrag(e, 'row', i));
-      panel.appendChild(line);
-    }
-  }
-
-  function gpStartLineDrag(e, type, index) {
-    e.preventDefault(); e.stopPropagation();
-    const target = e.currentTarget;
-    target.classList.add('dragging');
-    const panel = document.getElementById('grid-panel');
-    const rect = panel.getBoundingClientRect();
-    const totalSize = type === 'col' ? rect.width : rect.height;
-    const onMove = (ev) => {
-      const pos = type === 'col' ? (ev.clientX - rect.left) : (ev.clientY - rect.top);
-      const ratio = Math.max(0.05, Math.min(0.95, pos / totalSize));
-      const cum = type === 'col' ? gpGetCumulative(gpColRatios, gpCols) : gpGetCumulative(gpRowRatios, gpRows);
-      const minR = cum[index - 1] + 0.05;
-      const maxR = cum[index + 1] - 0.05;
-      const clamped = Math.max(minR, Math.min(maxR, ratio));
-      if (!gpColRatios) gpColRatios = Array(gpCols).fill(1/gpCols);
-      if (!gpRowRatios) gpRowRatios = Array(gpRows).fill(1/gpRows);
-      const arr = type === 'col' ? gpColRatios : gpRowRatios;
-      const prev = cum[index - 1]; const next = cum[index + 1];
-      arr[index - 1] = clamped - prev;
-      arr[index] = next - clamped;
-      gpRender(gpCols, gpRows);
-      ipcRenderer.send('update-grid-ratios', { colRatios: gpColRatios, rowRatios: gpRowRatios });
-    };
-    const onUp = () => {
-      target.classList.remove('dragging');
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      ipcRenderer.send('commit-grid-ratios', { colRatios: gpColRatios, rowRatios: gpRowRatios });
-    };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  }
-
-  window.gpResetRatios = function() {
-    gpColRatios = null; gpRowRatios = null;
-    gpRender(gpCols, gpRows);
-    ipcRenderer.send('commit-grid-ratios', { colRatios: null, rowRatios: null });
-  };
-  window.gpExitEditMode = function() {
-    gpEditMode = false;
-    document.body.classList.remove('gp-edit');
-    document.querySelectorAll('.gp-col-line, .gp-row-line').forEach(el => el.remove());
-  };
-
-  ipcRenderer.on('update-grid-panel', (_e, { cols, rows, colRatios: cr, rowRatios: rr }) => {
-    gpColRatios = cr || null;
-    gpRowRatios = rr || null;
-    gpRender(cols, rows);
-  });
-
-  ipcRenderer.on('enter-grid-edit-mode', () => {
-    gpEditMode = true;
-    document.body.classList.add('gp-edit');
-    gpRenderEditLines();
-  });
-
-  gpRender(2, 2);
+  return map;
 }
 
-// Start with one sidebar terminal
-addEmbedded('main');
+// セルIDのグリッド占有情報を返す（どのセルIDがどのグリッド座標を占有するか）
+function glpBuildOccupancyGrid(cols, rows, cellMap) {
+  // occupancy[r][c] = cellId
+  const occ = Array.from({length: rows}, () => Array(cols).fill(-1));
+  for (const [id, cell] of cellMap) {
+    for (let dr = 0; dr < cell.rowSpan; dr++)
+      for (let dc = 0; dc < cell.colSpan; dc++)
+        occ[cell.row + dr][cell.col + dc] = id;
+  }
+  return occ;
+}
+
+// 選択範囲（矩形）内のすべてのセルIDを取得
+function glpGetCellsInRange(occ, r1, c1, r2, c2) {
+  const minR = Math.min(r1, r2), maxR = Math.max(r1, r2);
+  const minC = Math.min(c1, c2), maxC = Math.max(c1, c2);
+  const ids = new Set();
+  for (let r = minR; r <= maxR; r++)
+    for (let c = minC; c <= maxC; c++)
+      if (occ[r][c] >= 0) ids.add(occ[r][c]);
+  return ids;
+}
+
+// slotLayout から新しい配列を生成するヘルパー
+function glpBuildLayout(cols, rows, cellMap) {
+  const layout = [...cellMap.values()].sort((a, b) => a.id - b.id);
+  // すべて colSpan=rowSpan=1 ならデフォルト（null）扱い
+  if (layout.every(c => c.colSpan === 1 && c.rowSpan === 1) && layout.length === cols * rows)
+    return null;
+  return layout;
+}
+
+function openGridLayoutPopup(anchorEl) {
+  const existing = document.getElementById('grid-layout-popup');
+  if (existing) { existing.remove(); notifyOverlay(false); return; }
+
+  notifyOverlay(true);
+  // ローカル状態（適用前の編集値）
+  let editCols = gridCols, editRows = gridRows;
+  let currentCellMap = glpBuildCellMap(editCols, editRows, gpSlotLayout);
+  let occ = glpBuildOccupancyGrid(editCols, editRows, currentCellMap);
+  let selectedRange = null, selectedMergedId = null, dragStart = null;
+
+  const popup = document.createElement('div');
+  popup.id = 'grid-layout-popup';
+
+  // ── ① サイズプリセット ──
+  const presetSec = document.createElement('div');
+  presetSec.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+
+  const SIZE_PRESETS = [
+    ['1×2',1,2],['2×1',2,1],['1×3',1,3],['3×1',3,1],
+    ['2×2',2,2],['2×3',2,3],['3×2',3,2],['3×3',3,3],
+  ];
+  const presetGrid = document.createElement('div');
+  presetGrid.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:4px;';
+  for (const [label, c, r] of SIZE_PRESETS) {
+    const btn = document.createElement('button');
+    btn.className = 'glp-size-item' + (c===editCols && r===editRows ? ' active' : '');
+    btn.innerHTML = makeMiniGridSVG(c, r) + `<span>${label}</span>`;
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      editCols = c; editRows = r;
+      currentCellMap = glpBuildCellMap(editCols, editRows, null);
+      occ = glpBuildOccupancyGrid(editCols, editRows, currentCellMap);
+      selectedRange = null; selectedMergedId = null;
+      cIn.value = c; rIn.value = r;
+      presetGrid.querySelectorAll('.glp-size-item').forEach((b,i) => b.classList.toggle('active', SIZE_PRESETS[i][1]===c && SIZE_PRESETS[i][2]===r));
+      buildLayoutPresets();
+      redrawGrid(); updateActions();
+    });
+    presetGrid.appendChild(btn);
+  }
+  presetSec.appendChild(presetGrid);
+
+  // カスタムサイズ入力
+  const customRow = document.createElement('div');
+  customRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+  const cLabel = document.createElement('label'); cLabel.textContent = 'Custom'; cLabel.style.cssText = 'font-size:10px;color:rgba(0,0,0,0.4);flex-shrink:0;';
+  const cIn = document.createElement('input'); cIn.type='number'; cIn.min='1'; cIn.max='20'; cIn.value=editCols;
+  cIn.style.cssText = 'width:30px;text-align:center;font-size:11px;border:1px solid rgba(0,0,0,0.15);border-radius:4px;padding:2px 3px;';
+  const xLbl = document.createElement('span'); xLbl.textContent='×'; xLbl.style.cssText='font-size:11px;color:rgba(0,0,0,0.35);';
+  const rIn = document.createElement('input'); rIn.type='number'; rIn.min='1'; rIn.max='20'; rIn.value=editRows;
+  rIn.style.cssText = 'width:30px;text-align:center;font-size:11px;border:1px solid rgba(0,0,0,0.15);border-radius:4px;padding:2px 3px;';
+  const applyCustom = () => {
+    const nc=Math.max(1,Math.min(20,parseInt(cIn.value)||1)), nr=Math.max(1,Math.min(20,parseInt(rIn.value)||1));
+    if (nc===editCols && nr===editRows) return;
+    editCols=nc; editRows=nr;
+    currentCellMap=glpBuildCellMap(nc,nr,null);
+    occ=glpBuildOccupancyGrid(nc,nr,currentCellMap);
+    selectedRange=null; selectedMergedId=null;
+    presetGrid.querySelectorAll('.glp-size-item').forEach((b,i) => b.classList.toggle('active', SIZE_PRESETS[i][1]===nc && SIZE_PRESETS[i][2]===nr));
+    buildLayoutPresets();
+    redrawGrid(); updateActions();
+  };
+  [cIn,rIn].forEach(inp => {
+    inp.addEventListener('input', applyCustom);
+    inp.addEventListener('keydown', e => e.stopPropagation());
+    inp.addEventListener('click', e => e.stopPropagation());
+  });
+  customRow.appendChild(cLabel); customRow.appendChild(cIn); customRow.appendChild(xLbl); customRow.appendChild(rIn);
+  presetSec.appendChild(customRow);
+  popup.appendChild(presetSec);
+
+  // ── ② セパレーター ──
+  const sep = document.createElement('div');
+  sep.style.cssText = 'border-top:1px solid rgba(0,0,0,0.07);margin:2px 0;';
+  popup.appendChild(sep);
+
+  // ── ③ LAYOUT プリセット（左大/右大…） ──
+  const layoutPresets = [
+    { id:'default', label:'均等', merges:[] },
+    ...(editCols>=2&&editRows>=2 ? [
+      {id:'left-big',  label:'左大', merges:[{col:0,      row:0,colSpan:1,   rowSpan:editRows}]},
+      {id:'right-big', label:'右大', merges:[{col:editCols-1,row:0,colSpan:1,rowSpan:editRows}]},
+      {id:'top-big',   label:'上大', merges:[{col:0,      row:0,colSpan:editCols,rowSpan:1}]},
+      {id:'bottom-big',label:'下大', merges:[{col:0,row:editRows-1,colSpan:editCols,rowSpan:1}]},
+    ]:[]),
+  ];
+  const makeMiniSVG = (merges, c, r) => {
+    const W=28,H=22,gap=2,pad=2;
+    const cw=(W-pad*2-gap*(c-1))/c, rh=(H-pad*2-gap*(r-1))/r;
+    const covered=new Set(); let rects='';
+    for(const m of merges){
+      const x=pad+m.col*(cw+gap),y=pad+m.row*(rh+gap);
+      const w=m.colSpan*cw+(m.colSpan-1)*gap,h=m.rowSpan*rh+(m.rowSpan-1)*gap;
+      rects+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="rgba(60,120,230,0.6)"/>`;
+      for(let dr=0;dr<m.rowSpan;dr++) for(let dc=0;dc<m.colSpan;dc++) covered.add((m.row+dr)*c+(m.col+dc));
+    }
+    for(let ri=0;ri<r;ri++) for(let ci=0;ci<c;ci++)
+      if(!covered.has(ri*c+ci)) rects+=`<rect x="${(pad+ci*(cw+gap)).toFixed(1)}" y="${(pad+ri*(rh+gap)).toFixed(1)}" width="${cw.toFixed(1)}" height="${rh.toFixed(1)}" rx="1.5" fill="rgba(100,140,220,0.3)"/>`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${rects}</svg>`;
+  };
+
+  const lPresetBar = document.createElement('div');
+  lPresetBar.className = 'glp-presets';
+  lPresetBar.id = 'glp-layout-preset-bar';
+  const buildLayoutPresets = () => {
+    lPresetBar.innerHTML = '';
+    const lp = [
+      { label:'均等', merges:[] },
+      ...(editCols>=2&&editRows>=2 ? [
+        {label:'左大', merges:[{col:0,         row:0,colSpan:1,      rowSpan:editRows}]},
+        {label:'右大', merges:[{col:editCols-1, row:0,colSpan:1,      rowSpan:editRows}]},
+        {label:'上大', merges:[{col:0,          row:0,colSpan:editCols,rowSpan:1}]},
+        {label:'下大', merges:[{col:0, row:editRows-1,colSpan:editCols,rowSpan:1}]},
+      ]:[]),
+    ];
+    for (const preset of lp) {
+      const btn = document.createElement('button'); btn.className='glp-preset-btn';
+      btn.innerHTML = makeMiniSVG(preset.merges, editCols, editRows);
+      const lbl=document.createElement('span'); lbl.textContent=preset.label; btn.appendChild(lbl);
+      btn.addEventListener('click', () => {
+        const covered=new Set(); const newMap=new Map();
+        for(const m of preset.merges){
+          const id=m.row*editCols+m.col;
+          newMap.set(id,{id,col:m.col,row:m.row,colSpan:m.colSpan,rowSpan:m.rowSpan});
+          for(let dr=0;dr<m.rowSpan;dr++) for(let dc=0;dc<m.colSpan;dc++) covered.add((m.row+dr)*editCols+(m.col+dc));
+        }
+        for(let ri=0;ri<editRows;ri++) for(let ci=0;ci<editCols;ci++)
+          if(!covered.has(ri*editCols+ci)){const id=ri*editCols+ci; newMap.set(id,{id,col:ci,row:ri,colSpan:1,rowSpan:1});}
+        currentCellMap=newMap; occ=glpBuildOccupancyGrid(editCols,editRows,currentCellMap);
+        selectedRange=null; selectedMergedId=null; redrawGrid(); updateActions();
+      });
+      lPresetBar.appendChild(btn);
+    }
+  };
+  buildLayoutPresets();
+  popup.appendChild(lPresetBar);
+
+  // ── ④ エディタグリッド ──
+  const gridWrap=document.createElement('div'); gridWrap.className='glp-grid-wrap';
+  const gridEl=document.createElement('div'); gridEl.className='glp-grid';
+  gridWrap.appendChild(gridEl); popup.appendChild(gridWrap);
+
+  // ── ⑤ アクション + フッター ──
+  const actionsBar=document.createElement('div'); actionsBar.className='glp-actions';
+  const hintEl=document.createElement('span'); hintEl.className='glp-action-hint'; hintEl.textContent='セルをドラッグして選択';
+  actionsBar.appendChild(hintEl);
+  const mergeBtn=document.createElement('button'); mergeBtn.className='glp-btn primary'; mergeBtn.textContent='結合'; mergeBtn.style.display='none';
+  const splitBtn=document.createElement('button'); splitBtn.className='glp-btn danger'; splitBtn.textContent='分割'; splitBtn.style.display='none';
+  actionsBar.appendChild(mergeBtn); actionsBar.appendChild(splitBtn);
+  popup.appendChild(actionsBar);
+
+  const footer=document.createElement('div'); footer.className='glp-footer';
+  const resetBtn=document.createElement('button'); resetBtn.className='glp-btn secondary'; resetBtn.textContent='リセット';
+  const doneBtn=document.createElement('button'); doneBtn.className='glp-btn primary'; doneBtn.textContent='Done';
+  footer.appendChild(resetBtn); footer.appendChild(doneBtn);
+  popup.appendChild(footer);
+
+  document.body.appendChild(popup);
+
+  // 位置
+  const ar=anchorEl.getBoundingClientRect();
+  popup.style.top=(ar.bottom+4)+'px';
+  const left=Math.min(ar.left, window.innerWidth-310-8);
+  popup.style.left=Math.max(8,left)+'px';
+
+  // ── グリッド描画 ──
+  function redrawGrid() {
+    gridEl.style.gridTemplateColumns=`repeat(${editCols},1fr)`;
+    gridEl.style.gridTemplateRows=`repeat(${editRows},1fr)`;
+    gridEl.innerHTML='';
+    occ=glpBuildOccupancyGrid(editCols,editRows,currentCellMap);
+    const sorted=[...currentCellMap.values()].sort((a,b)=>a.row!==b.row?a.row-b.row:a.col-b.col);
+    for(const cell of sorted){
+      const div=document.createElement('div'); div.className='glp-cell';
+      div.dataset.r=cell.row; div.dataset.c=cell.col; div.dataset.id=cell.id;
+      div.style.gridColumn=`${cell.col+1} / span ${cell.colSpan}`;
+      div.style.gridRow=`${cell.row+1} / span ${cell.rowSpan}`;
+      const isMerged=cell.colSpan>1||cell.rowSpan>1;
+      if(isMerged){
+        div.classList.add('merged');
+        if(selectedMergedId===cell.id) div.classList.add('selected-merged');
+        const lbl=document.createElement('span'); lbl.className='glp-merge-label'; lbl.textContent=`${cell.colSpan}\xd7${cell.rowSpan}`; div.appendChild(lbl);
+      } else {
+        if(selectedRange){
+          const{r1,c1,r2,c2}=selectedRange;
+          const minR=Math.min(r1,r2),maxR=Math.max(r1,r2),minC=Math.min(c1,c2),maxC=Math.max(c1,c2);
+          if(cell.row>=minR&&cell.row<=maxR&&cell.col>=minC&&cell.col<=maxC) div.classList.add('selecting');
+        }
+        const lbl=document.createElement('span'); lbl.className='glp-merge-label'; lbl.textContent=cell.id+1; div.appendChild(lbl);
+      }
+      div.addEventListener('mousedown',(e)=>{
+        e.preventDefault();
+        if(isMerged){selectedRange=null; selectedMergedId=(selectedMergedId===cell.id)?null:cell.id; redrawGrid(); updateActions(); return;}
+        selectedMergedId=null; dragStart={r:cell.row,c:cell.col};
+        selectedRange={r1:cell.row,c1:cell.col,r2:cell.row,c2:cell.col};
+        redrawGrid(); updateActions();
+      });
+      div.addEventListener('mouseenter',()=>{
+        if(!dragStart) return;
+        selectedRange={r1:dragStart.r,c1:dragStart.c,r2:cell.row,c2:cell.col};
+        redrawGrid(); updateActions();
+      });
+      gridEl.appendChild(div);
+    }
+  }
+
+  function updateActions(){
+    mergeBtn.style.display='none'; splitBtn.style.display='none';
+    if(selectedRange){
+      const{r1,c1,r2,c2}=selectedRange;
+      const minR=Math.min(r1,r2),maxR=Math.max(r1,r2),minC=Math.min(c1,c2),maxC=Math.max(c1,c2);
+      const cellCount=(maxR-minR+1)*(maxC-minC+1);
+      if(cellCount>=2){
+        const ids=glpGetCellsInRange(occ,minR,minC,maxR,maxC);
+        const hasMerged=[...ids].some(id=>{const c=currentCellMap.get(id);return c&&(c.colSpan>1||c.rowSpan>1);});
+        if(!hasMerged){mergeBtn.style.display=''; hintEl.textContent=`${cellCount}セルを結合`;}
+        else hintEl.textContent='結合済みセルを含む選択は結合できません';
+      } else hintEl.textContent='セルをドラッグして選択';
+    } else if(selectedMergedId!==null){
+      splitBtn.style.display=''; hintEl.textContent='結合を解除します';
+    } else hintEl.textContent='セルをドラッグして選択';
+  }
+
+  const _mouseUpHandler=()=>{ dragStart=null; };
+  window.addEventListener('mouseup',_mouseUpHandler);
+
+  const _outsideHandler=(e)=>{
+    if(popup.contains(e.target)) return;
+    popup.remove();
+    window.removeEventListener('mousedown',_outsideHandler,true);
+    window.removeEventListener('mouseup',_mouseUpHandler);
+    notifyOverlay(false);
+  };
+  setTimeout(()=>window.addEventListener('mousedown',_outsideHandler,true),0);
+
+  mergeBtn.addEventListener('click',()=>{
+    if(!selectedRange) return;
+    const{r1,c1,r2,c2}=selectedRange;
+    const minR=Math.min(r1,r2),maxR=Math.max(r1,r2),minC=Math.min(c1,c2),maxC=Math.max(c1,c2);
+    const ids=glpGetCellsInRange(occ,minR,minC,maxR,maxC);
+    for(const id of ids) currentCellMap.delete(id);
+    const newId=minR*editCols+minC;
+    currentCellMap.set(newId,{id:newId,col:minC,row:minR,colSpan:maxC-minC+1,rowSpan:maxR-minR+1});
+    selectedRange=null; selectedMergedId=null;
+    occ=glpBuildOccupancyGrid(editCols,editRows,currentCellMap);
+    redrawGrid(); updateActions();
+  });
+
+  splitBtn.addEventListener('click',()=>{
+    if(selectedMergedId===null) return;
+    const cell=currentCellMap.get(selectedMergedId); if(!cell) return;
+    currentCellMap.delete(selectedMergedId);
+    for(let dr=0;dr<cell.rowSpan;dr++) for(let dc=0;dc<cell.colSpan;dc++){
+      const id=(cell.row+dr)*editCols+(cell.col+dc);
+      currentCellMap.set(id,{id,col:cell.col+dc,row:cell.row+dr,colSpan:1,rowSpan:1});
+    }
+    selectedMergedId=null; selectedRange=null;
+    occ=glpBuildOccupancyGrid(editCols,editRows,currentCellMap);
+    redrawGrid(); updateActions();
+  });
+
+  resetBtn.addEventListener('click',()=>{
+    currentCellMap=glpBuildCellMap(editCols,editRows,null);
+    occ=glpBuildOccupancyGrid(editCols,editRows,currentCellMap);
+    selectedRange=null; selectedMergedId=null; redrawGrid(); updateActions();
+  });
+
+  doneBtn.addEventListener('click',()=>{
+    const layout=glpBuildLayout(editCols,editRows,currentCellMap);
+    // サイズ変更 + レイアウト変更を一括適用
+    if(editCols!==gridCols || editRows!==gridRows) {
+      setGridSize(editCols, editRows);
+    }
+    ipcRenderer.invoke('set-slot-layout',{layout}).then(()=>{ gpSlotLayout=layout; render(); });
+    popup.remove();
+    window.removeEventListener('mouseup',_mouseUpHandler);
+    window.removeEventListener('mousedown',_outsideHandler,true);
+    notifyOverlay(false);
+  });
+
+  redrawGrid(); updateActions();
+}
 </script>
 </body>
 </html>
