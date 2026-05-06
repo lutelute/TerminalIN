@@ -2073,6 +2073,10 @@ function createWorkspace(name, savedState) {
         ws._watchdogMissStreak = 0;
       }
     }
+    // liveMap 構築: windowNumber → window (O(1) lookup)
+    const liveMap = new Map();
+    for (const w of windows) liveMap.set(w.windowNumber, w);
+
     // Title fallback: スナップ済みウィンドウのタイトルのみ osascript で補完。
     // 全ウィンドウに適用すると 4ws × 15app × 2 osascript = ~120プロセス/5s になる。
     if (windows.length > 0) {
@@ -2119,10 +2123,6 @@ function createWorkspace(name, savedState) {
         }
       }
     }
-    // liveMap 構築: windowNumber → window (Set ではなく Map で O(1) lookup)
-    const liveMap = new Map();
-    for (const w of windows) liveMap.set(w.windowNumber, w);
-
     let snappedChanged = false;
     for (const [k, info] of ws.snappedExternals) {
       let live = liveMap.get(k);
@@ -2253,12 +2253,9 @@ function createWorkspace(name, savedState) {
     ws.pollTimer = setInterval(pollFn, appSettings.pollIntervalMs || 4000);
   };
 
-  // ── clickthrough 完全制御 (main process タイマー) ──
-  // renderer の非同期 IPC を廃止し main で決定することで IPC 遅延ゼロを実現。
-  // 判定: overlay/editMode → OFF強制 / グリッドエリア上 → ON / それ以外 → OFF
-  // 外: 800ms、内: 50ms ループ (50ms = ドラッグ開始前に確実に反映される)
+  // ── ヘッダー保護: カーソルがヘッダー/overlay 中は clickthrough OFF を強制 ──
+  // renderer の set-win-clickthrough IPC が主制御。このタイマーは安全弁。
   let _ctGuardFast = false;
-  let _ctLast = null; // 直前の状態をキャッシュして不要な setIgnoreMouseEvents 呼び出しを減らす
   const _ctGuardLoop = () => {
     try {
       if (!ws.win || ws.win.isDestroyed()) {
@@ -2270,35 +2267,15 @@ function createWorkspace(name, savedState) {
       const inWindow = cursor.x >= b.x && cursor.x <= b.x + b.width
                     && cursor.y >= b.y && cursor.y <= b.y + b.height;
       if (!inWindow) {
-        if (_ctGuardFast) {
-          ws.win.setIgnoreMouseEvents(false);
-          _ctGuardFast = false;
-          _ctLast = false;
-        }
+        if (_ctGuardFast) { ws.win.setIgnoreMouseEvents(false); _ctGuardFast = false; }
         ws._ctGuardTimer = setTimeout(_ctGuardLoop, 800);
         return;
       }
       _ctGuardFast = true;
-
-      // overlay (popup/drawer) または edit mode 中は必ず OFF
-      if (ws._hasOverlay || ws._editMode) {
-        if (_ctLast !== false) { ws.win.setIgnoreMouseEvents(false); _ctLast = false; }
-        ws._ctGuardTimer = setTimeout(_ctGuardLoop, 50);
-        return;
-      }
-
-      // グリッドパネル = サイドバー右端以降 + ヘッダー下
-      // getGridArea は x=b.x (ウィンドウ左端) を返すが、実際の透明エリアはサイドバー右
-      const sidebarW = (ws.sidebarWidth || DEFAULT_SIDEBAR_W) + SIDEBAR_DIVIDER_W;
-      const gridX = b.x + sidebarW;
-      const gridY = b.y + TITLEBAR_H;
-      const onGrid = cursor.x >= gridX && cursor.x <= b.x + b.width
-                  && cursor.y >= gridY && cursor.y <= b.y + b.height;
-
-      if (onGrid) {
-        if (_ctLast !== true) { ws.win.setIgnoreMouseEvents(true, { forward: true }); _ctLast = true; }
-      } else {
-        if (_ctLast !== false) { ws.win.setIgnoreMouseEvents(false); _ctLast = false; }
+      // ヘッダー、overlay、editMode 中は必ず OFF
+      const inHeader = cursor.y < b.y + TITLEBAR_H;
+      if (inHeader || ws._hasOverlay || ws._editMode) {
+        ws.win.setIgnoreMouseEvents(false);
       }
       ws._ctGuardTimer = setTimeout(_ctGuardLoop, 50);
     } catch {
@@ -2366,7 +2343,12 @@ ipcMain.on('raise-all', (event) => {
   if (ws) raiseAllWorkspaceWindows(ws, true);
 });
 
-// renderer からのオーバーレイ状態通知 (popup/drawer/editmode が開いている間は OFF 強制)
+// renderer からの clickthrough 制御 (renderer が grid panel 上かどうかを判定して呼ぶ)
+ipcMain.on('set-win-clickthrough', (event, on) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws || !ws.win || ws.win.isDestroyed()) return;
+  ws.win.setIgnoreMouseEvents(on, { forward: true });
+});
 ipcMain.on('set-overlay-active', (event, active) => {
   const ws = findWorkspace(event.sender);
   if (ws) ws._hasOverlay = !!active;
@@ -2375,8 +2357,6 @@ ipcMain.on('set-edit-mode', (event, active) => {
   const ws = findWorkspace(event.sender);
   if (ws) ws._editMode = !!active;
 });
-// 旧 IPC は no-op (renderer 側の残骸呼び出しに備えて残す)
-ipcMain.on('set-win-clickthrough', () => {});
 
 // 統合ウィンドウ方式では raise-all-from-overlay / set-overlay-clickthrough は不要 (no-op)
 ipcMain.on('raise-all-from-overlay', () => {});
@@ -3213,25 +3193,25 @@ app.on('will-quit', () => {
   }
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (e) => {
+  if (app._quitting) return; // 二重呼び出し防止
+  app._quitting = true;
   app.isQuitting = true;
+  e.preventDefault(); // 非同期 cleanup のために一時停止
 
-  // PTY プロセスを全て kill (node-pty が生きていると app が終了しない)
+  // PTY を全 kill (SIGKILL で即時停止)
   for (const [, ws] of workspaces) {
-    for (const [, gw] of ws.gridWindows) {
-      try { gw.pty.kill(); } catch {}
-    }
-    for (const [, p] of (ws.sidebarPtys || new Map())) {
-      try { p.kill(); } catch {}
-    }
+    for (const [, gw] of ws.gridWindows) { try { gw.pty.kill('SIGKILL'); } catch {} }
+    for (const [, p] of (ws.sidebarPtys || new Map())) { try { p.kill('SIGKILL'); } catch {} }
   }
 
   try { writeWorkspacesJsonSync(); } catch {}
   try { if (fs.existsSync(INFO_JSON)) fs.unlinkSync(INFO_JSON); } catch {}
   try { if (fs.existsSync(SNAPPED_JSON)) fs.unlinkSync(SNAPPED_JSON); } catch {}
-  // ※ スナップ済みウィンドウの元位置復元は before-quit では行わない。
-  //   axHelper.moveWindows が無応答アプリで hang して quit をブロックするため。
-  //   次回 TiN 起動時に workspaces.json から snap 復元する設計で十分。
+
+  // node-pty の ThreadSafeFunction が JS cleanup で crash するのを避けるため
+  // PTY kill 後に 50ms 待ってから process.exit() で直接終了する
+  setTimeout(() => process.exit(0), 50);
 });
 
 app.on('window-all-closed', () => app.quit());
