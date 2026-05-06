@@ -2631,19 +2631,54 @@ document.getElementById('content').addEventListener('mousedown', (e) => {
   triggerRaiseAll();
 });
 
-// ── clickthrough は main process タイマーで完全制御 ──
-// renderer から IPC で制御する旧方式を廃止。
-// main の _ctGuardLoop (50ms) がカーソル座標を見て setIgnoreMouseEvents を決定する。
-// renderer はポップアップ/ドロワー/editMode の状態だけ通知する。
+// ── Grid panel click-through ──
 let gpEditMode = false; // グリッドJSブロックとこのブロックで共有
+{
+  const gridPanel = document.getElementById('grid-panel');
+  let _ctState = false;
 
-// overlay 状態を main に通知するヘルパー
-function notifyOverlay(active) {
-  ipcRenderer.send('set-overlay-active', active);
+  function setClickthrough(on) {
+    if (_ctState === on) return;
+    _ctState = on;
+    ipcRenderer.send('set-win-clickthrough', on);
+  }
+
+  function evalClickthrough(clientX, clientY) {
+    if (gpEditMode) { setClickthrough(false); return; }
+    const hasOverlay = document.elementsFromPoint(clientX, clientY).some(el => {
+      const z = parseInt(getComputedStyle(el).zIndex, 10);
+      return !isNaN(z) && z > 100;
+    });
+    if (hasOverlay) { setClickthrough(false); return; }
+    const gridRect = gridPanel.getBoundingClientRect();
+    const onGrid = clientX >= gridRect.left && clientX <= gridRect.right
+                && clientY >= gridRect.top  && clientY <= gridRect.bottom;
+    setClickthrough(onGrid);
+  }
+
+  let _mouseIsDown = false;
+
+  window.addEventListener('mousemove', (e) => {
+    if (_mouseIsDown) return; // ドラッグ中は状態変更しない
+    evalClickthrough(e.clientX, e.clientY);
+  });
+
+  window.addEventListener('mousedown', (e) => {
+    _mouseIsDown = true;
+    // grid panel 外 → 確実に clickthrough OFF
+    const gridRect = gridPanel.getBoundingClientRect();
+    const onGrid = e.clientX >= gridRect.left && e.clientX <= gridRect.right
+                && e.clientY >= gridRect.top  && e.clientY <= gridRect.bottom;
+    if (!onGrid) setClickthrough(false);
+  }, true);
+
+  window.addEventListener('mouseup', () => { _mouseIsDown = false; }, true);
+  window.addEventListener('mouseleave', () => { _mouseIsDown = false; setClickthrough(false); });
 }
-function notifyEditMode(active) {
-  ipcRenderer.send('set-edit-mode', active);
-}
+
+// overlay/editMode 通知ヘルパー (main の ctGuard 補助用)
+function notifyOverlay(active) { ipcRenderer.send('set-overlay-active', active); }
+function notifyEditMode(active) { ipcRenderer.send('set-edit-mode', active); }
 
 // ── Collapse ──
 let isCollapsed = false;
