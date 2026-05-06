@@ -2631,7 +2631,8 @@ document.getElementById('content').addEventListener('mousedown', (e) => {
   triggerRaiseAll();
 });
 
-// ── Grid panel click-through ──
+// ── Grid panel click-through (ウィンドウレベル) ──
+// pointer-events:none はCSS内のみ。実際のクリックスルーには setIgnoreMouseEvents が必要。
 let gpEditMode = false; // グリッドJSブロックとこのブロックで共有
 {
   const gridPanel = document.getElementById('grid-panel');
@@ -2643,37 +2644,27 @@ let gpEditMode = false; // グリッドJSブロックとこのブロックで共
     ipcRenderer.send('set-win-clickthrough', on);
   }
 
-  function evalClickthrough(clientX, clientY) {
+  window.addEventListener('mousemove', (e) => {
     if (gpEditMode) { setClickthrough(false); return; }
-    const hasOverlay = document.elementsFromPoint(clientX, clientY).some(el => {
+
+    // ① カーソル下に z-index > 100 の要素があればポップアップ/ドロワー等の UI
+    //   → click-through 無効 (グリッドサイズポップアップ・Space ピッカー等すべてに対応)
+    const hasOverlay = document.elementsFromPoint(e.clientX, e.clientY).some(el => {
       const z = parseInt(getComputedStyle(el).zIndex, 10);
       return !isNaN(z) && z > 100;
     });
     if (hasOverlay) { setClickthrough(false); return; }
-    const gridRect = gridPanel.getBoundingClientRect();
-    const onGrid = clientX >= gridRect.left && clientX <= gridRect.right
-                && clientY >= gridRect.top  && clientY <= gridRect.bottom;
-    setClickthrough(onGrid);
-  }
 
-  let _mouseIsDown = false;
-
-  window.addEventListener('mousemove', (e) => {
-    if (_mouseIsDown) return; // ドラッグ中は状態変更しない
-    evalClickthrough(e.clientX, e.clientY);
-  });
-
-  window.addEventListener('mousedown', (e) => {
-    _mouseIsDown = true;
-    // grid panel 外 → 確実に clickthrough OFF
+    // ② ヘッダー (#sidebar) 上か content area (#grid-panel) 上か判定
     const gridRect = gridPanel.getBoundingClientRect();
     const onGrid = e.clientX >= gridRect.left && e.clientX <= gridRect.right
                 && e.clientY >= gridRect.top  && e.clientY <= gridRect.bottom;
-    if (!onGrid) setClickthrough(false);
-  }, true);
+    setClickthrough(onGrid);
+  });
 
-  window.addEventListener('mouseup', () => { _mouseIsDown = false; }, true);
-  window.addEventListener('mouseleave', () => { _mouseIsDown = false; setClickthrough(false); });
+  window.addEventListener('mouseleave', () => setClickthrough(false));
+  // blur で OFF にしない: click-through ON でターミナルをクリックすると blur が発火し、
+  // 次クリックを TiN が横取りする原因になる。ヘッダー保護は main の _ctGuardTimer が担当。
 }
 
 // overlay/editMode 通知ヘルパー (main の ctGuard 補助用)
