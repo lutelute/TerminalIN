@@ -78,7 +78,9 @@ static napi_value ListWindows(napi_env env, napi_callback_info info) {
 
     for (NSDictionary *win in (__bridge NSArray *)windowList) {
         NSString *ownerName = win[(__bridge NSString *)kCGWindowOwnerName];
-        if (!ownerName || ![terminalApps containsObject:ownerName]) continue;
+        if (!ownerName) continue;
+        NSNumber *layer = win[(__bridge NSString *)kCGWindowLayer];
+        if (!layer || [layer intValue] != 0) continue;
 
         NSDictionary *bounds = win[(__bridge NSString *)kCGWindowBounds];
         if (!bounds) continue;
@@ -926,7 +928,9 @@ static napi_value ListWindowsAllSpaces(napi_env env, napi_callback_info info) {
     uint32_t idx = 0;
     for (NSDictionary *win in (__bridge NSArray *)windowList) {
         NSString *ownerName = win[(__bridge NSString *)kCGWindowOwnerName];
-        if (!ownerName || ![terminalApps containsObject:ownerName]) continue;
+        if (!ownerName) continue;
+        NSNumber *layer = win[(__bridge NSString *)kCGWindowLayer];
+        if (!layer || [layer intValue] != 0) continue;
 
         NSDictionary *bounds = win[(__bridge NSString *)kCGWindowBounds];
         if (!bounds) continue;
