@@ -1019,6 +1019,58 @@
   .restore-banner li { font-size: 9px; padding: 1px 0; color: inherit; opacity: 0.85; }
   body.compact .restore-banner { display: none; }
 
+  /* ── Drawer グリッドプレビュー ── */
+  #drawer-grid-preview {
+    padding: 8px 8px 4px; border-bottom: 1px solid rgba(0,0,0,0.06); display: none;
+  }
+  body.drawer-open #drawer-grid-preview { display: block; }
+  #drawer-grid-preview .dgp-label {
+    font-size: 9px; font-weight: 700; color: rgba(0,0,0,0.35);
+    letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 5px;
+  }
+  .dgp-grid {
+    display: grid; gap: 4px; width: 100%; aspect-ratio: 1.5;
+    background: rgba(100,140,220,0.07); border-radius: 8px; padding: 5px;
+    box-sizing: border-box;
+  }
+  .dgp-cell {
+    border-radius: 5px; border: 1.5px solid rgba(100,140,220,0.18);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 600; color: rgba(0,0,0,0.3);
+    overflow: hidden; padding: 3px; text-align: center; line-height: 1.3;
+    background: transparent; transition: background 0.1s, border-color 0.1s;
+    user-select: none;
+  }
+  .dgp-cell.occupied {
+    background: rgba(60,120,230,0.12); border-color: rgba(60,120,230,0.4);
+    color: rgba(40,90,180,0.85); cursor: grab;
+  }
+  .dgp-cell.occupied:hover { background: rgba(60,120,230,0.2); border-color: rgba(60,120,230,0.65); }
+  .dgp-cell.dragging { opacity: 0.4; cursor: grabbing; }
+  .dgp-cell.drag-over { outline: 2px dashed rgba(60,120,230,0.65); outline-offset: -2px; background: rgba(60,120,230,0.08); }
+  .dgp-title { font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; pointer-events: none; }
+
+  /* ── カスタムツールチップ ── */
+  #tin-tooltip {
+    position: fixed; z-index: 99999; pointer-events: none;
+    background: rgba(18,18,28,0.93);
+    backdrop-filter: blur(10px) saturate(1.4);
+    color: #fff; border-radius: 9px;
+    padding: 7px 11px 8px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3), 0 0 0 0.5px rgba(255,255,255,0.08);
+    max-width: 220px; opacity: 0;
+    transition: opacity 0.1s;
+  }
+  #tin-tooltip.visible { opacity: 1; }
+  #tin-tooltip .tip-name {
+    display: block; font-size: 11px; font-weight: 700;
+    color: #fff; letter-spacing: 0.02em; white-space: nowrap;
+  }
+  #tin-tooltip .tip-desc {
+    display: block; font-size: 10px; color: rgba(255,255,255,0.55);
+    margin-top: 2px; line-height: 1.45;
+  }
+
 </style>
 </head>
 <body>
@@ -1028,6 +1080,7 @@
 
 <!-- ドロワーパネル (サイドバーリスト) -->
 <div id="drawer-panel">
+  <div id="drawer-grid-preview"></div>
   <div id="drawer-content"></div>
 </div>
 
@@ -1077,7 +1130,8 @@ const titleInput = document.getElementById('title-input');
 function toggleDrawer(forceState) {
   const open = forceState !== undefined ? forceState : !document.body.classList.contains('drawer-open');
   document.body.classList.toggle('drawer-open', open);
-  notifyOverlay(open); // ドロワー開閉を main に通知
+  notifyOverlay(open);
+  if (open) updateDrawerPreview();
 }
 
 // ── グリッド / Tab モード切り替え ──
@@ -2702,6 +2756,9 @@ function render() {
   // 空きスロット常時薄表示: グリッドモードで空きがある時
   const hasEmpty = totalItems < gridCols * gridRows;
   document.body.classList.toggle('show-empty-slots', currentViewMode === 'grid' && hasEmpty);
+
+  // Drawer プレビューを更新
+  if (document.body.classList.contains('drawer-open')) updateDrawerPreview();
 }
 
 // ── IPC ──
@@ -3281,8 +3338,154 @@ function openGridLayoutPopup(anchorEl) {
   updateActions();
 }
 
+// ── Drawer グリッドプレビュー ──
+function updateDrawerPreview() {
+  const previewEl = document.getElementById('drawer-grid-preview');
+  if (!previewEl) return;
+  previewEl.innerHTML = '';
+
+  const cols = gridCols, rows = gridRows;
+
+  // ラベル
+  const lbl = document.createElement('div'); lbl.className = 'dgp-label';
+  lbl.textContent = `Grid ${cols}×${rows} — ドラッグでスロット入れ替え`;
+  previewEl.appendChild(lbl);
+
+  // グリッド要素
+  const gridEl = document.createElement('div');
+  gridEl.className = 'dgp-grid';
+  gridEl.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  gridEl.style.gridTemplateRows    = `repeat(${rows}, 1fr)`;
+
+  // スロット情報収集
+  const slotInfo = new Map();
+  for (const [slot, data] of Object.entries(gridSlots)) {
+    slotInfo.set(Number(slot), { type: 'pty', title: `Terminal ${Number(slot)+1}`, app: 'Terminal' });
+  }
+  for (const [wn, info] of snappedExternals) {
+    slotInfo.set(info.slot, { type: 'ext', app: info.app||'', title: info.title||info.app||'Window', wn });
+  }
+
+  const layout = gpSlotLayout
+    ? [...gpSlotLayout].sort((a,b) => a.row!==b.row ? a.row-b.row : a.col-b.col)
+    : Array.from({length: cols*rows}, (_,i) => ({ id:i, col:i%cols, row:Math.floor(i/cols), colSpan:1, rowSpan:1 }));
+
+  for (const cell of layout) {
+    const info = slotInfo.get(cell.id);
+    const div = document.createElement('div');
+    div.className = 'dgp-cell' + (info ? ' occupied' : '');
+    div.dataset.slot = cell.id;
+    div.style.gridColumn = `${cell.col+1} / span ${cell.colSpan}`;
+    div.style.gridRow    = `${cell.row+1} / span ${cell.rowSpan}`;
+
+    if (info) {
+      const icon = info.type === 'pty' ? 'T' : (isFinderApp(info.app) ? 'F' : isTerminalApp(info.app) ? 'T' : info.app.charAt(0).toUpperCase() || '?');
+      const shortTitle = (info.title||info.app).slice(0, 18);
+      div.innerHTML = `<span class="dgp-title">${icon} ${shortTitle}</span>`;
+      div.title = `Slot ${cell.id+1}: ${info.title||info.app}`;
+    } else {
+      div.innerHTML = `<span style="opacity:0.25;font-size:10px">${cell.id+1}</span>`;
+    }
+
+    // ドラッグ&ドロップ（スロット入れ替え）
+    if (info) {
+      let dragSrc = null;
+      div.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        dragSrc = cell.id;
+        div.classList.add('dragging');
+        e.stopPropagation();
+      });
+      div.addEventListener('mouseenter', () => { if (dragSrc !== null && dragSrc !== cell.id) div.classList.add('drag-over'); });
+      div.addEventListener('mouseleave', () => div.classList.remove('drag-over'));
+      div.addEventListener('mouseup', () => {
+        div.classList.remove('drag-over', 'dragging');
+        if (dragSrc !== null && dragSrc !== cell.id) {
+          ipcRenderer.invoke('swap-grid-slots', { src: dragSrc, dst: cell.id }).then(() => {
+            swapSlotsLocally(dragSrc, cell.id);
+            render();
+          });
+        }
+        dragSrc = null;
+      });
+    }
+
+    gridEl.appendChild(div);
+  }
+
+  // mouseup がセル外で発生した時のクリーンアップ
+  window.addEventListener('mouseup', () => {
+    gridEl.querySelectorAll('.dgp-cell').forEach(c => c.classList.remove('dragging','drag-over'));
+  }, { once: true });
+
+  previewEl.appendChild(gridEl);
+}
+
 // Start with one sidebar terminal
 addEmbedded('main');
+
+// ── カスタムツールチップ ──
+{
+  const tip = document.createElement('div');
+  tip.id = 'tin-tooltip';
+  document.body.appendChild(tip);
+  let _tipTimer = null;
+  let _tipEl = null;
+
+  const showTip = (el, x, y) => {
+    const raw = el.dataset.originalTitle || '';
+    if (!raw) return;
+    const sep = raw.indexOf(' — ');
+    const name = sep >= 0 ? raw.slice(0, sep) : raw;
+    const desc = sep >= 0 ? raw.slice(sep + 3) : '';
+    tip.innerHTML = `<span class="tip-name">${name}</span>${desc ? `<span class="tip-desc">${desc}</span>` : ''}`;
+    const tw = 220;
+    tip.style.left = Math.min(x + 12, window.innerWidth - tw - 8) + 'px';
+    tip.style.top  = (y + 18) + 'px';
+    tip.classList.add('visible');
+  };
+
+  const hideTip = () => {
+    clearTimeout(_tipTimer);
+    tip.classList.remove('visible');
+    if (_tipEl) {
+      // title を元に戻す
+      if (_tipEl.dataset.originalTitle) {
+        _tipEl.title = _tipEl.dataset.originalTitle;
+        delete _tipEl.dataset.originalTitle;
+      }
+      _tipEl = null;
+    }
+  };
+
+  document.addEventListener('mouseover', (e) => {
+    // ポップアップ表示中は抑制
+    if (document.getElementById('grid-layout-popup')) return;
+    const el = e.target.closest('[title]');
+    if (!el || !el.title) return;
+    if (_tipEl === el) return;
+    hideTip();
+    _tipEl = el;
+    // ブラウザデフォルトを消す
+    el.dataset.originalTitle = el.title;
+    el.removeAttribute('title');
+    clearTimeout(_tipTimer);
+    _tipTimer = setTimeout(() => showTip(el, e.clientX, e.clientY), 350);
+  }, true);
+
+  document.addEventListener('mouseout', (e) => {
+    const el = e.target.closest('[data-original-title]');
+    if (!el) return;
+    hideTip();
+  }, true);
+
+  document.addEventListener('mousemove', (e) => {
+    if (!tip.classList.contains('visible')) return;
+    const tw = 220;
+    tip.style.left = Math.min(e.clientX + 12, window.innerWidth - tw - 8) + 'px';
+    tip.style.top  = (e.clientY + 18) + 'px';
+  }, true);
+}
 </script>
 </body>
 </html>
