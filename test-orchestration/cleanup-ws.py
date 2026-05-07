@@ -47,18 +47,36 @@ def main():
         all_wns.extend(wns)
 
     if not args.unsnap_only and all_wns:
-        # 逆順ループ + saving no で確認ダイアログをスキップして確実に閉じる
+        # Cmd+W + 確認ダイアログ対応で確実に閉じる
         ids = ", ".join(str(w) for w in all_wns)
-        subprocess.run(["osascript", "-e",
-            f'tell application "Terminal"\n'
-            f'  activate\n'
-            f'  repeat with i from (count of windows) to 1 by -1\n'
-            f'    set w to window i\n'
-            f'    if (id of w) is in {{{ids}}} then\n'
-            f'      close w saving no\n'
-            f'    end if\n'
-            f'  end repeat\n'
-            f'end tell'], capture_output=True, timeout=15)
+        script = (
+            f'set targetIDs to {{{ids}}}\n'
+            'tell application "Terminal"\n'
+            '  activate\n'
+            '  repeat with i from (count of windows) to 1 by -1\n'
+            '    if (count of windows) < i then set i to (count of windows)\n'
+            '    try\n'
+            '      set w to window i\n'
+            '      if (id of w) is in targetIDs then\n'
+            '        tell application "System Events"\n'
+            '          tell process "Terminal"\n'
+            '            set frontmost to true\n'
+            '            keystroke "w" using command down\n'
+            '          end tell\n'
+            '        end tell\n'
+            '        delay 0.15\n'
+            '        tell application "System Events"\n'
+            '          if exists (button "閉じる" of sheet 1 of front window of process "Terminal") then\n'
+            '            click button "閉じる" of sheet 1 of front window of process "Terminal"\n'
+            '          end if\n'
+            '        end tell\n'
+            '        delay 0.1\n'
+            '      end if\n'
+            '    end try\n'
+            '  end repeat\n'
+            'end tell'
+        )
+        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=60)
         print(f"\n✅ {len(all_wns)} ターミナルを閉じました")
     elif all_wns:
         print(f"\n✅ {len(all_wns)} 件を unsnap しました (ウィンドウは残っています)")
