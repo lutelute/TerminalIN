@@ -2054,6 +2054,11 @@ function createWorkspace(name, savedState) {
     }
     // 復元は restoreAllPending() で一括実行 (個別ではなく全 workspace まとめて)
     if (ws._pendingRestore) scheduleRestoreAll();
+    // did-finish-load でロード完了 → clickthrough 判定を有効化
+    _ctReady = true;
+    // 新規ウィンドウは setInterval の初回発火まで最大 pollIntervalMs 待つため
+    // did-finish-load 直後に一度 poll を即時実行して Available リストを即座に埋める
+    setTimeout(() => { if (!ws.win?.isDestroyed()) pollFn().catch(() => {}); }, 200);
   });
 
   if (process.argv.includes('--dev')) win.webContents.openDevTools({ mode: 'detach' });
@@ -2381,6 +2386,7 @@ function createWorkspace(name, savedState) {
   // renderer の set-win-clickthrough IPC は backup として残すが、このループが主制御。
   // IPC の非同期性によるクリック取りこぼしを防ぐため、ここで両方向を設定する。
   let _ctState = false; // 現在の setIgnoreMouseEvents 状態キャッシュ (呼び出し削減)
+  let _ctReady = false; // did-finish-load 前は判定を保留してクリックスルーを OFF に固定
   const _setCT = (on) => {
     if (_ctState === on) return;
     _ctState = on;
@@ -2390,6 +2396,12 @@ function createWorkspace(name, savedState) {
     try {
       if (!ws.win || ws.win.isDestroyed()) {
         ws._ctGuardTimer = setTimeout(_ctGuardLoop, 500);
+        return;
+      }
+      // did-finish-load 前は OFF に固定 (getBounds が不確定なため誤判定を防ぐ)
+      if (!_ctReady) {
+        _setCT(false);
+        ws._ctGuardTimer = setTimeout(_ctGuardLoop, 100);
         return;
       }
       // display 変更直後のリセット要求 — clickthrough を即 OFF にして次のループで再評価
