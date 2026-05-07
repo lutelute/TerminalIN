@@ -1401,6 +1401,20 @@ async function openPreferences() {
       </div>
       <div id="pref-hk-rows" style="display:grid;grid-template-columns:1fr auto;gap:6px 10px;align-items:center;"></div>
     </div>
+    <div style="border-top:1px solid rgba(0,0,0,0.08);margin:0 -4px 14px;padding-top:12px;">
+      <div style="font-weight:600;font-size:12px;color:rgba(0,0,0,0.5);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
+        Developer
+      </div>
+      <label style="display:flex;align-items:center;margin-bottom:6px;gap:8px;">
+        <input type="checkbox" id="pref-orch-api">
+        <span>Orchestration API を有効化</span>
+      </label>
+      <div id="pref-orch-desc" style="font-size:11px;color:rgba(0,0,0,0.4);padding-left:20px;line-height:1.5;margin-bottom:4px;">
+        外部スクリプトから TiN を制御できる REST API を<br>
+        localhost:37123 で公開します。
+      </div>
+      <div id="pref-orch-status" style="font-size:11px;padding-left:20px;display:none;"></div>
+    </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;">
       <button id="pref-cancel" style="padding:5px 12px;">Cancel</button>
       <button id="pref-save" style="padding:5px 12px;background:#2563eb;color:#fff;border:1px solid #2563eb;border-radius:4px;">Save</button>
@@ -1414,6 +1428,13 @@ async function openPreferences() {
   panel.querySelector('#pref-grid').value = `${settings.defaultGridCols||2},${settings.defaultGridRows||2}`;
   panel.querySelector('#pref-autolaunch').checked = !!settings.autoLaunch;
   panel.querySelector('#pref-sticky').checked = !!settings.stickyWindows;
+  panel.querySelector('#pref-orch-api').checked = !!settings.orchApi;
+  if (settings.orchApi) {
+    const s = panel.querySelector('#pref-orch-status');
+    s.style.display = 'block';
+    s.style.color = 'rgba(30,140,80,0.9)';
+    s.textContent = '稼働中 — http://127.0.0.1:37123';
+  }
 
   // ホットキー行を生成
   const hkRows = panel.querySelector('#pref-hk-rows');
@@ -1448,6 +1469,7 @@ async function openPreferences() {
       defaultGridRows: r,
       autoLaunch: panel.querySelector('#pref-autolaunch').checked,
       stickyWindows: panel.querySelector('#pref-sticky').checked,
+      orchApi: panel.querySelector('#pref-orch-api').checked,
       hotkeys,
     });
     backdrop.remove();
