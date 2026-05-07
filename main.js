@@ -2392,6 +2392,13 @@ function createWorkspace(name, savedState) {
         ws._ctGuardTimer = setTimeout(_ctGuardLoop, 500);
         return;
       }
+      // display 変更直後のリセット要求 — clickthrough を即 OFF にして次のループで再評価
+      if (ws._ctResetPending) {
+        ws._ctResetPending = false;
+        _setCT(false);
+        ws._ctGuardTimer = setTimeout(_ctGuardLoop, 100);
+        return;
+      }
       const cursor = screen.getCursorScreenPoint();
       const b = ws.win.getBounds();
       const inWindow = cursor.x >= b.x && cursor.x <= b.x + b.width
@@ -3009,7 +3016,17 @@ app.whenReady().then(() => {
   powerMonitor.on('lock-screen', () => beginStabilize('power:lock-screen'));
   powerMonitor.on('unlock-screen', () => beginStabilize('power:unlock-screen'));
   screen.on('display-added', () => beginStabilize('display-added'));
-  screen.on('display-removed', () => beginStabilize('display-removed'));
+  screen.on('display-removed', () => {
+    // getBounds() が一瞬古い座標を返すため clickthrough が ON のまま固まる問題を防ぐ
+    // _ctResetPending フラグ経由で _ctGuardLoop に clickthrough OFF リセットを指示
+    for (const [, ws] of workspaces) {
+      if (ws.win && !ws.win.isDestroyed()) {
+        ws._ctResetPending = true;
+        ws.win.setIgnoreMouseEvents(false); // 即時 OFF (ループ反映待ちの保険)
+      }
+    }
+    beginStabilize('display-removed');
+  });
   screen.on('display-metrics-changed', () => beginStabilize('display-metrics-changed'));
 
   const template = [
