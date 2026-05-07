@@ -2420,9 +2420,12 @@ function createWorkspace(name, savedState) {
         ws._ctGuardTimer = setTimeout(_ctGuardLoop, 800);
         return;
       }
-      // ヘッダー / overlay / editMode → OFF、グリッドエリア → ON
-      const inHeader = cursor.y < b.y + TITLEBAR_H;
-      _setCT(!(inHeader || ws._hasOverlay || ws._editMode));
+      // サイドバー or ヘッダー → OFF、グリッドエリア → ON
+      // X 軸: サイドバー幅までは常に操作可能、グリッドエリア (右側) だけ clickthrough
+      const sidebarRight = b.x + (ws.sidebarWidth || DEFAULT_SIDEBAR_W) + SIDEBAR_DIVIDER_W;
+      const inSidebar = cursor.x < sidebarRight;
+      const inHeader  = cursor.y < b.y + TITLEBAR_H;
+      _setCT(!(inSidebar || inHeader || ws._hasOverlay || ws._editMode));
       ws._ctGuardTimer = setTimeout(_ctGuardLoop, 50);
     } catch {
       ws._ctGuardTimer = setTimeout(_ctGuardLoop, 200);
