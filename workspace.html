@@ -1429,6 +1429,10 @@ async function openPreferences() {
   `;
   backdrop.appendChild(panel);
   document.body.appendChild(backdrop);
+  notifyOverlay(true); // 設定パネル表示中はクリックスルーを無効化
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) { backdrop.remove(); notifyOverlay(false); }
+  }, { once: false });
 
   panel.querySelector('#pref-poll').value = String(settings.pollIntervalMs || 2000);
   panel.querySelector('#pref-drag').value = settings.dragEndMode || 'position';
@@ -1462,7 +1466,8 @@ async function openPreferences() {
     hkRows.appendChild(makeHotkeyField(`pref-hk-${key}`, hk[key]));
   }
 
-  panel.querySelector('#pref-cancel').onclick = () => backdrop.remove();
+  const closePrefs = () => { backdrop.remove(); notifyOverlay(false); };
+  panel.querySelector('#pref-cancel').onclick = closePrefs;
   panel.querySelector('#pref-save').onclick = async () => {
     const [c, r] = panel.querySelector('#pref-grid').value.split(',').map(Number);
     const hotkeys = {};
@@ -1479,9 +1484,8 @@ async function openPreferences() {
       orchApi: panel.querySelector('#pref-orch-api').checked,
       hotkeys,
     });
-    backdrop.remove();
+    closePrefs();
   };
-  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.remove(); });
 }
 ipcRenderer.on('open-preferences', openPreferences);
 
@@ -3110,6 +3114,86 @@ ipcRenderer.on('update-grid-panel', (_e, { cols, rows, slotLayout }) => {
 // ── Window active/inactive state ──
 window.addEventListener('focus', () => document.body.classList.remove('window-inactive'));
 window.addEventListener('blur', () => document.body.classList.add('window-inactive'));
+
+// ── キーボードショートカット（TiN フォーカス時） ──
+const AVAIL_TABS = ['term', 'finder', 'apps', 'tin'];
+document.addEventListener('keydown', (e) => {
+  // モーダル/入力欄が開いているときは無視
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.target.isContentEditable) return;
+  const cmd = e.metaKey || e.ctrlKey;
+
+  // Cmd+[ / Cmd+] — Available タブを前後に切り替え
+  if (cmd && e.key === ']') {
+    e.preventDefault();
+    const idx = AVAIL_TABS.indexOf(activeAvailTab);
+    activeAvailTab = AVAIL_TABS[(idx + 1) % AVAIL_TABS.length];
+    render();
+    return;
+  }
+  if (cmd && e.key === '[') {
+    e.preventDefault();
+    const idx = AVAIL_TABS.indexOf(activeAvailTab);
+    activeAvailTab = AVAIL_TABS[(idx - 1 + AVAIL_TABS.length) % AVAIL_TABS.length];
+    render();
+    return;
+  }
+  // Cmd+1..4 — タブを直接選択
+  if (cmd && !e.altKey && !e.shiftKey && ['1','2','3','4'].includes(e.key)) {
+    e.preventDefault();
+    activeAvailTab = AVAIL_TABS[Number(e.key) - 1] || AVAIL_TABS[0];
+    render();
+    return;
+  }
+  // ? または Cmd+/ — ホットキー一覧を表示
+  if (e.key === '?' || (cmd && e.key === '/')) {
+    e.preventDefault();
+    showHotkeyHelp();
+    return;
+  }
+});
+
+function showHotkeyHelp() {
+  if (document.getElementById('tin-hotkey-help')) return;
+  const backdrop = document.createElement('div');
+  backdrop.id = 'tin-hotkey-help';
+  backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  const panel = document.createElement('div');
+  panel.style.cssText = 'background:#fafafa;padding:20px 24px;border-radius:10px;min-width:340px;max-height:90vh;overflow-y:auto;box-shadow:0 10px 30px rgba(0,0,0,0.3);font-size:13px;color:#222;';
+  const rows = [
+    ['グローバル（どこでも効く）', null],
+    ['⌘⌥S', 'フロントウィンドウをスナップ'],
+    ['⌘⌥W', 'フロントウィンドウをアンスナップ'],
+    ['⌘⌥T', 'TiN にフォーカス'],
+    ['TiN フォーカス中', null],
+    ['⌘]', '次のタブ（ターミナル→Finder→Apps→TiN）'],
+    ['⌘[', '前のタブ'],
+    ['⌘1〜4', 'タブを直接選択'],
+    ['?  / ⌘/', 'このヘルプを表示'],
+    ['Esc', 'モーダルを閉じる'],
+  ];
+  let html = '<div style="font-weight:600;font-size:15px;margin-bottom:14px;">キーボードショートカット</div>';
+  html += '<table style="width:100%;border-collapse:collapse;">';
+  for (const [k, v] of rows) {
+    if (v === null) {
+      html += `<tr><td colspan="2" style="padding:8px 0 4px;font-weight:600;font-size:11px;color:rgba(0,0,0,0.4);text-transform:uppercase;letter-spacing:.05em;">${k}</td></tr>`;
+    } else {
+      html += `<tr><td style="padding:3px 12px 3px 0;font-family:'SF Mono',monospace;font-size:12px;white-space:nowrap;color:rgba(37,99,235,0.9);">${k}</td><td style="padding:3px 0;color:rgba(0,0,0,0.75);">${v}</td></tr>`;
+    }
+  }
+  html += '</table>';
+  html += '<div style="margin-top:14px;text-align:right;"><button id="tin-hk-close" style="padding:5px 14px;border-radius:6px;border:1px solid rgba(0,0,0,0.2);background:#fff;cursor:pointer;font-size:13px;">閉じる</button></div>';
+  panel.innerHTML = html;
+  backdrop.appendChild(panel);
+  document.body.appendChild(backdrop);
+  notifyOverlay(true);
+  const close = () => { backdrop.remove(); notifyOverlay(false); };
+  panel.querySelector('#tin-hk-close').onclick = close;
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  document.addEventListener('keydown', function esc(ev) {
+    if (ev.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
+  });
+}
 
 // ── Sidebar divider drag ──
 {
