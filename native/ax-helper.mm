@@ -780,6 +780,36 @@ static napi_value MoveWindowsToActiveSpace(napi_env env, napi_callback_info info
             }
         }
 
+        // Add/Remove fallback (moveWindowsToSpaceId と同じ方式)
+        if (spaceAfter != activeSpace && spaceBefore > 0) {
+            CFArrayRef winCF  = (__bridge CFArrayRef)@[@(wn)];
+            CFArrayRef toArr  = (__bridge CFArrayRef)@[@((int64_t)activeSpace)];
+            CFArrayRef fromArr= (__bridge CFArrayRef)@[@((int64_t)spaceBefore)];
+            int addCid = (ownerCid > 0) ? ownerCid : cid;
+            CGSAddWindowsToSpaces(addCid, winCF, toArr);
+            usleep(10000);
+            if (pfnSLSCopySpacesForWindows) {
+                CFArrayRef sp = pfnSLSCopySpacesForWindows(cid, 7, (__bridge CFArrayRef)@[@(wn)]);
+                if (sp && CFArrayGetCount(sp) > 0) { CFNumberGetValue((CFNumberRef)CFArrayGetValueAtIndex(sp, 0), kCFNumberSInt64Type, &spaceAfter); CFRelease(sp); }
+            }
+            if (spaceAfter == activeSpace) {
+                CGSRemoveWindowsFromSpaces(addCid, winCF, fromArr);
+                usleep(5000);
+            } else {
+                // ownerCid と cid 両方で試みる
+                CGSAddWindowsToSpaces(cid, winCF, toArr);
+                usleep(10000);
+                if (pfnSLSCopySpacesForWindows) {
+                    CFArrayRef sp = pfnSLSCopySpacesForWindows(cid, 7, (__bridge CFArrayRef)@[@(wn)]);
+                    if (sp && CFArrayGetCount(sp) > 0) { CFNumberGetValue((CFNumberRef)CFArrayGetValueAtIndex(sp, 0), kCFNumberSInt64Type, &spaceAfter); CFRelease(sp); }
+                }
+                if (spaceAfter == activeSpace) {
+                    CGSRemoveWindowsFromSpaces(cid, winCF, fromArr);
+                    usleep(5000);
+                }
+            }
+        }
+
         if (spaceAfter != activeSpace)
             NSLog(@"[tin] moveToActiveSpace wn=%d before=%llu after=%llu target=%llu FAILED",
                   wn, (unsigned long long)spaceBefore, (unsigned long long)spaceAfter, (unsigned long long)activeSpace);

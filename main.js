@@ -329,6 +329,7 @@ async function writeWorkspacesJson() {
       grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios, slotLayout: ws.slotLayout },
       colorIndex: ws.colorIndex,
       snappedExternals: snapped,
+      spaceId: ws._tinSpaceId || 0,
     });
   }
   await atomicWriteJSON(WORKSPACES_JSON, payload);
@@ -369,7 +370,7 @@ function loadPersistedWorkspaces() {
 }
 
 // 復元対象のウィンドウを現在の live list に match させる。
-// 優先度: windowNumber → (app + title 完全一致) → (app + title 前方 40 文字一致)
+// 優先度: windowNumber → title完全 → title前方40 → titleセクション(唯一時) → サイズ近似(唯一時)
 function matchPersistedToLive(persisted, liveWindows) {
   // 1. windowNumber で厳密一致
   const byNum = liveWindows.find(w => w.windowNumber === persisted.windowNumber);
@@ -385,6 +386,31 @@ function matchPersistedToLive(persisted, liveWindows) {
       w.title && w.title.startsWith(prefix)
     );
     if (byPrefix) return byPrefix;
+  }
+  // 4. app + タイトルの最初のセクション（em dash / ダッシュ区切り）
+  // 誤マッチを防ぐため、同じsection名を持つliveウィンドウが1つだけの場合のみ適用
+  // 例: "DevMaze — ✳ ... — 48×31" → "DevMaze" でマッチ
+  if (persisted.title) {
+    const pSection = persisted.title.split(/\s*[—\-–]\s*/)[0].trim();
+    if (pSection.length >= 3) {
+      const matches = liveWindows.filter(w =>
+        w.app === persisted.app &&
+        w.title && w.title.split(/\s*[—\-–]\s*/)[0].trim() === pSection
+      );
+      if (matches.length === 1) return matches[0];
+    }
+  }
+  // 5. app + サイズ近似（±30px）: 同じ設定で起動したターミナルは同サイズになることが多い
+  // 誤マッチを防ぐため、このappのliveウィンドウが1つだけの場合のみ適用
+  if (persisted.origW > 0 && persisted.origH > 0) {
+    const sameApp = liveWindows.filter(w => w.app === persisted.app);
+    if (sameApp.length === 1) {
+      const w = sameApp[0];
+      if (Math.abs((w.width || 0) - persisted.origW) <= 30 &&
+          Math.abs((w.height || 0) - persisted.origH) <= 30) {
+        return w;
+      }
+    }
   }
   return null;
 }
@@ -507,16 +533,25 @@ function scheduleRestoreAll() {
 }
 
 async function restoreAllPending() {
-  // 1回だけ listWindows
+  // 1回だけ listWindows (現在 Space) + 全 Space
   let liveWindows = [];
   for (let attempt = 0; attempt < 3; attempt++) {
     liveWindows = await listWindows();
     if (liveWindows.length > 0) break;
     await new Promise(r => setTimeout(r, 400));
   }
+  let liveAllSpaces = liveWindows;
+  if (axHelper && axHelper.listWindowsAllSpaces) {
+    try {
+      const all = axHelper.listWindowsAllSpaces();
+      if (all.length > liveWindows.length) liveAllSpaces = all.filter(w => w.app !== 'TiN');
+    } catch {}
+  }
+  const liveWindowSet = new Set(liveWindows.map(w => w.windowNumber));
 
   // 全 workspace の pending を一括処理
-  const allMoveCmds = [];
+  const allMoveCmds = [];    // 現 Space にいるウィンドウ → 即座に batchMove
+  const absentWns = [];      // 別 Space のウィンドウ → Space restore に任せる
   for (const [, ws] of workspaces) {
     if (!ws._pendingRestore || !ws.win || ws.win.isDestroyed()) continue;
     const persistedList = ws._pendingRestore;
@@ -525,7 +560,8 @@ async function restoreAllPending() {
     const restored = [];
     const missing = [];
     for (const p of persistedList) {
-      const live = matchPersistedToLive(p, liveWindows);
+      // 現 Space を優先、見つからなければ全 Space から探す
+      const live = matchPersistedToLive(p, liveWindows) || matchPersistedToLive(p, liveAllSpaces);
       if (!live) { missing.push({ app: p.app, title: p.title, slot: p.slot }); continue; }
       if (ws.snappedExternals.has(live.windowNumber)) continue;
       let slot = p.slot;
@@ -534,16 +570,24 @@ async function restoreAllPending() {
       let occupied = false;
       for (const [, info] of ws.snappedExternals) { if (info.slot === slot) { occupied = true; break; } }
       if (occupied) { slot = nextFreeSlot(ws); if (slot < 0) continue; }
+      const isAbsent = !liveWindowSet.has(live.windowNumber);
       ws.snappedExternals.set(live.windowNumber, {
         app: live.app, pid: live.pid, title: live.title,
         windowNumber: live.windowNumber, windowIndex: live.windowIndex || 0, slot,
         origX: p.origX, origY: p.origY, origW: p.origW, origH: p.origH,
         snappedAt: p.snappedAt || Date.now(),
+        _spaceAbsent: isAbsent,
       });
       ws._lastKnownSnappedWns.add(live.windowNumber);
       snappedIndexAdd(live.windowNumber, ws);
       const pos = getSlotBounds(ws, slot);
-      if (pos) allMoveCmds.push({ windowNumber: live.windowNumber, pid: live.pid, app: live.app, title: live.title, windowIndex: live.windowIndex || 0, ...pos });
+      if (!isAbsent && pos) {
+        // 現 Space にいる → 即座に配置
+        allMoveCmds.push({ windowNumber: live.windowNumber, pid: live.pid, app: live.app, title: live.title, windowIndex: live.windowIndex || 0, ...pos });
+      } else if (isAbsent) {
+        // 別 Space → Space restore (1.5s) が ws.snappedExternals を見てまとめて移動
+        absentWns.push(live.windowNumber);
+      }
       restored.push({ app: live.app, title: live.title, slot });
     }
     // renderer に通知
@@ -553,11 +597,10 @@ async function restoreAllPending() {
       for (const [wn, info] of ws.snappedExternals) hydrate.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
       ws.win.webContents.send('hydrate-snapped', hydrate);
     } catch {}
-    console.log(`[tin] restored ${restored.length} snapped, ${missing.length} missing in "${ws.name}"`);
+    console.log(`[tin] restored ${restored.length} snapped (${absentWns.length} absent), ${missing.length} missing in "${ws.name}"`);
   }
 
-  // 全ウィンドウを1回の batchMove で移動
-  // moveWindowsToActiveSpace を先に呼び、ウィンドウを現在 Space に集合させてから AX 移動する
+  // 現 Space のウィンドウを移動 (別 Space のものは Space restore に任せる)
   if (allMoveCmds.length > 0) {
     if (axHelper && axHelper.moveWindowsToActiveSpace) {
       try { axHelper.moveWindowsToActiveSpace(allMoveCmds.map(c => c.windowNumber)); } catch {}
@@ -565,7 +608,6 @@ async function restoreAllPending() {
     }
     await batchMove(allMoveCmds);
     console.log(`[tin] batch restore: moved ${allMoveCmds.length} windows in 1 call`);
-    // sticky 化 — stickyWindows 設定が ON の場合のみ (OFF = コンポジター負荷なし)
     if (appSettings.stickyWindows && axHelper && axHelper.setWindowSticky) {
       const wns = allMoveCmds.map(c => c.windowNumber);
       try { axHelper.setWindowSticky(wns, true); console.log(`[tin] batch restore: sticky set for ${wns.length} windows`); } catch {}
@@ -1299,6 +1341,70 @@ ipcMain.on('raise-tin-window', (_event, { windowNumber }) => {
   } catch {}
 });
 
+// ── IPC: アプリアイコン取得 ──
+// アプリ名 → Base64 data URL（キャッシュあり、重複リクエストは1回のみ実行）
+const _appIconCache = new Map(); // appName → dataURL | null
+const _appIconPending = new Map(); // appName → Promise
+ipcMain.handle('get-app-icon', async (_event, { appName }) => {
+  if (_appIconCache.has(appName)) return _appIconCache.get(appName);
+  if (_appIconPending.has(appName)) return _appIconPending.get(appName);
+  // console.log(`[tin] get-app-icon: "${appName}"`); // debug
+  const p = (async () => {
+    try {
+      const safe = appName.replace(/['"\\;|&`$<>]/g, '');
+      // 1. 固定パスを順に確認（高速、数µs）
+      const searchDirs = [
+        '/Applications',
+        '/System/Applications',
+        '/System/Applications/Utilities',
+        path.join(require('os').homedir(), 'Applications'),
+      ];
+      let appPath = null;
+      for (const dir of searchDirs) {
+        const candidate = path.join(dir, `${safe}.app`);
+        if (fs.existsSync(candidate)) { appPath = candidate; break; }
+      }
+      // 2. 見つからない場合は mdfind -name で検索（~10ms）
+      if (!appPath) {
+        const raw = await execAsync(
+          `mdfind -name "${safe}.app" | grep -E "^/(Applications|System/Applications|Users)" | grep "\\.app$" | head -1`,
+          { timeout: 3000 }
+        );
+        appPath = raw.stdout.trim() || null;
+      }
+      if (!appPath) { _appIconCache.set(appName, null); return null; }
+      // sips で icns → 22x22 PNG 変換（getFileIcon より確実）
+      let iconFile = 'AppIcon';
+      try {
+        const r = await execAsync(`defaults read "${appPath}/Contents/Info" CFBundleIconFile`, { timeout: 2000 });
+        iconFile = r.stdout.trim() || 'AppIcon';
+      } catch {}
+      if (!iconFile.endsWith('.icns')) iconFile += '.icns';
+      let icnsPath = path.join(appPath, 'Contents', 'Resources', iconFile);
+      if (!fs.existsSync(icnsPath)) {
+        // Resources内の最初の icns を使用
+        try {
+          const r = await execAsync(`find "${path.join(appPath, 'Contents/Resources')}" -name "*.icns" | head -1`, { timeout: 2000 });
+          icnsPath = r.stdout.trim();
+        } catch {}
+      }
+      if (!icnsPath || !fs.existsSync(icnsPath)) { _appIconCache.set(appName, null); return null; }
+      const pngPath = path.join(require('os').tmpdir(), `tin_icon_${Buffer.from(appName).toString('hex').slice(0,16)}.png`);
+      await execAsync(`sips -s format png "${icnsPath}" --out "${pngPath}" --resampleHeightWidth 22 22`, { timeout: 3000 });
+      const dataUrl = `data:image/png;base64,${fs.readFileSync(pngPath).toString('base64')}`;
+      _appIconCache.set(appName, dataUrl);
+      return dataUrl;
+    } catch (e) {
+      _appIconCache.set(appName, null);
+      return null;
+    } finally {
+      _appIconPending.delete(appName);
+    }
+  })();
+  _appIconPending.set(appName, p);
+  return p;
+});
+
 // ── IPC: grid config ──
 // Slot picker 用: grid 情報と各 slot の占有状態を返す
 ipcMain.handle('get-grid-state', (event) => {
@@ -1314,7 +1420,7 @@ ipcMain.handle('get-grid-state', (event) => {
     if (!occupant && ws.gridWindows.has(i)) occupant = { type: 'grid', title: `Terminal #${i+1}` };
     slots.push(occupant);
   }
-  return { cols: ws.gridCols, rows: ws.gridRows, slots };
+  return { cols: ws.gridCols, rows: ws.gridRows, slots, slotLayout: ws.slotLayout || null };
 });
 
 // ── Global Hotkeys ──────────────────────────────────────────────────────────
@@ -2006,6 +2112,26 @@ function createWorkspace(name, savedState) {
     webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false, backgroundThrottling: false },
   });
 
+  // macOSアップデート・再起動でディスプレイ配置が変わった場合、
+  // 保存座標が全ディスプレイ範囲外になる。その場合はメインディスプレイ中央に移動。
+  if (savedSidebar) {
+    const allDisplays = screen.getAllDisplays();
+    const wb = win.getBounds();
+    const onAnyDisplay = allDisplays.some(d => {
+      const b = d.bounds;
+      return wb.x < b.x + b.width && wb.x + wb.width > b.x &&
+             wb.y < b.y + b.height && wb.y + wb.height > b.y;
+    });
+    if (!onAnyDisplay) {
+      console.log(`[tin] ws${wsId} off-screen bounds (${wb.x},${wb.y}) — centering on primary display`);
+      win.center();
+      // 複数ウィンドウが完全に重ならないようカスケード配置
+      const cb = win.getBounds();
+      const cascade = (wsId - 1) * 40;
+      win.setPosition(cb.x + cascade, cb.y + cascade);
+    }
+  }
+
   const wsName = name || (savedState && savedState.name) || `Workspace ${wsId}`;
   // HTML <title> による上書きを防止 — CGWindowList でワークスペース名が見えるように
   win.on('page-title-updated', (e) => e.preventDefault());
@@ -2059,6 +2185,45 @@ function createWorkspace(name, savedState) {
     // 新規ウィンドウは setInterval の初回発火まで最大 pollIntervalMs 待つため
     // did-finish-load 直後に一度 poll を即時実行して Available リストを即座に埋める
     setTimeout(() => { if (!ws.win?.isDestroyed()) pollFn().catch(() => {}); }, 200);
+    // Space（デスクトップ）復元: 保存した spaceId に移動
+    // ウィンドウが表示されてから実行する必要があるため 1.5 秒後に試みる
+    const savedSpaceId = savedState && savedState.spaceId;
+    if (savedSpaceId > 0 && axHelper && axHelper.moveWindowsToSpaceId && axHelper.getWindowIdFromHandle && axHelper.getSpacesList) {
+      setTimeout(() => {
+        if (!ws.win || ws.win.isDestroyed()) return;
+        try {
+          // 保存した spaceId が現在も存在するか確認
+          const spaces = axHelper.getSpacesList();
+          const targetSpace = spaces.find(s => Number(s.id) === Number(savedSpaceId));
+          if (!targetSpace) {
+            console.log(`[tin] ws${wsId} Space restore: spaceId=${savedSpaceId} no longer exists (${spaces.length} spaces available)`);
+            return;
+          }
+          const handle = ws.win.getNativeWindowHandle();
+          const ptr = handle.readBigUInt64LE(0);
+          const wid = axHelper.getWindowIdFromHandle(ptr);
+          if (!wid) return;
+          const moved = axHelper.moveWindowsToSpaceId([wid], Number(savedSpaceId));
+          console.log(`[tin] ws${wsId} Space restore → Desktop ${targetSpace.index} (spaceId=${savedSpaceId}) moved=${moved}`);
+          if (moved > 0) {
+            // Space 移動後は pollFn による誤 evict を防ぐため stabilize する
+            beginStabilize('space-restore', ws);
+            // スナップウィンドウも同じ Space に引き寄せる
+            if (ws.snappedExternals.size > 0) {
+              const snappedWns = [...ws.snappedExternals.keys()];
+              try {
+                axHelper.moveWindowsToSpaceId(snappedWns, Number(savedSpaceId));
+                console.log(`[tin] ws${wsId} Space restore: moved ${snappedWns.length} snapped windows to spaceId=${savedSpaceId}`);
+                // 移動完了後にウィンドウを正しいスロット位置に配置
+                setTimeout(() => retileAll(ws).catch(() => {}), 300);
+              } catch {}
+            }
+          }
+        } catch (e) {
+          console.warn(`[tin] ws${wsId} Space restore failed: ${e.message}`);
+        }
+      }, 1500);
+    }
   });
 
   if (process.argv.includes('--dev')) win.webContents.openDevTools({ mode: 'detach' });
@@ -2099,6 +2264,18 @@ function createWorkspace(name, savedState) {
   }, 100);
   // ウィンドウ close 時にタイマーを停止
   win.once('closed', () => clearInterval(_groupyFollowTimer));
+
+  // TiN が focus を受け取ったとき (_spaceAbsent フラグが残っているウィンドウを即座に retile)
+  // Space 切り替え後に TiN へフォーカスが来た瞬間にスナップ位置を適用する
+  let _lastFocusRetile = 0;
+  win.on('focus', () => {
+    const hasAbsent = [...ws.snappedExternals.values()].some(i => i._spaceAbsent);
+    if (!hasAbsent) return;
+    const now = Date.now();
+    if (now - _lastFocusRetile < 1000) return; // throttle: 1s
+    _lastFocusRetile = now;
+    retileAll(ws).catch(() => {});
+  });
 
   win.on('move', onWinMove);
   win.on('resize', onWinMove);
@@ -2143,20 +2320,21 @@ function createWorkspace(name, savedState) {
     // TiN 自身が別 Space に移動した検知 (Mission Control / 直接 Space 移動)
     // sticky 方式: snapped windows は全 Space に存在するため CGS 移動は不要
     // TiN が新 Space に来たら retileAll で位置を揃えるだけでよい
-    if (axHelper && axHelper.getSpaceForWindows &&
-        ws.snappedExternals.size > 0 && !isStabilizing(ws)) {
+    // _tinSpaceId を常時更新 (Space 復元・space-follow の両方に使用)
+    if (axHelper && axHelper.getSpaceForWindows && axHelper.getWindowIdFromHandle) {
       try {
         const handle = ws.win.getNativeWindowHandle();
         const ptr = handle.readBigUInt64LE(0);
-        const tinWid = axHelper.getWindowIdFromHandle ? axHelper.getWindowIdFromHandle(ptr) : 0;
+        const tinWid = axHelper.getWindowIdFromHandle(ptr);
         if (tinWid > 0) {
           const spaces = axHelper.getSpaceForWindows([tinWid]);
           const tinSpaceId = Number(spaces[0]?.spaceId || 0);
           if (tinSpaceId > 0) {
-            if (ws._tinSpaceId > 0 && tinSpaceId !== ws._tinSpaceId) {
+            // snapped ウィンドウがある場合のみ space-follow 処理を行う
+            if (ws.snappedExternals.size > 0 && !isStabilizing(ws) &&
+                ws._tinSpaceId > 0 && tinSpaceId !== ws._tinSpaceId) {
               console.log(`[tin] space-follow (sticky): TiN ${ws._tinSpaceId}→${tinSpaceId}, retiling ${ws.snappedExternals.size} windows`);
               beginStabilize('space-follow', ws);
-              // sticky windows は新 Space でも同じ座標にいるため retileAll だけで揃う
               setTimeout(() => retileAll(ws, true).catch(() => {}), 200);
             }
             ws._tinSpaceId = tinSpaceId;
@@ -2189,7 +2367,7 @@ function createWorkspace(name, savedState) {
             }
           }
         }
-        if (!found) missing++;
+        if (!found && !info._spaceAbsent) missing++;
       }
       if (missing / ws.snappedExternals.size >= 0.5) {
         ws._watchdogMissStreak = (ws._watchdogMissStreak || 0) + 1;
@@ -3210,6 +3388,7 @@ function writeWorkspacesJsonSync() {
       grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios, slotLayout: ws.slotLayout },
       colorIndex: ws.colorIndex,
       snappedExternals: snapped,
+      spaceId: ws._tinSpaceId || 0,
     });
   }
   atomicWriteJSONSync(WORKSPACES_JSON, payload);
@@ -3516,6 +3695,27 @@ function startRestServer() {
       poll().catch(e => console.warn('[tin] launch poll error:', e));
 
       return restReply(res, 202, { ok: true, pid: launchedPid, note: 'launching, window will be snapped automatically' });
+    }
+
+    // GET /api/ax-trust — Accessibility 権限確認
+    if (route === 'GET /api/ax-trust') {
+      const trusted = axHelper ? axHelper.isAXTrusted() : false;
+      return restReply(res, 200, { ok: true, trusted });
+    }
+
+    // POST /api/retile — 全 workspace の snapped ウィンドウを強制再配置
+    if (route === 'POST /api/retile') {
+      const results = [];
+      for (const [, ws] of workspaces) {
+        const before = [];
+        for (const [wn, info] of ws.snappedExternals) {
+          const b = getSlotBounds(ws, info.slot);
+          before.push({ wn, slot: info.slot, pid: info.pid, title: info.title, expectedX: b?.x, expectedY: b?.y });
+        }
+        try { await retileAll(ws); } catch {}
+        results.push({ workspace: ws.name, snappedCount: ws.snappedExternals.size, windows: before });
+      }
+      return restReply(res, 200, { ok: true, results });
     }
 
     restReply(res, 404, { ok: false, error: 'not found' });
