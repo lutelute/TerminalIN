@@ -1041,15 +1041,19 @@ function compactSlots(ws) {
   for (const [slot, gw] of ws.gridWindows) all.push({ type: 'grid', slot, ref: gw });
   for (const [wn, info] of ws.snappedExternals) all.push({ type: 'ext', slot: info.slot, ref: info, wn });
   all.sort((a, b) => a.slot - b.slot);
-  // Re-assign slots 0, 1, 2, ...
+  // slotLayout がある場合は有効な id リストから割り当て、ない場合は連番
+  const validSlots = ws.slotLayout
+    ? ws.slotLayout.map(c => c.id)
+    : Array.from({ length: ws.gridCols * ws.gridRows }, (_, i) => i);
   for (let i = 0; i < all.length; i++) {
+    const newSlot = i < validSlots.length ? validSlots[i] : validSlots[validSlots.length - 1];
     const item = all[i];
     if (item.type === 'grid') {
       ws.gridWindows.delete(item.slot);
-      item.ref.slot = i;
-      ws.gridWindows.set(i, item.ref);
+      item.ref.slot = newSlot;
+      ws.gridWindows.set(newSlot, item.ref);
     } else {
-      item.ref.slot = i;
+      item.ref.slot = newSlot;
     }
   }
 }
