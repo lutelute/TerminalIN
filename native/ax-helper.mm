@@ -124,6 +124,87 @@ static napi_value ListWindows(napi_env env, napi_callback_info info) {
     }
 
     CFRelease(windowList);
+
+    // Screen Recording 権限がないと kCGWindowName が空になる。
+    // Accessibility 権限経由の AX kAXTitleAttribute でタイトルを補完する。
+    uint32_t count = 0;
+    napi_get_array_length(env, result, &count);
+    if (count == 0) return result;
+
+    // PID ごとに AX ウィンドウ一覧を取得し、windowNumber → title をマップ
+    NSMutableDictionary<NSNumber*, NSString*> *axTitleMap = [NSMutableDictionary new];
+    NSMutableSet<NSNumber*> *processedPids = [NSMutableSet new];
+
+    for (uint32_t i = 0; i < count; i++) {
+        napi_value item;
+        napi_get_element(env, result, i, &item);
+
+        // title が空のウィンドウだけ補完
+        napi_value titleVal;
+        napi_get_named_property(env, item, "title", &titleVal);
+        char titleBuf[8] = "";
+        size_t tlen = 0;
+        napi_get_value_string_utf8(env, titleVal, titleBuf, sizeof(titleBuf), &tlen);
+        if (tlen > 0) continue; // タイトルあり → スキップ
+
+        napi_value pidVal;
+        napi_get_named_property(env, item, "pid", &pidVal);
+        int32_t pid = 0;
+        napi_get_value_int32(env, pidVal, &pid);
+        NSNumber *pidKey = @(pid);
+
+        if (![processedPids containsObject:pidKey]) {
+            [processedPids addObject:pidKey];
+            AXUIElementRef appRef = AXUIElementCreateApplication((pid_t)pid);
+            CFTypeRef wRef = NULL;
+            if (AXUIElementCopyAttributeValue(appRef, kAXWindowsAttribute, &wRef) == kAXErrorSuccess && wRef) {
+                CFArrayRef axWins = (CFArrayRef)wRef;
+                CFIndex n = CFArrayGetCount(axWins);
+                for (CFIndex j = 0; j < n; j++) {
+                    AXUIElementRef axWin = (AXUIElementRef)CFArrayGetValueAtIndex(axWins, j);
+                    // AXWindowID を取得してマッピング
+                    CGWindowID wid = 0;
+                    CFTypeRef widRef = NULL;
+                    if (AXUIElementCopyAttributeValue(axWin, CFSTR("AXWindowID"), &widRef) == kAXErrorSuccess && widRef) {
+                        if (CFGetTypeID(widRef) == CFNumberGetTypeID())
+                            CFNumberGetValue((CFNumberRef)widRef, kCFNumberSInt32Type, &wid);
+                        CFRelease(widRef);
+                    }
+                    if (wid == 0) _AXUIElementGetWindow(axWin, &wid);
+                    if (wid == 0) continue;
+
+                    CFTypeRef axTitleRef = NULL;
+                    if (AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute, &axTitleRef) == kAXErrorSuccess && axTitleRef) {
+                        NSString *axTitle = (__bridge_transfer NSString *)axTitleRef;
+                        if (axTitle.length > 0) axTitleMap[@(wid)] = axTitle;
+                    }
+                }
+                CFRelease(wRef);
+            }
+            CFRelease(appRef);
+        }
+    }
+
+    // マップを使って空タイトルを更新
+    if (axTitleMap.count > 0) {
+        for (uint32_t i = 0; i < count; i++) {
+            napi_value item;
+            napi_get_element(env, result, i, &item);
+
+            napi_value wnVal;
+            napi_get_named_property(env, item, "windowNumber", &wnVal);
+            int32_t wn = 0;
+            napi_get_value_int32(env, wnVal, &wn);
+
+            NSString *axTitle = axTitleMap[@(wn)];
+            if (!axTitle) continue;
+
+            napi_value newTitle;
+            napi_create_string_utf8(env, [axTitle UTF8String], NAPI_AUTO_LENGTH, &newTitle);
+            napi_set_named_property(env, item, "title", newTitle);
+        }
+    }
+
     return result;
 }
 
