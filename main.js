@@ -720,7 +720,6 @@ async function recoverSnappedWindows() {
       }
     }
     if (evicted > 0) {
-      compactSlots(ws);
       console.log(`[tin] evicted ${evicted} stale snapped in "${ws.name}"`);
     }
 
@@ -1182,7 +1181,6 @@ ipcMain.handle('remove-grid-terminal', (event, { slot }) => {
   if (gw) {
     if (gw.win && !gw.win.isDestroyed()) gw.win.close();
   }
-  compactSlots(ws);
   retileAll(ws);
   return { ok: true };
 });
@@ -1248,7 +1246,6 @@ ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
   ws.snappedExternals.delete(windowNumber);
   ws._lastKnownSnappedWns.delete(windowNumber);
   snappedIndexRemove(windowNumber);
-  compactSlots(ws);
   // sticky 解除 (unsnap 前に実施)
   if (axHelper && axHelper.setWindowSticky) {
     try { axHelper.setWindowSticky([windowNumber], false); } catch {}
@@ -1473,7 +1470,6 @@ async function unsnapFrontmostWindow(ws) {
   ws.snappedExternals.delete(wn);
   ws._lastKnownSnappedWns.delete(wn);
   snappedIndexRemove(wn);
-  compactSlots(ws);
   scheduleSyncSnapped(0);
   if (axHelper.setWindowSticky) try { axHelper.setWindowSticky([wn], false); } catch {}
   const cmds = [{ windowNumber: wn, pid: info.pid, app: info.app, title: info.title,
@@ -2489,11 +2485,10 @@ function createWorkspace(name, savedState) {
             info._spaceAbsent = true;
             info._missCount = 0;
           } else {
-            // 本当に閉じた → 削除
+            // 本当に閉じた → 削除（スロット位置は維持）
             ws.snappedExternals.delete(k);
             ws._lastKnownSnappedWns.delete(k);
             snappedIndexRemove(k);
-            compactSlots(ws);
             snappedChanged = true;
           }
         }
@@ -2907,7 +2902,6 @@ function handleTinUrl(rawUrl) {
             match.ws.snappedExternals.delete(match.info.windowNumber);
             match.ws._lastKnownSnappedWns.delete(match.info.windowNumber);
             snappedIndexRemove(match.info.windowNumber);
-            compactSlots(match.ws);
             try {
               await batchMove([{
                 windowNumber: match.info.windowNumber,
@@ -3496,7 +3490,6 @@ function startRestServer() {
         ws.snappedExternals.delete(wn);
         ws._lastKnownSnappedWns.delete(wn);
         snappedIndexRemove(wn);
-        compactSlots(ws);
         scheduleSyncSnapped(0);
         if (axHelper?.setWindowSticky) try { axHelper.setWindowSticky([wn], false); } catch {}
         osascriptMove([{ windowNumber: wn, pid: info.pid, app: info.app, title: info.title,
