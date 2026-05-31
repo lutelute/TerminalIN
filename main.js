@@ -2597,12 +2597,14 @@ function createWorkspace(name, savedState) {
         ws._ctGuardTimer = setTimeout(_ctGuardLoop, 800);
         return;
       }
-      // サイドバー or ヘッダー → OFF、グリッドエリア → ON
-      // X 軸: サイドバー幅までは常に操作可能、グリッドエリア (右側) だけ clickthrough
-      const sidebarRight = b.x + (ws.sidebarWidth || DEFAULT_SIDEBAR_W) + SIDEBAR_DIVIDER_W;
-      const inSidebar = cursor.x < sidebarRight;
-      const inHeader  = cursor.y < b.y + TITLEBAR_H;
-      _setCT(!(inSidebar || inHeader || ws._hasOverlay || ws._editMode));
+      // ヘッダー → OFF (操作可能)、グリッドエリア → ON (背後/grid端末へ透過)。
+      // 旧・常時サイドバー時代は左帯 (sidebarWidth) も OFF にしていたが、現在は
+      // グリッドが全幅で左に常時サイドバーは無い (#sidebar は width:100% の全幅ヘッダー)。
+      // ドロワーは開閉式で、開いている間は notifyOverlay→ws._hasOverlay が立ち全域 OFF
+      // になる。よって左帯の OFF は不要で、むしろ左端のグリッド端末を操作不能にしていた
+      // (= 左端だけ選択しづらいバグ)。ヘッダー保護とドロワー保護は下記で維持。
+      const inHeader = cursor.y < b.y + TITLEBAR_H;
+      _setCT(!(inHeader || ws._hasOverlay || ws._editMode));
       ws._ctGuardTimer = setTimeout(_ctGuardLoop, 50);
     } catch {
       ws._ctGuardTimer = setTimeout(_ctGuardLoop, 200);
@@ -2651,15 +2653,21 @@ function createWorkspace(name, savedState) {
 // workspace をクリックすると snapped ターミナルが全部まとまって前面に来る。
 app.on('browser-window-focus', (_event, focusedWin) => {
   let ws = null;
+  let isGridWin = false;
   for (const [, w] of workspaces) {
     if (w.win === focusedWin) { ws = w; break; }
     for (const [, gw] of w.gridWindows) {
-      if (gw.win === focusedWin) { ws = w; break; }
+      if (gw.win === focusedWin) { ws = w; isGridWin = true; break; }
     }
     if (ws) break;
   }
   if (ws) {
-    raiseAllWorkspaceWindows(ws);
+    // grid terminal (組み込み端末の子ウィンドウ) を focus したときは TiN 本体を
+    // せり上げない。raiseAllWorkspaceWindows は ws.win.show() で TiN 本体を前面化
+    // するため、grid 端末の操作中に呼ぶと端末がせり上がってきた TiN に覆われる
+    // (= グリッド内端末の操作時に前面化するバグ)。サイドバー/ヘッダーの focus 時
+    // だけ snapped を前面に集める。
+    if (!isGridWin) raiseAllWorkspaceWindows(ws);
     scheduleSyncSnapped(200);
   }
 });
