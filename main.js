@@ -3080,6 +3080,68 @@ ipcMain.on('switch-to-workspace-of', (_event, { windowNumber }) => {
 });
 
 ipcMain.on('trigger-auto-snap', (_event, opts) => triggerAutoSnap(opts));
+
+// ── AI 色判定: snapped 端末の用途を haiku が判定して色を割り当てる ──
+ipcMain.handle('ai-colorize', async (event) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return { ok: false, error: 'no workspace' };
+  const windows = [...ws.snappedExternals.entries()].map(([wn, info]) => ({
+    windowNumber: wn, app: info.app, title: info.title,
+  }));
+  if (!windows.length) return { ok: false, error: 'snap されたウィンドウがありません' };
+  try {
+    const result = await autoSnap.colorizeWindows(windows, autoSnap.loadConfig());
+    if (result.error) return { ok: false, error: result.error };
+    const colors = {};
+    for (const a of (result.assignments || [])) {
+      const w = windows[(a.index || 0) - 1];
+      if (w && a.color) colors[w.windowNumber] = a.color;
+    }
+    return { ok: true, colors };
+  } catch (e) {
+    console.warn('[tin] ai-colorize failed:', e?.message || e);
+    return { ok: false, error: e.message };
+  }
+});
+
+// ── 状態色判定: claude が実際に動いているタブを ps+osascript で特定し、
+// title の ✳ 残存に騙されず「動作中/指示待ち/停止」を正確に判定する ──
+async function getClaudeLiveTitles() {
+  try {
+    const { stdout: ps } = await execAsync("ps -axo tty,command | grep -iE '[c]laude' | awk '{print $1}'", { timeout: 3000 });
+    const ttys = new Set(ps.split('\n').map(s => s.trim()).filter(t => t && t !== '??'));
+    if (!ttys.size) return [];
+    const script = 'tell application "Terminal"\nset out to ""\nrepeat with w in windows\nrepeat with t in tabs of w\ntry\nset out to out & (tty of t) & " :: " & (custom title of t) & linefeed\nend try\nend repeat\nend repeat\nreturn out\nend tell';
+    const { stdout: term } = await execAsync(`osascript -e '${script}'`, { timeout: 4000 });
+    const live = [];
+    for (const line of term.split('\n')) {
+      const idx = line.indexOf(' :: ');
+      if (idx < 0) continue;
+      const tty = line.slice(0, idx).replace('/dev/', '').trim();
+      const title = line.slice(idx + 4).trim();
+      if (ttys.has(tty) && title) live.push(title);
+    }
+    return live;
+  } catch (e) { console.warn('[tin] getClaudeLiveTitles failed:', e?.message || e, '|| STDERR:', (e && e.stderr) ? String(e.stderr).trim() : '(empty)'); return null; }
+}
+
+ipcMain.handle('status-colorize', async (event) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return { ok: false };
+  const liveTitles = await getClaudeLiveTitles();
+  if (liveTitles === null) return { ok: false, error: 'status 取得失敗' };
+  // claude 稼働タブのタスク名 (先頭の ✳/スピナー等を除去)
+  const liveTasks = liveTitles.map(t => t.replace(/^[\s✳✶✦✻✴⠀-⣿]+/, '').trim()).filter(s => s.length >= 4);
+  const colors = {};
+  for (const [wn, info] of ws.snappedExternals) {
+    const t = info.title || '';
+    const isLive = liveTasks.some(task => t.includes(task.slice(0, 16)));
+    if (!isLive) { colors[wn] = '#8a9099'; continue; }            // claude 非稼働 → 灰(停止)
+    colors[wn] = /[⠀-⣿]/.test(t) ? '#e6962c' : '#28b464'; // スピナー→橙(動作中) / それ以外→緑(指示待ち)
+  }
+  return { ok: true, colors };
+});
+
 async function triggerAutoSnap(opts = {}) {
   const filter = (opts && opts.filter) || 'all';
   const FINDER_APPS = new Set(['Finder', 'ファインダー']);
