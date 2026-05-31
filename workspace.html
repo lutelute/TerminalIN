@@ -2014,13 +2014,32 @@ function colorFor(wn, slot, title) {
   return slotColor(slot);                                // フォールバック: 配置順スロット色
 }
 
-// 状態色をプロセスベース(claude が実際に動いているか tty で判定)で定期取得。
-// title の ✳ 残存による「終了済みなのに緑」の誤判定を防ぐ。3秒poll より重いので 6 秒間隔。
+// 状態色をプロセスベース(claude稼働を ps+tty、許可待ち/エラーを history で判定)で定期取得。
+// 要対応(許可待ち/エラー)が新規発生したらポップアップ通知でアクションを促す。6秒間隔。
+let _prevStates = {};
 async function refreshStatusColors() {
   try {
     const r = await ipcRenderer.invoke('status-colorize');
-    if (r && r.ok) { statusColors = r.colors || {}; render(); }
+    if (!r || !r.ok) return;
+    statusColors = r.colors || {};
+    const states = r.states || {}, labels = r.labels || {};
+    for (const wn in states) {
+      const st = states[wn];
+      if ((st === 'perm' || st === 'error') && _prevStates[wn] !== st) {  // 新規の要対応のみ通知
+        const info = snappedExternals.get(Number(wn));
+        const name = info ? String(info.title || info.app || '端末').split(' — ')[0].replace(/^[\s✳✶✦✻✴⠀-⣿]+/, '').trim() : '端末';
+        notifyAction(name || '端末', labels[wn] || st, st);
+      }
+    }
+    _prevStates = states;
+    render();
   } catch {}
+}
+// 要対応をポップアップ(macOS通知 + TiN内トースト)で知らせる
+function notifyAction(name, label, st) {
+  const icon = st === 'perm' ? '🔴' : '🟣';
+  try { new Notification(`TiN ${icon} ${label}`, { body: `${name} が${label}です。対応してください` }); } catch {}
+  try { showToast(`${icon} ${label}: ${name}`); } catch {}
 }
 setInterval(refreshStatusColors, 6000);
 setTimeout(refreshStatusColors, 1500);

@@ -6,6 +6,7 @@ const pty = require('node-pty');
 const { spawn, exec, execFile, execSync } = require('child_process');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const autoSnap = require('./auto-snap');
 
 // N-API native addon: AXUIElement 操作を Electron main process 内で直接実行。
@@ -3104,42 +3105,51 @@ ipcMain.handle('ai-colorize', async (event) => {
   }
 });
 
-// ── 状態色判定: claude が実際に動いているタブを ps+osascript で特定し、
-// title の ✳ 残存に騙されず「動作中/指示待ち/停止」を正確に判定する ──
-async function getClaudeLiveTitles() {
+// ── 状態判定: claude が動いているタブを ps+osascript で特定し、history の内容から
+// 許可待ち/エラーを判定する。title の ✳ 残存に騙されない。各 {title, state} を返す。
+// state: 'perm'(許可待ち) / 'error'(エラー) / 'live'(稼働中、動作/入力は title で別判定)
+async function getClaudeStatuses() {
   try {
     const { stdout: ps } = await execAsync("ps -axo tty,command | grep -iE '[c]laude' | awk '{print $1}'", { timeout: 3000 });
     const ttys = new Set(ps.split('\n').map(s => s.trim()).filter(t => t && t !== '??'));
     if (!ttys.size) return [];
-    const script = 'tell application "Terminal"\nset out to ""\nrepeat with w in windows\nrepeat with t in tabs of w\ntry\nset out to out & (tty of t) & " :: " & (custom title of t) & linefeed\nend try\nend repeat\nend repeat\nreturn out\nend tell';
-    const { stdout: term } = await execAsync(`osascript -e '${script}'`, { timeout: 4000 });
-    const live = [];
+    // 変数名は st(=序数1stと衝突しエラー) を避け sv を使う。history は最後220文字だけ見て
+    // 過去ログの残存による誤判定を防ぐ。許可待ち(claude の y/n プロンプト)のみ検出。
+    const script = 'tell application "Terminal"\nset out to ""\nrepeat with w in windows\nrepeat with t in tabs of w\ntry\nset ct to (custom title of t)\nset sv to "live"\nset h to ""\ntry\nset h to (characters -220 thru -1 of (history of t) as string)\non error\nset h to (history of t) as string\nend try\nif h contains "❯ 1. Yes" or h contains "Do you want to proceed" or h contains "1. Yes  2. No" then\nset sv to "perm"\nend if\nset out to out & (tty of t) & " :: " & sv & " :: " & ct & linefeed\nend try\nend repeat\nend repeat\nreturn out\nend tell';
+    const { stdout: term } = await execFileAsync('osascript', ['-e', script], { timeout: 6000 });
+    const list = [];
     for (const line of term.split('\n')) {
-      const idx = line.indexOf(' :: ');
-      if (idx < 0) continue;
-      const tty = line.slice(0, idx).replace('/dev/', '').trim();
-      const title = line.slice(idx + 4).trim();
-      if (ttys.has(tty) && title) live.push(title);
+      const parts = line.split(' :: ');
+      if (parts.length < 3) continue;
+      const tty = parts[0].replace('/dev/', '').trim();
+      const state = parts[1].trim();
+      const title = parts.slice(2).join(' :: ').trim();
+      if (ttys.has(tty) && title) list.push({ title, state });
     }
-    return live;
-  } catch (e) { console.warn('[tin] getClaudeLiveTitles failed:', e?.message || e, '|| STDERR:', (e && e.stderr) ? String(e.stderr).trim() : '(empty)'); return null; }
+    return list;
+  } catch (e) { console.warn('[tin] getClaudeStatuses failed:', e?.message || e, '|| STDERR:', (e && e.stderr) ? String(e.stderr).trim() : '(empty)'); return null; }
 }
 
 ipcMain.handle('status-colorize', async (event) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return { ok: false };
-  const liveTitles = await getClaudeLiveTitles();
-  if (liveTitles === null) return { ok: false, error: 'status 取得失敗' };
-  // claude 稼働タブのタスク名 (先頭の ✳/スピナー等を除去)
-  const liveTasks = liveTitles.map(t => t.replace(/^[\s✳✶✦✻✴⠀-⣿]+/, '').trim()).filter(s => s.length >= 4);
-  const colors = {};
+  const statuses = await getClaudeStatuses();
+  if (statuses === null) return { ok: false, error: 'status 取得失敗' };
+  // 色はアクション必要度順: 許可待ち(赤)>エラー(赤紫)>入力待ち(黄)>処理中(青)>停止(灰)
+  const colors = {}, states = {}, labels = {};
   for (const [wn, info] of ws.snappedExternals) {
     const t = info.title || '';
-    const isLive = liveTasks.some(task => t.includes(task.slice(0, 16)));
-    if (!isLive) { colors[wn] = '#8a9099'; continue; }            // claude 非稼働 → 灰(停止)
-    colors[wn] = /[⠀-⣿]/.test(t) ? '#e6962c' : '#28b464'; // スピナー→橙(動作中) / それ以外→緑(指示待ち)
+    const m = statuses.find(s => {
+      const task = s.title.replace(/^[\s✳✶✦✻✴⠀-⣿]+/, '').trim();
+      return task.length >= 4 && t.includes(task.slice(0, 16));
+    });
+    if (!m) { colors[wn] = '#8a9099'; states[wn] = 'stopped'; labels[wn] = '停止'; continue; }       // claude非稼働
+    if (m.state === 'perm')       { colors[wn] = '#e0443e'; states[wn] = 'perm';  labels[wn] = '許可待ち'; }   // 🔴 即対応
+    else if (m.state === 'error') { colors[wn] = '#b5179e'; states[wn] = 'error'; labels[wn] = 'エラー'; }     // 🟣 対処
+    else if (/[⠀-⣿]/.test(t))     { colors[wn] = '#3c78e6'; states[wn] = 'busy';  labels[wn] = '処理中'; }     // 🔵 待つ
+    else                          { colors[wn] = '#e0a000'; states[wn] = 'input'; labels[wn] = '入力待ち'; }   // 🟡 要対応
   }
-  return { ok: true, colors };
+  return { ok: true, colors, states, labels };
 });
 
 async function triggerAutoSnap(opts = {}) {
