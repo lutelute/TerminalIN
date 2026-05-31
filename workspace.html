@@ -115,10 +115,11 @@
   .gp-cell { background: rgba(255,255,255,0.08); border-radius: 4px; }
   .gp-cell-empty { background: transparent; }
   /* スナップ済みスロットは完全透明 — 板の上に何も出ない */
-  body.show-empty-slots #gp-grid .gp-cell.cell-occupied,
   body.show-empty-slots #gp-grid .gp-cell.cell-active,
-  body.show-grid-overlay #gp-grid .gp-cell.cell-occupied,
   body.show-grid-overlay #gp-grid .gp-cell.cell-active { opacity: 0; }
+  /* 占有セルは背景を消して slot 色の枠 (inline border) だけ残す → 外部端末を囲む */
+  body.show-empty-slots #gp-grid .gp-cell.cell-occupied,
+  body.show-grid-overlay #gp-grid .gp-cell.cell-occupied { background: transparent; }
 
   /* 分割線なし */
   .gp-divider { display: none; }
@@ -1994,6 +1995,51 @@ function getAppColor(appName) {
   return `hsl(${hue},55%,40%)`;
 }
 
+// スロット識別色: 配置順(スロット番号)で端末に色を自動割当。
+// タブ左帯・カード左枠に反映して「どれがどのスロットか」を一目で分かるようにする。
+const SLOT_COLORS = ['#3c78e6', '#28b464', '#e6962c', '#c8503c', '#9650dc', '#1aa8a8'];
+function slotColor(n) {
+  const i = Number(n);
+  if (!Number.isFinite(i) || i < 0) return SLOT_COLORS[0];
+  return SLOT_COLORS[i % SLOT_COLORS.length];
+}
+
+// AI 判定色: windowNumber → 色(hex)。ai-colorize(🎨)で埋まる。
+let aiColors = {};
+// 状態色: windowNumber → 色(hex)。main の status-colorize(claude稼働を ps+tty で判定)で定期更新。
+let statusColors = {};
+function colorFor(wn, slot, title) {
+  if (wn && aiColors[wn]) return aiColors[wn];          // 🎨 AI色(手動)が最優先
+  if (wn && statusColors[wn]) return statusColors[wn];  // プロセスベース状態色(動作中/指示待ち/停止)
+  return slotColor(slot);                                // フォールバック: 配置順スロット色
+}
+
+// 状態色をプロセスベース(claude が実際に動いているか tty で判定)で定期取得。
+// title の ✳ 残存による「終了済みなのに緑」の誤判定を防ぐ。3秒poll より重いので 6 秒間隔。
+async function refreshStatusColors() {
+  try {
+    const r = await ipcRenderer.invoke('status-colorize');
+    if (r && r.ok) { statusColors = r.colors || {}; render(); }
+  } catch {}
+}
+setInterval(refreshStatusColors, 6000);
+setTimeout(refreshStatusColors, 1500);
+
+// AI 色判定を実行 (haiku が端末の用途を判定して色割当)。もう一度押すと解除。
+async function runAiColorize(btn) {
+  if (Object.keys(aiColors).length > 0) { aiColors = {}; render(); return; }
+  if (btn) btn.textContent = '⏳';
+  try {
+    const r = await ipcRenderer.invoke('ai-colorize');
+    if (r && r.ok) { aiColors = r.colors || {}; render(); }
+    else if (statusEl) statusEl.textContent = 'AI色: ' + ((r && r.error) || '失敗');
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'AI色エラー: ' + e.message;
+  } finally {
+    if (btn) btn.textContent = '🎨';
+  }
+}
+
 // アプリアイコン取得（クライアント側キャッシュ、非同期）
 const _iconUrlCache = new Map(); // appName → dataURL | null
 async function getAppIconUrl(appName) {
@@ -2311,6 +2357,12 @@ const _termContainers = new Map();
 let _sectionsAttached = false;
 
 function render() {
+  // 状態色のため snapped の title を最新(poll で更新された externalWindows)に同期。
+  // これで poll ごと(3秒)に状態マークの変化が色に反映される。
+  for (const [wn, info] of snappedExternals) {
+    const live = externalWindows.find(w => w.windowNumber === wn);
+    if (live && live.title) info.title = live.title;
+  }
   // ━━ GRID section (rebuild children only) ━━
   _gridSection.innerHTML = '';
   const _titlebarGrid = document.getElementById('titlebar-grid');
@@ -2457,6 +2509,7 @@ function render() {
       const tab = document.createElement('div');
       const isActive = frontmostWindowNumber === 0 && Number(slot) === 0;
       tab.className = 'groupy-tab' + (isActive ? ' active' : '');
+      tab.style.borderLeft = `3px solid ${slotColor(slot)}`;
       tab.innerHTML = `<span class="tab-icon term">T</span>`
         + `<span class="tab-title">${data.title || `Terminal ${Number(slot)+1}`}</span>`
         + `<span class="tab-close" data-slot="${slot}">×</span>`;
@@ -2475,6 +2528,9 @@ function render() {
       const isActive = wn === frontmostWindowNumber;
       const tab = document.createElement('div');
       tab.className = 'groupy-tab' + (isActive ? ' active' : '');
+      const tc = colorFor(wn, info.slot ?? 0, info.title);
+      tab.style.borderLeft = `5px solid ${tc}`;
+      tab.style.background = tc + '24';
       const isFinder = isFinderApp(info.app||'');
       const isTerm = isTerminalApp(info.app||'');
       const iconClass = isFinder ? 'finder' : isTerm ? 'term' : 'app';
@@ -2518,6 +2574,13 @@ function render() {
     addTabBtn.textContent = '+';
     addTabBtn.addEventListener('click', () => ipcRenderer.invoke('add-grid-terminal'));
     _titlebarGrid.appendChild(addTabBtn);
+    // 🎨 AI 色判定ボタン (haiku が端末の用途を判定して色分け / 再押下で解除)
+    const aiColorBtn = document.createElement('div');
+    aiColorBtn.className = 'groupy-tab-add';
+    aiColorBtn.title = 'AI が端末の用途を判定して色分け (もう一度押すと解除)';
+    aiColorBtn.textContent = '🎨';
+    aiColorBtn.addEventListener('click', () => runAiColorize(aiColorBtn));
+    _titlebarGrid.appendChild(aiColorBtn);
     // コントロールは row1 の右側ボタン群に移動済み (コンパクト)
     _titlebarGrid.appendChild(selector);
   } else {
@@ -2629,6 +2692,11 @@ function render() {
     const card = document.createElement('div');
     card.className = 'ext-item slot-card';
     card.dataset.slot = slotId;
+    if (entry) {
+      const dc = colorFor(entry && entry.wn, slotId, entry && entry.info && entry.info.title);
+      card.style.borderLeft = `5px solid ${dc}`;
+      card.style.background = dc + '18';
+    }
 
     const slotBadge = document.createElement('span');
     slotBadge.className = 'slot-badge';
@@ -2935,6 +3003,32 @@ function render() {
   // 空きスロット常時薄表示: グリッドモードで空きがある時
   const hasEmpty = totalItems < gridCols * gridRows;
   document.body.classList.toggle('show-empty-slots', currentViewMode === 'grid' && hasEmpty);
+
+  // #gp-grid に占有セルの slot 色枠を描く (外部端末を囲む)。gap/padding は
+  // getSlotBounds と一致するため、均等グリッドなら枠が端末にほぼ重なる。
+  const gpEl = document.getElementById('gp-grid');
+  if (gpEl) {
+    const ovCells = gpSlotLayout || Array.from({ length: gridCols * gridRows },
+      (_, k) => ({ id: k, col: k % gridCols, row: Math.floor(k / gridCols), colSpan: 1, rowSpan: 1 }));
+    gpEl.style.gridTemplateColumns = `repeat(${gridCols}, 1fr)`;
+    gpEl.style.gridTemplateRows = `repeat(${gridRows}, 1fr)`;
+    gpEl.innerHTML = '';
+    for (const c of ovCells) {
+      const d = document.createElement('div');
+      d.className = 'gp-cell';
+      d.style.gridColumn = `${c.col + 1} / span ${c.colSpan}`;
+      d.style.gridRow = `${c.row + 1} / span ${c.rowSpan}`;
+      const ovEntry = slotEntries.get(c.id);
+      if (ovEntry) {
+        d.classList.add('cell-occupied');
+        const cc = colorFor(ovEntry.wn, c.id, ovEntry.info && ovEntry.info.title);
+        d.style.border = `4px solid ${cc}`;
+        d.style.borderRadius = '6px';
+        d.style.boxShadow = `0 0 14px ${cc}, inset 0 0 20px ${cc}55`;
+      }
+      gpEl.appendChild(d);
+    }
+  }
 }
 
 // ── IPC ──
@@ -2957,7 +3051,10 @@ let _lastRenderKey = '';
 function buildRenderKey() {
   // snapped + grid の変化だけをキーにする (タイトルはドロワー表示分のみ)
   let k = '';
-  for (const [wn, info] of snappedExternals) k += `${wn}:${info.slot},`;
+  for (const [wn, info] of snappedExternals) {
+    // 状態色(main の status-colorize 由来)も key に含める → 状態が変わると再描画
+    k += `${wn}:${info.slot}:${statusColors[wn] || ''},`;
+  }
   k += '|';
   for (const slot of Object.keys(gridSlots)) k += `${slot},`;
   k += '|' + frontmostWindowNumber;

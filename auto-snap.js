@@ -215,4 +215,41 @@ async function executeAutoSnap(availableWindows, createWorkspaceFn, snapFn) {
   return { ok: true, created };
 }
 
-module.exports = { loadConfig, ensureConfig, clusterWindows, executeAutoSnap, appendHistory, loadRecentHistory, CONFIG_FILE, HISTORY_FILE };
+// ── AI 色判定: 各ウィンドウの用途を判定して色(hex)を割り当てる ──
+// clusterWindows と同じ Claude CLI (haiku) を流用。API キー不要。
+async function colorizeWindows(windows, config) {
+  const windowList = windows.map((w, i) => `${i + 1}. [${w.app}] ${w.title}`).join('\n');
+  const prompt = `あなたはターミナルの整理アシスタントです。
+以下の各ターミナルウィンドウの「用途」を判定し、用途ごとに色(hex)を割り当ててください。
+同じ用途のウィンドウは同じ色に、違う用途は違う色にします。
+
+## ユーザーコンテキスト
+${config.context || '(未設定)'}
+
+## ウィンドウ
+${windowList}
+
+## ルール
+- 鮮やかで視認性の高い色を使う (例: #3c78e6=青, #28b464=緑, #e6962c=橙, #c8503c=赤, #9650dc=紫, #1aa8a8=青緑)
+- category は短い日本語名 (例: AI作業, ビルド, サーバー, 編集, git)
+
+## 出力形式 (JSON のみ、説明不要)
+\`\`\`json
+{ "assignments": [ { "index": 1, "category": "AI作業", "color": "#9650dc" } ] }
+\`\`\``;
+  try {
+    const text = await callClaude(prompt);
+    let jsonStr = null;
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fenced) jsonStr = fenced[1].trim();
+    if (!jsonStr) { const br = text.match(/\{[\s\S]*"assignments"[\s\S]*\}/); if (br) jsonStr = br[0]; }
+    if (!jsonStr) return { error: 'AI 応答を解析できませんでした' };
+    const parsed = JSON.parse(jsonStr);
+    if (!Array.isArray(parsed.assignments)) return { error: '無効な形式' };
+    return { assignments: parsed.assignments };
+  } catch (e) {
+    return { error: `Claude CLI エラー: ${e.message}` };
+  }
+}
+
+module.exports = { loadConfig, ensureConfig, clusterWindows, colorizeWindows, executeAutoSnap, appendHistory, loadRecentHistory, CONFIG_FILE, HISTORY_FILE };
