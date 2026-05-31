@@ -434,7 +434,7 @@ async function restoreSnappedWindows(ws, persistedList) {
     try {
       const allSpaces = axHelper.listWindowsAllSpaces();
       if (allSpaces.length > liveWindows.length) liveAllSpaces = allSpaces;
-    } catch {}
+    } catch (e) { console.warn('[tin] restore: listWindowsAllSpaces failed:', e?.message || e); }
   }
 
   const restored = [];
@@ -511,7 +511,7 @@ async function restoreSnappedWindows(ws, persistedList) {
       hydrate.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
     }
     ws.win.webContents.send('hydrate-snapped', hydrate);
-  } catch {}
+  } catch (e) { console.warn('[tin] restore hydrate send failed:', e?.message || e); }
 
   // サイドバー側の snappedExternals Map も同期するため
   // external-windows 更新を即座に trigger (pollTimer を待たずに)
@@ -545,7 +545,7 @@ async function restoreAllPending() {
     try {
       const all = axHelper.listWindowsAllSpaces();
       if (all.length > liveWindows.length) liveAllSpaces = all.filter(w => w.app !== 'TiN');
-    } catch {}
+    } catch (e) { console.warn('[tin] restoreAllPending: listWindowsAllSpaces failed:', e?.message || e); }
   }
   const liveWindowSet = new Set(liveWindows.map(w => w.windowNumber));
 
@@ -596,14 +596,14 @@ async function restoreAllPending() {
       const hydrate = [];
       for (const [wn, info] of ws.snappedExternals) hydrate.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
       ws.win.webContents.send('hydrate-snapped', hydrate);
-    } catch {}
+    } catch (e) { console.warn('[tin] restore hydrate send failed:', e?.message || e); }
     console.log(`[tin] restored ${restored.length} snapped (${absentWns.length} absent), ${missing.length} missing in "${ws.name}"`);
   }
 
   // 現 Space のウィンドウを移動 (別 Space のものは Space restore に任せる)
   if (allMoveCmds.length > 0) {
     if (axHelper && axHelper.moveWindowsToActiveSpace) {
-      try { axHelper.moveWindowsToActiveSpace(allMoveCmds.map(c => c.windowNumber)); } catch {}
+      try { axHelper.moveWindowsToActiveSpace(allMoveCmds.map(c => c.windowNumber)); } catch (e) { console.warn('[tin] restore moveToActiveSpace failed:', e?.message || e); }
       await new Promise(r => setTimeout(r, 80));
     }
     await batchMove(allMoveCmds);
@@ -641,7 +641,7 @@ function listWindows() {
     try {
       const all = axHelper.listWindows();
       return Promise.resolve(all.filter(w => w.app !== 'TiN'));
-    } catch {}
+    } catch (e) { console.warn('[tin] listWindows failed:', e?.message || e); }
   }
   return Promise.resolve([]);
 }
@@ -649,7 +649,7 @@ function listWindows() {
 // UI 表示用 (available リスト)。TiN ウィンドウも含めて別 workspace への移動を可能にする。
 function listWindowsForUI() {
   if (axHelper) {
-    try { return Promise.resolve(axHelper.listWindows()); } catch {}
+    try { return Promise.resolve(axHelper.listWindows()); } catch (e) { console.warn('[tin] listWindowsForUI failed:', e?.message || e); }
   }
   return Promise.resolve([]);
 }
@@ -659,7 +659,7 @@ function listWindowsForUI() {
 // event loop をブロックしないので、次の move イベントをすぐ処理できる。
 function fireAndForgetMove(windows, positionOnly = false) {
   if (!windows.length || !axHelper) return;
-  try { axHelper.moveWindows(windows, positionOnly); } catch {}
+  try { axHelper.moveWindows(windows, positionOnly); } catch (e) { console.warn('[tin] fireAndForgetMove failed:', e?.message || e); }
 }
 
 // ── Stabilization guard ──
@@ -710,7 +710,7 @@ async function recoverSnappedWindows() {
       // title prefix でも見つからない場合は別 Space 確認
       let foundElsewhere = false;
       if (axHelper && axHelper.listWindowsAllSpaces) {
-        try { foundElsewhere = axHelper.listWindowsAllSpaces().some(w => w.windowNumber === k); } catch {}
+        try { foundElsewhere = axHelper.listWindowsAllSpaces().some(w => w.windowNumber === k); } catch (e) { console.warn('[tin] recover: listWindowsAllSpaces failed:', e?.message || e); }
       }
       if (!foundElsewhere) {
         ws.snappedExternals.delete(k);
@@ -724,7 +724,7 @@ async function recoverSnappedWindows() {
     }
 
     // retile で現在の sidebar 位置に基づいて再配置
-    try { await retileAll(ws); } catch {}
+    try { await retileAll(ws); } catch (e) { console.warn('[tin] recover retile failed:', e?.message || e); }
     // renderer 更新
     const hydrate = [];
     for (const [wn, info] of ws.snappedExternals) hydrate.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
@@ -806,7 +806,7 @@ async function batchMove(cmds) {
     const moved = axHelper.moveWindows(cmds, false);
     const dt = Date.now() - t0;
     if (dt > 30) console.log(`[tin] batchMove(native): ${dt}ms ${cmds.length}win moved=${moved}`);
-  } catch {}
+  } catch (e) { console.warn('[tin] batchMove(native) failed:', e?.message || e); }
   // osascript fallback は廃止 — System Events が全アプリに Automation 権限を要求するため
 }
 
@@ -856,7 +856,7 @@ async function raiseSpecificWindows(cmds) {
     axHelper.raiseWindows(cmds);
     const dt = Date.now() - t0;
     if (dt > 30) console.log(`[tin] raise(native): ${dt}ms ${cmds.length}win`);
-  } catch {}
+  } catch (e) { console.warn('[tin] raise(native) failed:', e?.message || e); }
   // osascript fallback は使わない — spawn ~200ms の遅延がタブ選択のもたつきの原因
 }
 
@@ -1230,7 +1230,7 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
         axHelper.setWindowSticky([windowNumber], true);
         console.log(`[tin] snap: wn=${windowNumber} → sticky=true`);
       }
-    } catch {}
+    } catch (e) { console.warn('[tin] snap AX op failed:', e?.message || e); }
   })();
   scheduleSaveWorkspaces();
   console.log(`[tin] snap: prep=${Date.now()-t0}ms (AX 非同期)`);
@@ -1248,7 +1248,7 @@ ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
   snappedIndexRemove(windowNumber);
   // sticky 解除 (unsnap 前に実施)
   if (axHelper && axHelper.setWindowSticky) {
-    try { axHelper.setWindowSticky([windowNumber], false); } catch {}
+    try { axHelper.setWindowSticky([windowNumber], false); } catch (e) { console.warn('[tin] unsnap setSticky(false) failed:', e?.message || e); }
   }
   // 元の位置・サイズに戻す。AX expansion は Terminal.app silent fail するので osascript 補完。
   const restoreCmd = [{ windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
@@ -1303,7 +1303,7 @@ ipcMain.handle('wobble-window', async (_event, { windowNumber, pid, app: appName
       axHelper.moveWindows([{ ...target, x: w.x + p.dx, y: w.y + p.dy, width: w.width, height: w.height }], true);
       await new Promise(r => setTimeout(r, 45));
     }
-  } catch {}
+  } catch (e) { console.warn('[tin] wobble failed:', e?.message || e); }
   return { ok: true };
 });
 
@@ -1471,10 +1471,10 @@ async function unsnapFrontmostWindow(ws) {
   ws._lastKnownSnappedWns.delete(wn);
   snappedIndexRemove(wn);
   scheduleSyncSnapped(0);
-  if (axHelper.setWindowSticky) try { axHelper.setWindowSticky([wn], false); } catch {}
+  if (axHelper.setWindowSticky) try { axHelper.setWindowSticky([wn], false); } catch (e) { console.warn('[tin] unsnapFrontmost setSticky(false) failed:', e?.message || e); }
   const cmds = [{ windowNumber: wn, pid: info.pid, app: info.app, title: info.title,
     x: info.origX, y: info.origY, width: info.origW, height: info.origH }];
-  try { await osascriptMove(cmds); } catch {}
+  try { await osascriptMove(cmds); } catch (e) { console.warn('[tin] unsnapFrontmost osascriptMove failed:', e?.message || e); }
   await retileAll(ws);
   scheduleSaveWorkspaces();
 }
@@ -1573,13 +1573,13 @@ ipcMain.handle('retile-now', async (event) => {
   }
   // sticky 再設定 (stickyWindows ON 時のみ)
   if (appSettings.stickyWindows && wns.length && axHelper && axHelper.setWindowSticky) {
-    try { axHelper.setWindowSticky(wns, true); } catch {}
+    try { axHelper.setWindowSticky(wns, true); } catch (e) { console.warn('[tin] retile setSticky(true) failed:', e?.message || e); }
   }
   // snapped ウィンドウ + このワークスペースの TiN 全ウィンドウをまとめて現在 Space に引き寄せる
   const sidebarWn = getElectronWinNumber(ws.win);
   const allWns = [...new Set([...wns, ...(sidebarWn ? [sidebarWn] : [])])];
   if (allWns.length && axHelper && axHelper.moveWindowsToActiveSpace) {
-    try { axHelper.moveWindowsToActiveSpace(allWns); } catch {}
+    try { axHelper.moveWindowsToActiveSpace(allWns); } catch (e) { console.warn('[tin] retile moveToActiveSpace failed:', e?.message || e); }
   }
   if (cmds.length) {
     await batchMove(cmds);
@@ -1676,7 +1676,7 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
         const tgtIdx = ((curIdx + direction) + spaceList.length) % spaceList.length;
         targetSpaceId = spaceList[tgtIdx].id;
       }
-    } catch {}
+    } catch (e) { console.warn('[tin] push-to-space spaceList lookup failed:', e?.message || e); }
   }
 
   beginStabilize('push-to-space', ws);
@@ -1712,7 +1712,7 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
         const spaces = axHelper.getSpaceForWindows([electronWns[0]]);
         const sid = Number(spaces[0]?.spaceId || 0);
         if (sid > 0) ws._tinSpaceId = sid;
-      } catch {}
+      } catch (e) { console.warn('[tin] push-to-space _tinSpaceId sync failed:', e?.message || e); }
     }
 
     return { ok: true, moved: tinMoved };
@@ -1736,7 +1736,7 @@ ipcMain.handle('get-spaces', async () => {
         label: s.label || '',
         isCurrent: !!(s['has-focus'] || s.focused || s['is-visible']),
       }));
-    } catch {}
+    } catch (e) { console.warn('[tin] get-spaces (yabai) failed:', e?.message || e); }
   }
   if (axHelper && axHelper.getSpacesList) {
     try {
@@ -1746,7 +1746,7 @@ ipcMain.handle('get-spaces', async () => {
         label: '',
         isCurrent: s.isCurrent,
       }));
-    } catch {}
+    } catch (e) { console.warn('[tin] get-spaces (CGS) failed:', e?.message || e); }
   }
   return [];
 });
@@ -1766,7 +1766,7 @@ ipcMain.handle('push-to-space-to', async (event, { targetSpaceId, targetIndex })
       const ptr = handle.readBigUInt64LE(0);
       const wid = axHelper.getWindowIdFromHandle(ptr);
       if (wid > 0) electronWns.push(wid);
-    } catch {}
+    } catch (e) { console.warn('[tin] push-to-space-to: TiN wid lookup failed:', e?.message || e); }
   }
   if (!electronWns.length) return { ok: false, reason: 'no-tin-window' };
 
@@ -1780,7 +1780,7 @@ ipcMain.handle('push-to-space-to', async (event, { targetSpaceId, targetIndex })
         if (allWns.has(wn)) snappedWns.push(wn);
         else ws._lastKnownSnappedWns.delete(wn);
       }
-    } catch {}
+    } catch (e) { console.warn('[tin] push-to-space-to: listWindowsAllSpaces failed:', e?.message || e); }
   }
 
   console.log(`[tin] push-to-space-to spaceId=${targetSpaceId} idx=${targetIndex} electronWns=[${electronWns}] snappedWns=[${snappedWns}]`);
@@ -1841,7 +1841,7 @@ ipcMain.handle('push-to-space-to', async (event, { targetSpaceId, targetIndex })
         const spaces = axHelper.getSpaceForWindows([electronWns[0]]);
         const sid = Number(spaces[0]?.spaceId || 0);
         if (sid > 0) ws._tinSpaceId = sid;
-      } catch {}
+      } catch (e) { console.warn('[tin] push-to-space _tinSpaceId sync failed:', e?.message || e); }
     }
     return { ok: true, moved: tinMoved + yabaiMoved + cgsMoved };
   } catch (e) {
@@ -3469,7 +3469,7 @@ function startRestServer() {
             if (axHelper.moveWindowsToActiveSpace) { axHelper.moveWindowsToActiveSpace([targetWn]); await new Promise(r=>setTimeout(r,80)); }
             await batchMove([{ windowNumber: targetWn, pid: win.pid, app: win.app, title: win.title, ...pos }]);
             if (appSettings.stickyWindows && axHelper.setWindowSticky) axHelper.setWindowSticky([targetWn], true);
-          } catch {}
+          } catch (e) { console.warn('[tin] /api/snap AX op failed:', e?.message || e); }
         })();
       }
       scheduleSaveWorkspaces();
@@ -3491,7 +3491,7 @@ function startRestServer() {
         ws._lastKnownSnappedWns.delete(wn);
         snappedIndexRemove(wn);
         scheduleSyncSnapped(0);
-        if (axHelper?.setWindowSticky) try { axHelper.setWindowSticky([wn], false); } catch {}
+        if (axHelper?.setWindowSticky) try { axHelper.setWindowSticky([wn], false); } catch (e) { console.warn('[tin] /api/unsnap setSticky(false) failed:', e?.message || e); }
         osascriptMove([{ windowNumber: wn, pid: info.pid, app: info.app, title: info.title,
           x: info.origX, y: info.origY, width: info.origW, height: info.origH }]).catch(() => {});
         retileAll(ws).catch(() => {});
@@ -3626,7 +3626,7 @@ function startRestServer() {
           try {
             if (axHelper.moveWindowsToActiveSpace) { axHelper.moveWindowsToActiveSpace([win.windowNumber]); await new Promise(r=>setTimeout(r,80)); }
             await batchMove([{ windowNumber: win.windowNumber, pid: win.pid, app: win.app, title: win.title, ...pos }]);
-          } catch {}
+          } catch (e) { console.warn('[tin] /api/v1/snap AX op failed:', e?.message || e); }
         })();
       }
       scheduleSaveWorkspaces();
@@ -3681,7 +3681,7 @@ function startRestServer() {
                 await new Promise(r => setTimeout(r, 200));
                 if (axHelper.moveWindowsToActiveSpace) { axHelper.moveWindowsToActiveSpace([newWin.windowNumber]); await new Promise(r=>setTimeout(r,80)); }
                 await batchMove([{ windowNumber: newWin.windowNumber, pid: newWin.pid, app: newWin.app, title: newWin.title, ...pos }]);
-              } catch {}
+              } catch (e) { console.warn('[tin] /api/v1/launch AX op failed:', e?.message || e); }
             }
             scheduleSaveWorkspaces();
             return;
@@ -3709,7 +3709,7 @@ function startRestServer() {
           const b = getSlotBounds(ws, info.slot);
           before.push({ wn, slot: info.slot, pid: info.pid, title: info.title, expectedX: b?.x, expectedY: b?.y });
         }
-        try { await retileAll(ws); } catch {}
+        try { await retileAll(ws); } catch (e) { console.warn('[tin] /api/retile failed:', e?.message || e); }
         results.push({ workspace: ws.name, snappedCount: ws.snappedExternals.size, windows: before });
       }
       return restReply(res, 200, { ok: true, results });
