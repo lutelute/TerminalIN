@@ -3115,7 +3115,7 @@ async function getClaudeStatuses() {
     if (!ttys.size) return [];
     // 変数名は st(=序数1stと衝突しエラー) を避け sv を使う。history は最後220文字だけ見て
     // 過去ログの残存による誤判定を防ぐ。許可待ち(claude の y/n プロンプト)のみ検出。
-    const script = 'tell application "Terminal"\nset out to ""\nrepeat with w in windows\nrepeat with t in tabs of w\ntry\nset ct to (custom title of t)\nset sv to "live"\nset h to ""\ntry\nset h to (characters -220 thru -1 of (history of t) as string)\non error\nset h to (history of t) as string\nend try\nif h contains "❯ 1. Yes" or h contains "Do you want to proceed" or h contains "1. Yes  2. No" then\nset sv to "perm"\nend if\nset out to out & (tty of t) & " :: " & sv & " :: " & ct & linefeed\nend try\nend repeat\nend repeat\nreturn out\nend tell';
+    const script = 'tell application "Terminal"\nset out to ""\nrepeat with w in windows\nrepeat with t in tabs of w\ntry\nset ct to (custom title of t)\nset sv to "live"\nset h to ""\ntry\nset h to (characters -220 thru -1 of (history of t) as string)\non error\nset h to (history of t) as string\nend try\nif (h contains "❯ 1. Yes" and h contains "2. No") or (h contains "❯ 1. はい" and h contains "2. いいえ") then\nset sv to "perm"\nend if\nset out to out & (tty of t) & " :: " & sv & " :: " & ct & linefeed\nend try\nend repeat\nend repeat\nreturn out\nend tell';
     const { stdout: term } = await execFileAsync('osascript', ['-e', script], { timeout: 6000 });
     const list = [];
     for (const line of term.split('\n')) {
@@ -3144,9 +3144,9 @@ ipcMain.handle('status-colorize', async (event) => {
       return task.length >= 4 && t.includes(task.slice(0, 16));
     });
     if (!m) { colors[wn] = '#8a9099'; states[wn] = 'stopped'; labels[wn] = '停止'; continue; }       // claude非稼働
-    if (m.state === 'perm')       { colors[wn] = '#e0443e'; states[wn] = 'perm';  labels[wn] = '許可待ち'; }   // 🔴 即対応
+    if (/[⠀-⣿]/.test(t))          { colors[wn] = '#3c78e6'; states[wn] = 'busy';  labels[wn] = '処理中'; }     // 🔵 処理中(スピナー)を最優先=動いてるなら許可待ちでない
+    else if (m.state === 'perm')  { colors[wn] = '#e0443e'; states[wn] = 'perm';  labels[wn] = '許可待ち'; }   // 🔴 即対応
     else if (m.state === 'error') { colors[wn] = '#b5179e'; states[wn] = 'error'; labels[wn] = 'エラー'; }     // 🟣 対処
-    else if (/[⠀-⣿]/.test(t))     { colors[wn] = '#3c78e6'; states[wn] = 'busy';  labels[wn] = '処理中'; }     // 🔵 待つ
     else                          { colors[wn] = '#e0a000'; states[wn] = 'input'; labels[wn] = '入力待ち'; }   // 🟡 要対応
   }
   return { ok: true, colors, states, labels };
