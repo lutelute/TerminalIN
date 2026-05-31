@@ -2390,7 +2390,8 @@ function render() {
   const gridTitle = document.createElement('div');
   gridTitle.className = 'section-title';
   const accentStyle = wsColor ? ` style="color:${wsColor.accent}"` : '';
-  gridTitle.innerHTML = `<span class="section-accent"${accentStyle}>GRID</span> (${gridCount}/${gridCols * gridRows})`;
+  gridTitle.innerHTML = `<span class="section-accent"${accentStyle}>GRID</span> (${gridCount}/${gridCols * gridRows})`
+    + '<div style="font-size:10px;font-weight:normal;opacity:0.78;margin-top:4px;line-height:1.6;letter-spacing:0.2px">🔴許可待ち 🟡入力待ち 🔵処理中 ⚪停止</div>';
   const selector = document.createElement('div');
   selector.className = 'grid-selector';
   const _sizeCyclePresets = [
