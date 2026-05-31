@@ -40,7 +40,7 @@ echo "[install] Starting TiN..."
 "$APP_DST/Contents/MacOS/TiN" > /tmp/tin-install-check.log 2>&1 &
 TIN_PID=$!
 sleep 6
-RESTORE=$(grep "batch restore" /tmp/tin-install-check.log 2>/dev/null)
+RESTORE=$(grep "batch restore" /tmp/tin-install-check.log 2>/dev/null || true)
 if [ -n "$RESTORE" ]; then
   echo "[install] $RESTORE"
 else
