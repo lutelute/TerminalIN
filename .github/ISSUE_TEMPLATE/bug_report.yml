@@ -1,0 +1,51 @@
+name: 🐛 バグ報告
+description: 動作がおかしい・クラッシュする・表示が崩れる など
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        報告ありがとうございます！以下を埋めてもらえると調査が早く進みます。
+        わからない項目は空欄で構いません。
+  - type: input
+    id: environment
+    attributes:
+      label: 環境
+      description: macOS バージョン / チップ / ディスプレイ構成
+      placeholder: "例: macOS 26.1 / M2 Pro / 内蔵 + 外部4K ×1"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 何が起きたか
+      description: 期待した動作と実際の動作
+      placeholder: "例: Word を snap したらグリッドからはみ出して配置された"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      placeholder: |
+        1. ☰ からドロワーを開く
+        2. Apps タブで Word を Snap
+        3. スロット 2 を選択
+        4. → はみ出す
+  - type: textarea
+    id: logs
+    attributes:
+      label: ログ・スクリーンショット
+      description: |
+        開発モードのログがあると最速です:
+        `npx electron . --dev > /tmp/tin-dev.log 2>&1` で再現させて /tmp/tin-dev.log を添付。
+        クラッシュの場合は Console.app → クラッシュレポート → TiN。
+        UI の問題はスクリーンショットを添付してください。
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: 再現頻度
+      options:
+        - 必ず再現する
+        - ときどき起きる
+        - 一度だけ起きた

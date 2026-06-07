@@ -1,0 +1,20 @@
+name: 💡 機能要望・アイデア
+description: こういう機能が欲しい・こうなっていると嬉しい
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: proposal
+    attributes:
+      label: どんな機能・改善か
+      placeholder: "例: snap したウィンドウのレイアウトをプリセットとして保存して、ワンクリックで呼び出したい"
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: なぜ欲しいか（ユースケース）
+      placeholder: "例: 朝の作業開始時に毎回同じ構成を組んでいて手間なので"
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 現在の回避方法（あれば）

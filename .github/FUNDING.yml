@@ -1,0 +1,8 @@
+# 寄付リンクの設定ファイル。アカウント登録後に該当行のコメントを外すと
+# リポジトリ右上に「Sponsor」ボタンが表示される。
+# 詳細: https://docs.github.com/ja/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+#
+# github: [lutelute]        # GitHub Sponsors (https://github.com/sponsors で登録・審査後)
+# ko_fi: lutelute           # Ko-fi (https://ko-fi.com — 手数料0%、登録即日)
+# buy_me_a_coffee: lutelute # Buy Me a Coffee (https://buymeacoffee.com — 手数料5%)
+# custom: ["https://..."]   # 任意のURL (Amazonほしい物リスト等)
