@@ -3106,16 +3106,22 @@ ipcMain.handle('ai-colorize', async (event) => {
 });
 
 // ── 状態判定: claude が動いているタブを ps+osascript で特定し、history の内容から
-// 許可待ち/エラーを判定する。title の ✳ 残存に騙されない。各 {title, state} を返す。
-// state: 'perm'(許可待ち) / 'error'(エラー) / 'live'(稼働中、動作/入力は title で別判定)
+// 処理中/許可待ちを判定する。title の ✳ 残存に騙されない。各 {tty, title, state} を返す。
+// state: 'busy'(処理中) / 'perm'(許可待ち) / 'live'(稼働中=入力待ち)
 async function getClaudeStatuses() {
   try {
-    const { stdout: ps } = await execAsync("ps -axo tty,command | grep -iE '[c]laude' | awk '{print $1}'", { timeout: 3000 });
+    // コマンドのベース名が claude のプロセスに限定（claude-watchdog.sh や
+    // /tmp/claude-501 を参照する clangd 等、"claude を含むだけ" の誤検知を排除）
+    const { stdout: ps } = await execAsync("ps -axo tty,command | awk '{c=$2; sub(/.*\\//, \"\", c); if (c==\"claude\") print $1}'", { timeout: 3000 });
     const ttys = new Set(ps.split('\n').map(s => s.trim()).filter(t => t && t !== '??'));
     if (!ttys.size) return [];
-    // 変数名は st(=序数1stと衝突しエラー) を避け sv を使う。history は最後220文字だけ見て
-    // 過去ログの残存による誤判定を防ぐ。許可待ち(claude の y/n プロンプト)のみ検出。
-    const script = 'tell application "Terminal"\nset out to ""\nrepeat with w in windows\nrepeat with t in tabs of w\ntry\nset ct to (custom title of t)\nset sv to "live"\nset h to ""\ntry\nset h to (characters -220 thru -1 of (history of t) as string)\non error\nset h to (history of t) as string\nend try\nif (h contains "❯ 1. Yes" and h contains "2. No") or (h contains "❯ 1. はい" and h contains "2. いいえ") then\nset sv to "perm"\nend if\nset out to out & (tty of t) & " :: " & sv & " :: " & ct & linefeed\nend try\nend repeat\nend repeat\nreturn out\nend tell';
+    // 変数名は st(=序数1stと衝突しエラー) を避け sv を使う。history は最後400文字
+    // (3択許可メニュー+フッターが収まる長さ)だけ見て過去ログの残存誤判定を防ぐ。
+    // busy: 実行中フッター "esc to interrupt"。動いている確実シグナル＝最優先で、
+    //       動作中の端末を許可待ち(赤)に誤爆させない。
+    // perm: 番号選択メニュー(❯ N. と別番号行の組)。2択 Yes/No 固定をやめ、
+    //       3択許可・AskUserQuestion・日本語選択肢も拾う。カーソル位置(❯ 1/2/3)非依存。
+    const script = 'tell application "Terminal"\nset out to ""\nrepeat with w in windows\nrepeat with t in tabs of w\ntry\nset ct to (custom title of t)\nset sv to "live"\nset h to ""\ntry\nset h to (characters -400 thru -1 of (history of t) as string)\non error\nset h to (history of t) as string\nend try\nif h contains "esc to interrupt" then\nset sv to "busy"\nelse if (h contains "❯ 1." and h contains " 2. ") or (h contains "❯ 2." and h contains " 1. ") or (h contains "❯ 3." and h contains " 1. ") then\nset sv to "perm"\nend if\nset out to out & (tty of t) & " :: " & sv & " :: " & ct & linefeed\nend try\nend repeat\nend repeat\nreturn out\nend tell';
     const { stdout: term } = await execFileAsync('osascript', ['-e', script], { timeout: 6000 });
     const list = [];
     for (const line of term.split('\n')) {
@@ -3124,10 +3130,23 @@ async function getClaudeStatuses() {
       const tty = parts[0].replace('/dev/', '').trim();
       const state = parts[1].trim();
       const title = parts.slice(2).join(' :: ').trim();
-      if (ttys.has(tty) && title) list.push({ title, state });
+      if (ttys.has(tty) && title) list.push({ tty, title, state });
     }
     return list;
   } catch (e) { console.warn('[tin] getClaudeStatuses failed:', e?.message || e, '|| STDERR:', (e && e.stderr) ? String(e.stderr).trim() : '(empty)'); return null; }
+}
+
+// 状態→色/ラベルの一元定義（renderer の凡例・バッジもこの値で描画）
+const CLAUDE_STATE_META = {
+  perm:  { color: '#e0443e', label: '許可待ち' },  // 🔴 即対応
+  input: { color: '#e0a000', label: '入力待ち' },  // 🟡 要対応(claude が指示を待っている)
+  busy:  { color: '#3c78e6', label: '処理中' },    // 🔵 待てば良い
+};
+function classifyClaudeState(m, title) {
+  if (m.state === 'busy') return 'busy';             // history の "esc to interrupt"(確実)
+  if (m.state === 'perm') return 'perm';
+  if (/[⠀-⣿]/.test(title)) return 'busy';           // フォールバック: title の Braille スピナー
+  return 'input';
 }
 
 ipcMain.handle('status-colorize', async (event) => {
@@ -3135,7 +3154,8 @@ ipcMain.handle('status-colorize', async (event) => {
   if (!ws) return { ok: false };
   const statuses = await getClaudeStatuses();
   if (statuses === null) return { ok: false, error: 'status 取得失敗' };
-  // 色はアクション必要度順: 許可待ち(赤)>エラー(赤紫)>入力待ち(黄)>処理中(青)>停止(灰)
+  // claude 非稼働の窓は colors に入れない → renderer がスロット識別色にフォールバック。
+  // 「色が付いている＝claude セッションがある」という意味論を保つ。
   const colors = {}, states = {}, labels = {};
   for (const [wn, info] of ws.snappedExternals) {
     const t = info.title || '';
@@ -3143,11 +3163,11 @@ ipcMain.handle('status-colorize', async (event) => {
       const task = s.title.replace(/^[\s✳✶✦✻✴⠀-⣿]+/, '').trim();
       return task.length >= 4 && t.includes(task.slice(0, 16));
     });
-    if (!m) { colors[wn] = '#8a9099'; states[wn] = 'stopped'; labels[wn] = '停止'; continue; }       // claude非稼働
-    if (/[⠀-⣿]/.test(t))          { colors[wn] = '#3c78e6'; states[wn] = 'busy';  labels[wn] = '処理中'; }     // 🔵 処理中(スピナー)を最優先=動いてるなら許可待ちでない
-    else if (m.state === 'perm')  { colors[wn] = '#e0443e'; states[wn] = 'perm';  labels[wn] = '許可待ち'; }   // 🔴 即対応
-    else if (m.state === 'error') { colors[wn] = '#b5179e'; states[wn] = 'error'; labels[wn] = 'エラー'; }     // 🟣 対処
-    else                          { colors[wn] = '#e0a000'; states[wn] = 'input'; labels[wn] = '入力待ち'; }   // 🟡 要対応
+    if (!m) continue;                                // claude 非稼働 → 状態なし
+    const st = classifyClaudeState(m, t);
+    colors[wn] = CLAUDE_STATE_META[st].color;
+    states[wn] = st;
+    labels[wn] = CLAUDE_STATE_META[st].label;
   }
   return { ok: true, colors, states, labels };
 });
