@@ -3125,10 +3125,16 @@ function readHookStates() {
   hookStates.clear();
   let files = [];
   try { files = fs.readdirSync(TIN_HOOK_DIR); } catch { return; }
+  const staleSec = 12 * 3600; // SIGKILL 等で SessionEnd が走らず残った古い状態ファイルは
+  const nowSec = Date.now() / 1000; // 信用しない(tty 再利用で別セッションに誤った色が付く)
   for (const f of files) {
     if (!f.endsWith('.json')) continue;
     try {
       const j = JSON.parse(fs.readFileSync(path.join(TIN_HOOK_DIR, f), 'utf8'));
+      if (j && j.state && j.ts && nowSec - j.ts > staleSec) {
+        try { fs.unlinkSync(path.join(TIN_HOOK_DIR, f)); } catch {}
+        continue;
+      }
       if (j && j.state) hookStates.set(f.replace(/\.json$/, ''), { state: j.state, ts: j.ts || 0 });
     } catch {} // 書き込み途中の読みは無視（次のイベントで再読込される）
   }
@@ -3347,6 +3353,10 @@ function classifyClaudeState(m, title) {
 ipcMain.handle('status-colorize', async (event) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return { ok: false };
+  // fs.watch は /tmp の OS 清掃でディレクトリごと消えると黙って死ぬ(再 mkdir しても
+  // 発火しない)。poll 経路でも読み直すことで、watcher 死亡時も最悪 6 秒遅延に収める。
+  // ディレクトリ内は数ファイルの同期 read なのでコストは無視できる
+  readHookStates();
   const r = await getClaudeStatuses();
   if (r === null) return { ok: false, error: 'status 取得失敗' };
   const { tabs, ttys } = r;
