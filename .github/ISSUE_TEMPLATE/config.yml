@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 💬 質問・雑談 (Discussions)
+    url: https://github.com/lutelute/TerminalIN/discussions
+    about: バグでも要望でもない質問・アイデアの壁打ちはこちらへ

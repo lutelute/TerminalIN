@@ -1,0 +1,30 @@
+name: ✅ 動作報告（人柱報告）
+description: 「この環境で動いた / 動かなかった」の一言報告。これだけでも大歓迎！
+labels: ["tested-environment"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        動作確認ありがとうございます！🙏 環境情報だけでも貴重なデータになります。
+  - type: input
+    id: environment
+    attributes:
+      label: 環境
+      placeholder: "例: macOS 15.5 / M1 / 内蔵ディスプレイのみ"
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: 結果
+      options:
+        - 問題なく動いた
+        - だいたい動くが気になる点あり（下に記入）
+        - 起動しなかった / ビルドに失敗した（下に詳細を）
+    validations:
+      required: true
+  - type: textarea
+    id: detail
+    attributes:
+      label: 詳細（任意）
+      placeholder: "試した機能 (snap / グリッド / Space移動 / 内蔵ターミナル / Claude状態検出)、気になった点など"
