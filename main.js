@@ -3228,17 +3228,23 @@ function uninstallClaudeHooks() {
 const BUSY_SPINNER_RE = /(^|[\r\n])\s*[·✢✳✶✻✽✦∗*+]\s?\S+ing…/;
 let _statusBusy = false;
 let _statusCache = null;
+let _statusCacheAt = 0;
 async function getClaudeStatuses() {
   // 再入防止: 前回の osascript がまだ走っていたら直近結果を返す。poll(6秒) と
   // hooks nudge が重なっても osascript プロセスを積み上げない(PC 負荷の安全弁)
   if (_statusBusy) return _statusCache;
+  // TTL キャッシュ: hooks nudge 連発(ツール連打で ~2回/秒)のたびに osascript
+  // (0.3秒) を再実行しない。tabs/ttys は 2 秒前の値で十分 — hookStates は別経路
+  // (fs.watch→readHookStates)で常に最新になり、classifyClaudeState が ts 比較で
+  // 「hook の方が新しければ hook 優先」にするため通知遅延も生じない
+  if (_statusCache && Date.now() - _statusCacheAt < 2000) return _statusCache;
   _statusBusy = true;
   try {
     // コマンドのベース名が claude のプロセスに限定（claude-watchdog.sh や
     // /tmp/claude-501 を参照する clangd 等、"claude を含むだけ" の誤検知を排除）
     const { stdout: ps } = await execAsync("ps -axo tty,command | awk '{c=$2; sub(/.*\\//, \"\", c); if (c==\"claude\") print $1}'", { timeout: 3000 });
     const ttys = new Set(ps.split('\n').map(s => s.trim()).filter(t => t && t !== '??'));
-    if (!ttys.size) return (_statusCache = { tabs: [], ttys });
+    if (!ttys.size) { _statusCacheAt = Date.now(); return (_statusCache = { tabs: [], ttys }); }
     // ── PC 負荷の設計(実測ベース) ──
     // every tab of every window の一括取得(3 Apple Events)で tty/title/contents を
     // 取る。タブ毎ループはタブ数×3イベントの往復になり Terminal ビジー時に数秒〜
@@ -3274,6 +3280,7 @@ async function getClaudeStatuses() {
         || (tail.includes('❯ 3.') && tail.includes(' 1. '))) state = 'perm';
       list.push({ tty, title, state });
     }
+    _statusCacheAt = Date.now();
     return (_statusCache = { tabs: list, ttys });
   } catch (e) {
     console.warn('[tin] getClaudeStatuses failed:', e?.message || e, '|| STDERR:', (e && e.stderr) ? String(e.stderr).trim() : '(empty)');
@@ -3321,12 +3328,17 @@ const CLAUDE_STATE_META = {
   busy:  { color: '#3c78e6', label: '処理中' },    // 🔵 待てば良い
 };
 function classifyClaudeState(m, title) {
-  // 優先順位: ①history の busy(esc to interrupt=「動いている」事実が最強。許可承認直後
-  // など hook がまだ古い瞬間も正しく busy になる) ②hooks のプッシュ状態(正確・即時)
+  // 優先順位: 「画面スキャンと hook の新しい方」を優先する。
+  // ⓪hook がスキャン(_statusCacheAt)より新しい → hook(nudge でキャッシュ供給された
+  //   ときの優先逆転防止: 今来た perm を 2 秒前の画面 busy でマスクしない)
+  // ①history の busy(esc to interrupt=「動いている」事実。許可承認直後など hook が
+  //   まだ古い瞬間も正しく busy になる) ②hooks のプッシュ状態(正確・即時)
   // ③history のメニュー検出 ④title の Braille スピナー(フォールバック)
-  if (m.state === 'busy') return 'busy';
   const hk = hookStates.get(m.tty);
-  if (hk && (hk.state === 'perm' || hk.state === 'busy' || hk.state === 'input')) return hk.state;
+  const hkValid = hk && (hk.state === 'perm' || hk.state === 'busy' || hk.state === 'input');
+  if (hkValid && hk.ts * 1000 > _statusCacheAt) return hk.state;
+  if (m.state === 'busy') return 'busy';
+  if (hkValid) return hk.state;
   if (m.state === 'perm') return 'perm';
   if (/[⠀-⣿]/.test(title)) return 'busy';
   return 'input';

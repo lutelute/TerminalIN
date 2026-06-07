@@ -2123,7 +2123,12 @@ function shortNameFor(wn) {
 // 許可待ちが新規発生したらポップアップ通知、処理完了(busy→input)はトーストで知らせる。6秒間隔。
 let _prevStates = {};
 let _prevPtyStates = {};
-async function refreshStatusColors() {
+let _statusRefreshing = false;   // 並行実行ガード: nudge と 6秒 interval が同時に走ると
+let _statusRefreshQueued = false; // 同じ _prevStates を見て通知二重発火・stale 上書きが起きる
+let _lastStatusKey = '';
+async function refreshStatusColors(fromNudge) {
+  if (_statusRefreshing) { _statusRefreshQueued = true; return; }
+  _statusRefreshing = true;
   try {
     const r = await ipcRenderer.invoke('status-colorize');
     if (!r || !r.ok) return;
@@ -2157,8 +2162,16 @@ async function refreshStatusColors() {
     for (const slot in statusPtySince) { if (!(slot in pty)) delete statusPtySince[slot]; }
     _prevPtyStates = pty;
     statusPtyStates = pty;
-    render();
-  } catch {}
+    // nudge 連発(ツール連打 ~2回/秒)で全 DOM 再構築 render() を回さない:
+    // nudge 経由は状態スナップショットが変わったときのみ render。
+    // 6秒 interval は無条件 render(input の濃さ=放置時間は render でしか深まらない)
+    const key = JSON.stringify([statusColors, states, labels, pty]);
+    if (!fromNudge || key !== _lastStatusKey) render();
+    _lastStatusKey = key;
+  } catch {} finally {
+    _statusRefreshing = false;
+    if (_statusRefreshQueued) { _statusRefreshQueued = false; refreshStatusColors(true); }
+  }
 }
 // 要対応をポップアップ(macOS通知 + TiN内トースト)で知らせる
 function notifyAction(name, label, st) {
@@ -2170,7 +2183,7 @@ setInterval(refreshStatusColors, 6000);
 setTimeout(refreshStatusColors, 1500);
 // hooks 設置時: main が状態ファイル変化を fs.watch で検知して nudge してくる → 即再判定
 // (6秒 poll を待たないので、許可待ち通知の遅延が ~1秒未満になる)
-ipcRenderer.on('claude-status-nudge', () => refreshStatusColors());
+ipcRenderer.on('claude-status-nudge', () => refreshStatusColors(true));
 
 // AI 色判定を実行 (haiku が端末の用途を判定して色割当)。もう一度押すと解除。
 async function runAiColorize(btn) {
