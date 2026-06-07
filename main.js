@@ -279,7 +279,14 @@ function buildSnappedPayload() {
       });
     }
   }
-  return { protocol: PROTOCOL_VERSION, updatedAt: Date.now(), activeWorkspaceId, snappedWindows };
+  // ワークスペースのメタ情報(メモ含む) — AtelierX / Obsidian エクスポート等の
+  // 外部ツールが「この snap 群が何のプロジェクトか」を読めるようにする
+  const wsMeta = [];
+  for (const [, ws] of workspaces) {
+    if (!ws || !ws.win || ws.win.isDestroyed()) continue;
+    wsMeta.push({ id: String(ws.id), name: ws.name || '', memo: ws.memo || '' });
+  }
+  return { protocol: PROTOCOL_VERSION, updatedAt: Date.now(), activeWorkspaceId, snappedWindows, workspaces: wsMeta };
 }
 
 async function writeSnappedJson() {
@@ -331,6 +338,7 @@ async function writeWorkspacesJson() {
       colorIndex: ws.colorIndex,
       snappedExternals: snapped,
       spaceId: ws._tinSpaceId || 0,
+      memo: ws.memo || '',
     });
   }
   await atomicWriteJSON(WORKSPACES_JSON, payload);
@@ -2048,6 +2056,14 @@ ipcMain.handle('set-active-tab', (event, { slot }) => {
   }).catch(() => {});
 });
 
+ipcMain.on('set-workspace-memo', (event, { memo }) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return;
+  ws.memo = String(memo || '');
+  scheduleSaveWorkspaces();
+  scheduleSyncSnapped();  // snapped.json にも反映 → AtelierX 等が即座に読める
+});
+
 ipcMain.on('rename-workspace', (event, { name }) => {
   const ws = findWorkspace(event.sender);
   if (ws) {
@@ -2165,6 +2181,10 @@ function createWorkspace(name, savedState) {
     slotLayout: savedGrid && savedGrid.slotLayout ? savedGrid.slotLayout : null,
     color: (savedState && savedState.colorIndex != null) ? WS_COLORS[savedState.colorIndex % WS_COLORS.length] : WS_COLORS[(wsId - 1) % WS_COLORS.length],
     colorIndex: (savedState && savedState.colorIndex != null) ? savedState.colorIndex : (wsId - 1) % WS_COLORS.length,
+    // ワークスペースメモ: snap している内容(プロジェクト)についての自由記述。
+    // workspaces.json で永続化し、snapped.json / REST で外部ツール(AtelierX,
+    // Obsidian エクスポート等)からも読めるようにする
+    memo: (savedState && savedState.memo) || '',
   };
   workspaces.set(wsId, ws);
   registerWorkspaceContents(ws);
@@ -2176,7 +2196,7 @@ function createWorkspace(name, savedState) {
 
   win.loadFile('workspace.html');
   win.webContents.on('did-finish-load', () => {
-    win.webContents.send('workspace-info', { id: wsId, name: wsName, color: ws.color });
+    win.webContents.send('workspace-info', { id: wsId, name: wsName, color: ws.color, memo: ws.memo || '' });
     // サイドバー幅を CSS 変数として通知
     win.webContents.send('set-sidebar-width', { width: ws.sidebarWidth || DEFAULT_SIDEBAR_W });
     // グリッドパネルを初期化
@@ -3725,6 +3745,7 @@ function writeWorkspacesJsonSync() {
       colorIndex: ws.colorIndex,
       snappedExternals: snapped,
       spaceId: ws._tinSpaceId || 0,
+      memo: ws.memo || '',
     });
   }
   atomicWriteJSONSync(WORKSPACES_JSON, payload);
@@ -3876,7 +3897,7 @@ function startRestServer() {
         for (const [wn, info] of ws.snappedExternals) {
           snapped.push({ windowNumber: wn, app: info.app, title: info.title, slot: info.slot });
         }
-        wsArr.push({ id: ws.id, name: ws.name,
+        wsArr.push({ id: ws.id, name: ws.name, memo: ws.memo || '',
           grid: { cols: ws.gridCols, rows: ws.gridRows, slotLayout: ws.slotLayout || null },
           snapped });
       }
@@ -3932,6 +3953,19 @@ function startRestServer() {
       beginStabilize('api-layout', ws);
       scheduleSaveWorkspaces();
       return restReply(res, 200, { ok: true, cols, rows, slotLayout: ws.slotLayout });
+    }
+
+    // POST /api/v1/memo — ワークスペースメモの設定 (外部ツール/エージェントから記録)
+    // body: { workspaceId?: number, memo: string }
+    if (route === 'POST /api/v1/memo') {
+      const body = await parseBody(req);
+      const ws = (body.workspaceId ? workspaces.get(body.workspaceId) : null) || [...workspaces.values()][0];
+      if (!ws) return restReply(res, 404, { ok: false, error: 'no workspace' });
+      ws.memo = String(body.memo || '');
+      ws.win?.webContents.send('workspace-memo', { memo: ws.memo });  // UI に反映
+      scheduleSaveWorkspaces();
+      scheduleSyncSnapped();
+      return restReply(res, 200, { ok: true, workspaceId: ws.id, memo: ws.memo });
     }
 
     // POST /api/v1/snap — pid or windowNumber + slot 指定でスナップ
