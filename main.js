@@ -1085,14 +1085,22 @@ function createGridTerminal(ws, slot) {
     env: { ...process.env, TERM: 'xterm-256color' },
   });
 
+  const gw = { win: gridWin, pty: p, ptyId, slot, tailBuf: '', lastDataAt: 0, tty: '' };
+  // 状態判定用: 出力ストリームの末尾を保持(claude の busy/perm パターン検出)。
+  // tty は claude の ps 集合・hooks 状態ファイルとの突合キー
+  execAsync(`ps -o tty= -p ${p.pid}`, { timeout: 2000 })
+    .then(({ stdout }) => { gw.tty = stdout.trim(); })
+    .catch(() => {});
+
   p.onData(data => {
+    gw.tailBuf = (gw.tailBuf + data).slice(-2000);
+    gw.lastDataAt = Date.now();
     if (!gridWin.isDestroyed()) gridWin.webContents.send('terminal-data', { id: ptyId, data });
   });
   p.onExit(() => {
     if (!gridWin.isDestroyed()) gridWin.webContents.send('terminal-exit', { id: ptyId });
   });
 
-  const gw = { win: gridWin, pty: p, ptyId, slot };
   ws.gridWindows.set(slot, gw);
 
   gridWin.on('page-title-updated', (e) => e.preventDefault());
@@ -3210,7 +3218,8 @@ function uninstallClaudeHooks() {
 }
 
 // ── 状態判定: claude が動いているタブを ps+osascript で特定し、history の内容から
-// 処理中/許可待ちを判定する。title の ✳ 残存に騙されない。各 {tty, title, state} を返す。
+// 処理中/許可待ちを判定する。title の ✳ 残存に騙されない。
+// 返り値: { tabs: [{tty, title, state}], ttys: Set } / 失敗時 null。
 // state: 'busy'(処理中) / 'perm'(許可待ち) / 'live'(稼働中=入力待ち)
 async function getClaudeStatuses() {
   try {
@@ -3218,14 +3227,19 @@ async function getClaudeStatuses() {
     // /tmp/claude-501 を参照する clangd 等、"claude を含むだけ" の誤検知を排除）
     const { stdout: ps } = await execAsync("ps -axo tty,command | awk '{c=$2; sub(/.*\\//, \"\", c); if (c==\"claude\") print $1}'", { timeout: 3000 });
     const ttys = new Set(ps.split('\n').map(s => s.trim()).filter(t => t && t !== '??'));
-    if (!ttys.size) return [];
-    // 変数名は st(=序数1stと衝突しエラー) を避け sv を使う。history は最後400文字
-    // (3択許可メニュー+フッターが収まる長さ)だけ見て過去ログの残存誤判定を防ぐ。
-    // busy: 実行中フッター "esc to interrupt"。動いている確実シグナル＝最優先で、
-    //       動作中の端末を許可待ち(赤)に誤爆させない。
+    if (!ttys.size) return { tabs: [], ttys };
+    // 変数名は st(=序数1stと衝突しエラー) を避け sv を使う。history は最後600文字
+    // (3択許可メニュー+statusline+入力ボックスが収まる長さ)だけ見て過去ログの残存誤判定を防ぐ。
+    // ※末尾切り出しは「一旦ローカル変数に as string → text -600 thru -1」の2段が必須。
+    //   旧実装の characters -N thru -1 of (history of t) は Apple Event 解決に失敗して
+    //   常に on error → 全文判定になっていた(会話本文のキーワード誤爆の根本原因)。
+    // busy: 実行中スピナー行 「✽ Waddling… (6m 6s)」「· Composing…」等の "ing…" パターン
+    //       (v2.1.168 実測。"esc to interrupt" は現UIでは表示されないが将来/広幅用に残す)。
+    //       動いている確実シグナル＝最優先で、動作中の端末を許可待ち(赤)に誤爆させない。
+    //       スピナー行は応答完了時に TUI が消すため残存誤爆しない。title スピナーが補完。
     // perm: 番号選択メニュー(❯ N. と別番号行の組)。2択 Yes/No 固定をやめ、
     //       3択許可・AskUserQuestion・日本語選択肢も拾う。カーソル位置(❯ 1/2/3)非依存。
-    const script = 'tell application "Terminal"\nset out to ""\nrepeat with w in windows\nrepeat with t in tabs of w\ntry\nset ct to (custom title of t)\nset sv to "live"\nset h to ""\ntry\nset h to (characters -400 thru -1 of (history of t) as string)\non error\nset h to (history of t) as string\nend try\nif h contains "esc to interrupt" then\nset sv to "busy"\nelse if (h contains "❯ 1." and h contains " 2. ") or (h contains "❯ 2." and h contains " 1. ") or (h contains "❯ 3." and h contains " 1. ") then\nset sv to "perm"\nend if\nset out to out & (tty of t) & " :: " & sv & " :: " & ct & linefeed\nend try\nend repeat\nend repeat\nreturn out\nend tell';
+    const script = 'tell application "Terminal"\nset out to ""\nrepeat with w in windows\nrepeat with t in tabs of w\ntry\nset ct to (custom title of t)\nset sv to "live"\nset h to ""\ntry\nset h to (history of t) as string\nend try\ntry\nif (count h) > 600 then set h to text -600 thru -1 of h\nend try\nif h contains "esc to interrupt" or h contains "ing…" then\nset sv to "busy"\nelse if (h contains "❯ 1." and h contains " 2. ") or (h contains "❯ 2." and h contains " 1. ") or (h contains "❯ 3." and h contains " 1. ") then\nset sv to "perm"\nend if\nset out to out & (tty of t) & " :: " & sv & " :: " & ct & linefeed\nend try\nend repeat\nend repeat\nreturn out\nend tell';
     const { stdout: term } = await execFileAsync('osascript', ['-e', script], { timeout: 6000 });
     const list = [];
     for (const line of term.split('\n')) {
@@ -3236,8 +3250,30 @@ async function getClaudeStatuses() {
       const title = parts.slice(2).join(' :: ').trim();
       if (ttys.has(tty) && title) list.push({ tty, title, state });
     }
-    return list;
+    return { tabs: list, ttys };
   } catch (e) { console.warn('[tin] getClaudeStatuses failed:', e?.message || e, '|| STDERR:', (e && e.stderr) ? String(e.stderr).trim() : '(empty)'); return null; }
+}
+
+// ── 内蔵 PTY (grid terminal) の状態判定: 出力ストリーム末尾 + hooks で判定 ──
+function stripAnsi(s) {
+  return String(s)
+    .replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, '')          // CSI シーケンス
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, '')  // OSC (タイトル設定等)
+    .replace(/\x1b[@-_]/g, '');                          // その他 ESC
+}
+function classifyPtyState(gw, ttys) {
+  if (!gw.tty || !ttys.has(gw.tty)) return null;         // claude 非稼働 → 状態なし
+  const plain = stripAnsi(gw.tailBuf || '').slice(-400);
+  // ストリームは画面状態ではないため、busy は「実行中スピナー行("ing…" 等)が末尾
+  // 近くにあり、かつスピナー再描画が生きている(直近3秒にデータ受信)」で判定。
+  // idle になると再描画が止まる → 自然に busy が外れる
+  const fresh = Date.now() - (gw.lastDataAt || 0) < 3000;
+  if (fresh && (plain.includes('esc to interrupt') || plain.includes('ing…'))) return 'busy';
+  const hk = hookStates.get(gw.tty);
+  if (hk && (hk.state === 'perm' || hk.state === 'busy' || hk.state === 'input')) return hk.state;
+  if ((/❯ 1\./.test(plain) && / 2\. /.test(plain)) || (/❯ 2\./.test(plain) && / 1\. /.test(plain))
+    || (/❯ 3\./.test(plain) && / 1\. /.test(plain))) return 'perm';  // 番号メニュー
+  return 'input';
 }
 
 // 状態→色/ラベルの一元定義（renderer の凡例・バッジもこの値で描画）
@@ -3261,14 +3297,15 @@ function classifyClaudeState(m, title) {
 ipcMain.handle('status-colorize', async (event) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return { ok: false };
-  const statuses = await getClaudeStatuses();
-  if (statuses === null) return { ok: false, error: 'status 取得失敗' };
+  const r = await getClaudeStatuses();
+  if (r === null) return { ok: false, error: 'status 取得失敗' };
+  const { tabs, ttys } = r;
   // claude 非稼働の窓は colors に入れない → renderer がスロット識別色にフォールバック。
   // 「色が付いている＝claude セッションがある」という意味論を保つ。
   const colors = {}, states = {}, labels = {};
   for (const [wn, info] of ws.snappedExternals) {
     const t = info.title || '';
-    const m = statuses.find(s => {
+    const m = tabs.find(s => {
       const task = s.title.replace(/^[\s✳✶✦✻✴⠀-⣿]+/, '').trim();
       return task.length >= 4 && t.includes(task.slice(0, 16));
     });
@@ -3278,7 +3315,14 @@ ipcMain.handle('status-colorize', async (event) => {
     states[wn] = st;
     labels[wn] = CLAUDE_STATE_META[st].label;
   }
-  return { ok: true, colors, states, labels };
+  // 内蔵 PTY (grid terminal): 出力ストリーム + hooks で同じ状態判定
+  const ptyStates = {};
+  for (const [slot, gw] of ws.gridWindows) {
+    const st = classifyPtyState(gw, ttys);
+    if (!st) continue;
+    ptyStates[slot] = { state: st, color: CLAUDE_STATE_META[st].color, label: CLAUDE_STATE_META[st].label };
+  }
+  return { ok: true, colors, states, labels, ptyStates };
 });
 
 async function triggerAutoSnap(opts = {}) {
