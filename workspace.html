@@ -1868,10 +1868,15 @@ function openGridSizePopup(anchorEl) {
     document.removeEventListener('click', closePopup);
   };
   applyBtn.addEventListener('click', applyCustom);
-  // Enter で確定
+  // Enter で確定、↑↓ で増減 (1〜20。spinner 非表示のためキー操作を明示実装)
   [colInput, rowInput].forEach(inp => {
     inp.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') applyCustom();
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        inp.value = Math.max(1, Math.min(20, (parseInt(inp.value, 10) || 1) + (e.key === 'ArrowUp' ? 1 : -1)));
+        inp.dispatchEvent(new Event('input'));  // プレビューを更新
+      }
       e.stopPropagation();
     });
     inp.addEventListener('click', (e) => e.stopPropagation());
@@ -3613,7 +3618,15 @@ function openGridLayoutPopup(anchorEl) {
   };
   [cIn,rIn].forEach(inp => {
     inp.addEventListener('input', applyCustom);
-    inp.addEventListener('keydown', e => e.stopPropagation());
+    // ↑↓ で増減 (1〜20。spinner 非表示のためキー操作を明示実装)
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        inp.value = Math.max(1, Math.min(20, (parseInt(inp.value, 10) || 1) + (e.key === 'ArrowUp' ? 1 : -1)));
+        applyCustom();
+      }
+      e.stopPropagation();
+    });
     inp.addEventListener('click', e => e.stopPropagation());
   });
   customRow.appendChild(cLabel); customRow.appendChild(cIn); customRow.appendChild(xLbl); customRow.appendChild(rIn);
