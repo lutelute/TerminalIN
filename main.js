@@ -1093,7 +1093,8 @@ function createGridTerminal(ws, slot) {
     .catch(() => {});
 
   p.onData(data => {
-    gw.tailBuf = (gw.tailBuf + data).slice(-2000);
+    // 大量出力時は連結せず data 末尾のみ保持(文字列連結コストの安全弁)
+    gw.tailBuf = data.length >= 2000 ? data.slice(-2000) : (gw.tailBuf + data).slice(-2000);
     gw.lastDataAt = Date.now();
     if (!gridWin.isDestroyed()) gridWin.webContents.send('terminal-data', { id: ptyId, data });
   });
@@ -3221,37 +3222,57 @@ function uninstallClaudeHooks() {
 // 処理中/許可待ちを判定する。title の ✳ 残存に騙されない。
 // 返り値: { tabs: [{tty, title, state}], ttys: Set } / 失敗時 null。
 // state: 'busy'(処理中) / 'perm'(許可待ち) / 'live'(稼働中=入力待ち)
+let _statusBusy = false;
+let _statusCache = null;
 async function getClaudeStatuses() {
+  // 再入防止: 前回の osascript がまだ走っていたら直近結果を返す。poll(6秒) と
+  // hooks nudge が重なっても osascript プロセスを積み上げない(PC 負荷の安全弁)
+  if (_statusBusy) return _statusCache;
+  _statusBusy = true;
   try {
     // コマンドのベース名が claude のプロセスに限定（claude-watchdog.sh や
     // /tmp/claude-501 を参照する clangd 等、"claude を含むだけ" の誤検知を排除）
     const { stdout: ps } = await execAsync("ps -axo tty,command | awk '{c=$2; sub(/.*\\//, \"\", c); if (c==\"claude\") print $1}'", { timeout: 3000 });
     const ttys = new Set(ps.split('\n').map(s => s.trim()).filter(t => t && t !== '??'));
-    if (!ttys.size) return { tabs: [], ttys };
-    // 変数名は st(=序数1stと衝突しエラー) を避け sv を使う。history は最後600文字
-    // (3択許可メニュー+statusline+入力ボックスが収まる長さ)だけ見て過去ログの残存誤判定を防ぐ。
-    // ※末尾切り出しは「一旦ローカル変数に as string → text -600 thru -1」の2段が必須。
-    //   旧実装の characters -N thru -1 of (history of t) は Apple Event 解決に失敗して
-    //   常に on error → 全文判定になっていた(会話本文のキーワード誤爆の根本原因)。
-    // busy: 実行中スピナー行 「✽ Waddling… (6m 6s)」「· Composing…」等の "ing…" パターン
-    //       (v2.1.168 実測。"esc to interrupt" は現UIでは表示されないが将来/広幅用に残す)。
+    if (!ttys.size) return (_statusCache = { tabs: [], ttys });
+    // ── PC 負荷の設計(実測ベース) ──
+    // every tab of every window の一括取得(3 Apple Events)で tty/title/contents を
+    // 取る。タブ毎ループはタブ数×3イベントの往復になり Terminal ビジー時に数秒〜
+    // 十数秒待たされる(実測: タブ毎8秒 → 一括0.3秒)。
+    // contents(現在画面のみ・数KB/タブ)を使い、history(スクロールバック全文、
+    // 1タブ200KB超)は転送しない。※contents は AppleScript 予約語と衝突して
+    // tab オブジェクト自身が返るため raw コード «property pcnt» で参照する。
+    // 判定は JS 側(下)で行い、レコードは RS(0x1e)/US(0x1f) 区切りで受け取る。
+    const script = 'set rs to character id 30\nset us to character id 31\ntell application "Terminal"\nset tl to tty of every tab of every window\nset cl to custom title of every tab of every window\nset pl to «property pcnt» of every tab of every window\nend tell\nset out to ""\nrepeat with wi from 1 to count tl\ntry\nset wt to item wi of tl\nset wc to item wi of cl\nset wp to item wi of pl\nrepeat with ti from 1 to count wt\ntry\nset t1 to item ti of wt\nset c1 to item ti of wc\nset p1 to item ti of wp\nif t1 is missing value then set t1 to ""\nif c1 is missing value then set c1 to ""\nif p1 is missing value then set p1 to ""\nset out to out & (t1 as string) & us & (c1 as string) & us & (p1 as string) & rs\nend try\nend repeat\nend try\nend repeat\nreturn out';
+    const { stdout: term } = await execFileAsync('osascript', ['-e', script], { timeout: 10000, maxBuffer: 8 * 1024 * 1024 });
+    // ── 判定(JS 側) ──
+    // 窓は画面の最後22行(桁数に依存しない)。フッター/メニュー/入力ボックス/
+    // statusline は画面下部に固定なので必ず入り、上部の過去本文は除外される。
+    // busy: 実行中スピナー行 「✽ Waddling… (6m 6s)」「· Composing…」等の "ing…"
+    //       (v2.1.168 実測。"esc to interrupt" は現UIでは出ないが将来/旧UI用に残す)。
     //       動いている確実シグナル＝最優先で、動作中の端末を許可待ち(赤)に誤爆させない。
     //       スピナー行は応答完了時に TUI が消すため残存誤爆しない。title スピナーが補完。
     // perm: 番号選択メニュー(❯ N. と別番号行の組)。2択 Yes/No 固定をやめ、
     //       3択許可・AskUserQuestion・日本語選択肢も拾う。カーソル位置(❯ 1/2/3)非依存。
-    const script = 'tell application "Terminal"\nset out to ""\nrepeat with w in windows\nrepeat with t in tabs of w\ntry\nset ct to (custom title of t)\nset sv to "live"\nset h to ""\ntry\nset h to (history of t) as string\nend try\ntry\nif (count h) > 600 then set h to text -600 thru -1 of h\nend try\nif h contains "esc to interrupt" or h contains "ing…" then\nset sv to "busy"\nelse if (h contains "❯ 1." and h contains " 2. ") or (h contains "❯ 2." and h contains " 1. ") or (h contains "❯ 3." and h contains " 1. ") then\nset sv to "perm"\nend if\nset out to out & (tty of t) & " :: " & sv & " :: " & ct & linefeed\nend try\nend repeat\nend repeat\nreturn out\nend tell';
-    const { stdout: term } = await execFileAsync('osascript', ['-e', script], { timeout: 6000 });
     const list = [];
-    for (const line of term.split('\n')) {
-      const parts = line.split(' :: ');
-      if (parts.length < 3) continue;
-      const tty = parts[0].replace('/dev/', '').trim();
-      const state = parts[1].trim();
-      const title = parts.slice(2).join(' :: ').trim();
-      if (ttys.has(tty) && title) list.push({ tty, title, state });
+    for (const rec of term.split('\x1e')) {
+      const f = rec.split('\x1f');
+      if (f.length < 3) continue;
+      const tty = f[0].replace('/dev/', '').trim();
+      const title = f[1].trim();
+      if (!ttys.has(tty) || !title) continue;
+      const tail = f[2].split('\n').slice(-22).join('\n');
+      let state = 'live';
+      if (tail.includes('esc to interrupt') || tail.includes('ing…')) state = 'busy';
+      else if ((tail.includes('❯ 1.') && tail.includes(' 2. ')) || (tail.includes('❯ 2.') && tail.includes(' 1. '))
+        || (tail.includes('❯ 3.') && tail.includes(' 1. '))) state = 'perm';
+      list.push({ tty, title, state });
     }
-    return { tabs: list, ttys };
-  } catch (e) { console.warn('[tin] getClaudeStatuses failed:', e?.message || e, '|| STDERR:', (e && e.stderr) ? String(e.stderr).trim() : '(empty)'); return null; }
+    return (_statusCache = { tabs: list, ttys });
+  } catch (e) {
+    console.warn('[tin] getClaudeStatuses failed:', e?.message || e, '|| STDERR:', (e && e.stderr) ? String(e.stderr).trim() : '(empty)');
+    return null;
+  } finally { _statusBusy = false; }
 }
 
 // ── 内蔵 PTY (grid terminal) の状態判定: 出力ストリーム末尾 + hooks で判定 ──
