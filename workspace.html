@@ -866,6 +866,23 @@
     margin-right: 2px;
     user-select: none;
   }
+  /* Claude 状態バッジ: タブ用(コンパクト=●+経過時間) / カード用(●+ラベル+経過時間) */
+  .tab-state, .state-pill {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: 9px; font-weight: 700;
+    border-radius: 7px; flex-shrink: 0; white-space: nowrap;
+    font-feature-settings: "tnum";
+    user-select: none;
+  }
+  .tab-state { padding: 0 4px; height: 14px; }
+  .state-pill { padding: 1px 6px; margin-left: 2px; }
+  .tab-state .st-dot, .state-pill .st-dot { font-size: 7px; line-height: 1; }
+  /* 許可待ちはパルスで目を引く */
+  .tab-state.st-perm, .state-pill.st-perm { animation: perm-pulse 1.2s ease-in-out infinite; }
+  @keyframes perm-pulse {
+    0%, 100% { filter: brightness(1); }
+    50% { filter: brightness(1.45); }
+  }
   /* Grid dot: drag state */
   .grid-dot.dragging { opacity: 0.35; cursor: grabbing; }
   .grid-dot.drag-over { outline: 2px dashed rgba(40,120,210,0.6); outline-offset: -1px; }
@@ -2006,43 +2023,151 @@ function slotColor(n) {
 
 // AI 判定色: windowNumber → 色(hex)。ai-colorize(🎨)で埋まる。
 let aiColors = {};
-// 状態色: windowNumber → 色(hex)。main の status-colorize(claude稼働を ps+tty で判定)で定期更新。
-let statusColors = {};
+// Claude 状態: main の status-colorize(claude稼働を ps+tty で判定)で定期更新。
+// claude 非稼働の窓はどのマップにも入らない（=スロット識別色のまま）。
+let statusColors = {};   // windowNumber → 色(hex)
+let statusStates = {};   // windowNumber → 'perm' | 'input' | 'busy'
+let statusLabels = {};   // windowNumber → '許可待ち' 等
+let statusSince  = {};   // windowNumber → その状態になった時刻(ms)。経過時間バッジ用
+let statusPtyStates = {}; // slot → {state,color,label}。内蔵 PTY (grid terminal) の状態
+let statusPtySince  = {}; // slot → 状態変化時刻(ms)
+// 状態の表示順・色・ラベル（main の CLAUDE_STATE_META と同値。凡例とバッジで使用）
+const STATE_META = {
+  perm:  { color: '#e0443e', label: '許可待ち' },
+  input: { color: '#e0a000', label: '入力待ち' },
+  busy:  { color: '#3c78e6', label: '処理中' },
+};
+function hexA(hex, a) {
+  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+// 色の設計: 基本色(hue)=状態の種類、濃さ=深刻度。
+// perm(赤)は即対応なので常に最大濃度。input(黄)は放置時間が長いほど濃くなる
+// (直後は薄く、5分で最大 → 「ずっと待たせている端末」が一目で分かる)。
+// busy/状態なしは null → 呼び出し側が従来表示(スロット色)を使う。
+function stateIntensityFor(wn, slot) {
+  const st = wn ? statusStates[wn] : (statusPtyStates[slot] && statusPtyStates[slot].state);
+  if (st !== 'perm' && st !== 'input') return null;
+  if (st === 'perm') return 1;
+  const since = wn ? statusSince[wn] : statusPtySince[slot];
+  const el = since ? (Date.now() - since) / 1000 : 0;
+  return Math.min(1, 0.45 + 0.55 * el / 300);
+}
+// タブ/カードの枠+背景に状態の濃さを適用（状態なしは従来のスロット色表示）
+function applyStateStyle(el, wn, slot, title, borderPx, bgBase) {
+  const tc = colorFor(wn, slot, title);
+  const i = stateIntensityFor(wn, slot);
+  el.style.borderLeft = `${borderPx}px solid ${i === null ? tc : hexA(tc, 0.35 + 0.65 * i)}`;
+  el.style.background = i === null ? hexA(tc, bgBase) : hexA(tc, 0.04 + 0.16 * i);
+}
 function colorFor(wn, slot, title) {
   if (wn && aiColors[wn]) return aiColors[wn];          // 🎨 AI色(手動)が最優先
-  if (wn && statusColors[wn]) return statusColors[wn];  // プロセスベース状態色(動作中/指示待ち/停止)
+  // 枠を状態色で塗るのは「アクションが必要」(許可待ち/入力待ち)のみ。
+  // busy(処理中)はスロット色+バッジで表現 → 「枠に色が付いている＝呼ばれている」の
+  // 意味論を保ち、処理中青とスロット識別青(SLOT_COLORS[0])の衝突も避ける。
+  // 外部窓は wn、内蔵 PTY は slot の状態を見る。
+  const st = wn ? statusStates[wn] : (statusPtyStates[slot] && statusPtyStates[slot].state);
+  if (st === 'perm' || st === 'input') {
+    const c = wn ? statusColors[wn] : statusPtyStates[slot].color;
+    if (c) return c;
+  }
   return slotColor(slot);                                // フォールバック: 配置順スロット色
 }
 
-// 状態色をプロセスベース(claude稼働を ps+tty、許可待ち/エラーを history で判定)で定期取得。
-// 要対応(許可待ち/エラー)が新規発生したらポップアップ通知でアクションを促す。6秒間隔。
+// 状態バッジの HTML。compact=タブ用(●+経過時間のみ)、フル=カード用(●+ラベル+経過時間)。
+// 経過時間は .st-elapsed[data-since] を1秒タイマーで textContent 更新(再render不要)。
+function _statePill(st, labelText, since, compact) {
+  if (!st) return '';
+  const meta = STATE_META[st] || { color: '#888', label: st };
+  const elapsed = since ? fmtElapsed(Date.now() - since) : '';
+  // バッジ背景も濃さ=深刻度: input は放置時間で濃くなる、perm は最大
+  let bgA = 0.12;
+  if (st === 'perm') bgA = 0.28;
+  else if (st === 'input' && since) bgA = Math.min(0.28, 0.10 + 0.18 * (Date.now() - since) / 1000 / 300);
+  const label = compact ? '' : `<span class="st-label">${labelText || meta.label}</span>`;
+  return `<span class="${compact ? 'tab-state' : 'state-pill'} st-${st}" style="color:${meta.color};background:${hexA(meta.color, bgA)}" title="${labelText || meta.label}">`
+    + `<span class="st-dot">●</span>${label}<span class="st-elapsed" data-since="${since || ''}">${elapsed}</span></span>`;
+}
+function statePillHtml(wn, compact) {
+  return _statePill(statusStates[wn], statusLabels[wn], statusSince[wn], compact);
+}
+function statePillHtmlPty(slot, compact) {
+  const e = statusPtyStates[slot];
+  return e ? _statePill(e.state, e.label, statusPtySince[slot], compact) : '';
+}
+function fmtElapsed(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm';
+  return Math.floor(m / 60) + 'h' + (m % 60) + 'm';
+}
+function updateElapsedBadges() {
+  document.querySelectorAll('.st-elapsed').forEach(e => {
+    const since = Number(e.dataset.since);
+    e.textContent = since ? fmtElapsed(Date.now() - since) : '';
+  });
+}
+setInterval(updateElapsedBadges, 1000);
+
+function shortNameFor(wn) {
+  const info = snappedExternals.get(Number(wn));
+  if (!info) return '端末';
+  return String(info.title || info.app || '端末').split(' — ')[0].replace(/^[\s✳✶✦✻✴⠀-⣿]+/, '').trim() || '端末';
+}
+
+// 状態をプロセスベース(claude稼働を ps+tty、処理中/許可待ちを history で判定)で定期取得。
+// 許可待ちが新規発生したらポップアップ通知、処理完了(busy→input)はトーストで知らせる。6秒間隔。
 let _prevStates = {};
+let _prevPtyStates = {};
 async function refreshStatusColors() {
   try {
     const r = await ipcRenderer.invoke('status-colorize');
     if (!r || !r.ok) return;
     statusColors = r.colors || {};
     const states = r.states || {}, labels = r.labels || {};
+    const now = Date.now();
     for (const wn in states) {
+      if (_prevStates[wn] !== states[wn]) statusSince[wn] = now;  // 状態変化時刻を記録
       const st = states[wn];
-      if ((st === 'perm' || st === 'error') && _prevStates[wn] !== st) {  // 新規の要対応のみ通知
-        const info = snappedExternals.get(Number(wn));
-        const name = info ? String(info.title || info.app || '端末').split(' — ')[0].replace(/^[\s✳✶✦✻✴⠀-⣿]+/, '').trim() : '端末';
-        notifyAction(name || '端末', labels[wn] || st, st);
+      if (st === 'perm' && _prevStates[wn] !== st) {              // 新規の許可待ちのみ通知
+        notifyAction(shortNameFor(wn), labels[wn] || st, st);
+      }
+      if (st === 'input' && _prevStates[wn] === 'busy') {         // 処理完了 → 控えめにトーストのみ
+        try { showToast(`✅ 完了: ${shortNameFor(wn)}`); } catch {}
       }
     }
+    for (const wn in statusSince) { if (!(wn in states)) delete statusSince[wn]; }
     _prevStates = states;
+    statusStates = states;
+    statusLabels = labels;
+    // 内蔵 PTY (grid terminal) も同様に: 状態変化時刻 + 許可待ち通知 + 完了トースト
+    const pty = r.ptyStates || {};
+    for (const slot in pty) {
+      const st = pty[slot].state, prev = _prevPtyStates[slot] && _prevPtyStates[slot].state;
+      if (prev !== st) statusPtySince[slot] = now;
+      if (st === 'perm' && prev !== st) notifyAction(`Terminal #${Number(slot) + 1}`, pty[slot].label, st);
+      if (st === 'input' && prev === 'busy') {
+        try { showToast(`✅ 完了: Terminal #${Number(slot) + 1}`); } catch {}
+      }
+    }
+    for (const slot in statusPtySince) { if (!(slot in pty)) delete statusPtySince[slot]; }
+    _prevPtyStates = pty;
+    statusPtyStates = pty;
     render();
   } catch {}
 }
 // 要対応をポップアップ(macOS通知 + TiN内トースト)で知らせる
 function notifyAction(name, label, st) {
-  const icon = st === 'perm' ? '🔴' : '🟣';
+  const icon = '🔴';
   try { new Notification(`TiN ${icon} ${label}`, { body: `${name} が${label}です。対応してください` }); } catch {}
   try { showToast(`${icon} ${label}: ${name}`); } catch {}
 }
 setInterval(refreshStatusColors, 6000);
 setTimeout(refreshStatusColors, 1500);
+// hooks 設置時: main が状態ファイル変化を fs.watch で検知して nudge してくる → 即再判定
+// (6秒 poll を待たないので、許可待ち通知の遅延が ~1秒未満になる)
+ipcRenderer.on('claude-status-nudge', () => refreshStatusColors());
 
 // AI 色判定を実行 (haiku が端末の用途を判定して色割当)。もう一度押すと解除。
 async function runAiColorize(btn) {
@@ -2390,8 +2515,17 @@ function render() {
   const gridTitle = document.createElement('div');
   gridTitle.className = 'section-title';
   const accentStyle = wsColor ? ` style="color:${wsColor.accent}"` : '';
+  // Claude 状態サマリー: 検出中の状態だけを件数付き・実描画色で表示。
+  // claude セッションが1つも無いときは出さない(ノイズ防止)。
+  const _stCounts = {};
+  for (const wn in statusStates) _stCounts[statusStates[wn]] = (_stCounts[statusStates[wn]] || 0) + 1;
+  for (const slot in statusPtyStates) _stCounts[statusPtyStates[slot].state] = (_stCounts[statusPtyStates[slot].state] || 0) + 1;
+  const _legend = ['perm', 'input', 'busy']
+    .filter(st => _stCounts[st])
+    .map(st => `<span style="color:${STATE_META[st].color};white-space:nowrap"><span style="font-size:8px">●</span> ${STATE_META[st].label}×${_stCounts[st]}</span>`)
+    .join('&ensp;');
   gridTitle.innerHTML = `<span class="section-accent"${accentStyle}>GRID</span> (${gridCount}/${gridCols * gridRows})`
-    + '<div style="font-size:10px;font-weight:normal;opacity:0.78;margin-top:4px;line-height:1.6;letter-spacing:0.2px">🔴許可待ち 🟡入力待ち 🔵処理中 ⚪停止</div>';
+    + (_legend ? `<div style="font-size:10px;font-weight:600;opacity:0.9;margin-top:4px;line-height:1.6;letter-spacing:0.2px">${_legend}</div>` : '');
   const selector = document.createElement('div');
   selector.className = 'grid-selector';
   const _sizeCyclePresets = [
@@ -2529,9 +2663,16 @@ function render() {
       const tab = document.createElement('div');
       const isActive = frontmostWindowNumber === 0 && Number(slot) === 0;
       tab.className = 'groupy-tab' + (isActive ? ' active' : '');
-      tab.style.borderLeft = `3px solid ${slotColor(slot)}`;
+      {
+        const _ps = Number(slot);
+        const _pi = stateIntensityFor(undefined, _ps);
+        const _pc = colorFor(undefined, _ps);
+        tab.style.borderLeft = `3px solid ${_pi === null ? _pc : hexA(_pc, 0.35 + 0.65 * _pi)}`;
+        if (_pi !== null) tab.style.background = hexA(_pc, 0.04 + 0.16 * _pi);  // 状態ありのみ着色
+      }
       tab.innerHTML = `<span class="tab-icon term">T</span>`
         + `<span class="tab-title">${data.title || `Terminal ${Number(slot)+1}`}</span>`
+        + statePillHtmlPty(Number(slot), true)
         + `<span class="tab-close" data-slot="${slot}">×</span>`;
       tab.querySelector('.tab-close').addEventListener('click', e => {
         e.stopPropagation();
@@ -2548,9 +2689,7 @@ function render() {
       const isActive = wn === frontmostWindowNumber;
       const tab = document.createElement('div');
       tab.className = 'groupy-tab' + (isActive ? ' active' : '');
-      const tc = colorFor(wn, info.slot ?? 0, info.title);
-      tab.style.borderLeft = `5px solid ${tc}`;
-      tab.style.background = tc + '24';
+      applyStateStyle(tab, wn, info.slot ?? 0, info.title, 5, 0.14);  // 濃さ=深刻度
       const isFinder = isFinderApp(info.app||'');
       const isTerm = isTerminalApp(info.app||'');
       const iconClass = isFinder ? 'finder' : isTerm ? 'term' : 'app';
@@ -2558,6 +2697,7 @@ function render() {
       const shortTitle = (info.title || info.app || 'Window').slice(0, 22);
       tab.innerHTML = `<span class="tab-icon ${iconClass}">${iconLabel}</span>`
         + `<span class="tab-title" title="${info.title||''}">${shortTitle}</span>`
+        + statePillHtml(wn, true)
         + `<span class="tab-close" data-wn="${wn}">×</span>`;
       tab.addEventListener('click', e => {
         if (e.target.closest('.tab-close')) return;
@@ -2713,9 +2853,7 @@ function render() {
     card.className = 'ext-item slot-card';
     card.dataset.slot = slotId;
     if (entry) {
-      const dc = colorFor(entry && entry.wn, slotId, entry && entry.info && entry.info.title);
-      card.style.borderLeft = `5px solid ${dc}`;
-      card.style.background = dc + '18';
+      applyStateStyle(card, entry.wn, slotId, entry.info && entry.info.title, 5, 0.09);  // 濃さ=深刻度
     }
 
     const slotBadge = document.createElement('span');
@@ -2763,6 +2901,7 @@ function render() {
       titleSpan.className = 'ext-title';
       titleSpan.textContent = `Terminal #${slotId + 1}`;
       card.appendChild(titleSpan);
+      card.insertAdjacentHTML('beforeend', statePillHtmlPty(slotId, false));  // Claude 状態バッジ
       const closeBtn = document.createElement('span');
       closeBtn.className = 'card-close';
       closeBtn.textContent = '×';
@@ -2779,6 +2918,7 @@ function render() {
       titleSpan.className = 'ext-title';
       titleSpan.textContent = t;
       card.appendChild(titleSpan);
+      card.insertAdjacentHTML('beforeend', statePillHtml(wn, false));  // Claude 状態バッジ
       card.style.cursor = 'grab';
       card.title = 'Click: locate & raise | Drag: swap slot';
       card.addEventListener('click', (e) => {
@@ -3042,7 +3182,8 @@ function render() {
       if (ovEntry) {
         d.classList.add('cell-occupied');
         const cc = colorFor(ovEntry.wn, c.id, ovEntry.info && ovEntry.info.title);
-        d.style.border = `4px solid ${cc}`;
+        const ci = stateIntensityFor(ovEntry.wn, c.id);
+        d.style.border = `4px solid ${ci === null ? cc : hexA(cc, 0.35 + 0.65 * ci)}`;  // 濃さ=深刻度
         d.style.borderRadius = '6px';
         d.style.boxShadow = `0 0 14px ${cc}, inset 0 0 20px ${cc}55`;
       }
@@ -3076,7 +3217,7 @@ function buildRenderKey() {
     k += `${wn}:${info.slot}:${statusColors[wn] || ''},`;
   }
   k += '|';
-  for (const slot of Object.keys(gridSlots)) k += `${slot},`;
+  for (const slot of Object.keys(gridSlots)) k += `${slot}:${(statusPtyStates[slot] && statusPtyStates[slot].state) || ''},`;
   k += '|' + frontmostWindowNumber;
   k += '|' + externalWindows.length; // ウィンドウ増減は検知
   return k;
