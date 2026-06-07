@@ -513,6 +513,21 @@
   .section-title-clickable:hover { color: rgba(0,0,0,0.5); }
   .section-toggle { font-size: 9px; }
 
+  /* ── MEMO section (ワークスペースメモ) ── */
+  .section-memo { margin: 4px 0 6px; }
+  .memo-area {
+    width: 100%; box-sizing: border-box; resize: vertical;
+    min-height: 56px; max-height: 220px;
+    font-size: 11px; line-height: 1.5; font-family: inherit;
+    color: rgba(0,0,0,0.75);
+    background: rgba(0,0,0,0.03);
+    border: 1px solid rgba(0,0,0,0.1); border-radius: 6px;
+    padding: 6px 8px; outline: none;
+  }
+  .memo-area:focus { border-color: rgba(60,120,230,0.5); background: #fff; }
+  .memo-area::placeholder { color: rgba(0,0,0,0.25); }
+  body.compact .section-memo { display: none; }
+
   /* ── Console fixed to bottom (常時表示) ── */
   .section-console {
     border-top: 1px solid rgba(0,0,0,0.08);
@@ -1237,7 +1252,11 @@ ipcRenderer.on('workspace-info', (_e, info) => {
   if (wsColor) {
     document.getElementById('titlebar').style.borderBottomColor = wsColor.accent;
   }
+  setMemoText(info.memo || '');
 });
+
+// REST 等の外部経由でメモが更新されたとき UI に反映
+ipcRenderer.on('workspace-memo', (_e, { memo }) => setMemoText(memo || ''));
 
 ipcRenderer.on('set-sidebar-width', (_e, { width }) => {
   document.documentElement.style.setProperty('--sidebar-w', width + 'px');
@@ -2517,6 +2536,43 @@ const _availSection = document.createElement('div');
 _availSection.className = 'section section-available';
 const _sideSection = document.createElement('div');
 _sideSection.className = 'section section-console';
+// ━━ MEMO section (静的構築 — render() で再構築しない。入力中にフォーカスを失わないため) ━━
+// snap している内容(=プロジェクト)についての自由記述。main 側で workspaces.json に
+// 永続化し、snapped.json / REST 経由で AtelierX・Obsidian 等の外部ツールへ渡る。
+const _memoSection = document.createElement('div');
+_memoSection.className = 'section section-memo';
+let memoCollapsed = true;
+const _memoTitle = document.createElement('div');
+_memoTitle.className = 'section-title section-title-clickable';
+const _memoArea = document.createElement('textarea');
+_memoArea.className = 'memo-area';
+_memoArea.placeholder = 'このワークスペースのメモ (プロジェクト内容、TODO など)';
+_memoArea.rows = 4;
+function _memoRefreshTitle() {
+  const has = _memoArea.value.trim().length > 0;
+  _memoTitle.innerHTML = `<span class="section-toggle">${memoCollapsed ? '▸' : '▾'}</span> MEMO${has ? ' ✎' : ''}`;
+  _memoArea.style.display = memoCollapsed ? 'none' : 'block';
+}
+_memoTitle.addEventListener('click', () => { memoCollapsed = !memoCollapsed; _memoRefreshTitle(); if (!memoCollapsed) _memoArea.focus(); });
+let _memoSaveTimer = null;
+_memoArea.addEventListener('input', () => {
+  if (_memoSaveTimer) clearTimeout(_memoSaveTimer);
+  _memoSaveTimer = setTimeout(() => {
+    _memoSaveTimer = null;
+    ipcRenderer.send('set-workspace-memo', { memo: _memoArea.value });
+    _memoRefreshTitle();
+  }, 500);
+});
+_memoArea.addEventListener('keydown', (e) => e.stopPropagation());  // ホットキーに食われない
+function setMemoText(text) {
+  if (document.activeElement === _memoArea) return;  // 入力中は外部更新で上書きしない
+  _memoArea.value = text;
+  if (text.trim()) memoCollapsed = false;  // メモがあるワークスペースは開いた状態で表示
+  _memoRefreshTitle();
+}
+_memoSection.appendChild(_memoTitle);
+_memoSection.appendChild(_memoArea);
+_memoRefreshTitle();
 // xterm container cache: ptyId → DOM element (survives render, avoids re-mount)
 const _termContainers = new Map();
 let _sectionsAttached = false;
@@ -3167,6 +3223,7 @@ function render() {
   // Attach persistent sections — ドロワーコンテンツに配置
   if (!_sectionsAttached) {
     drawerContent.appendChild(_gridSection);
+    drawerContent.appendChild(_memoSection);
     drawerContent.appendChild(_availSection);
     document.getElementById('console-fixed').appendChild(_sideSection);
     _sectionsAttached = true;

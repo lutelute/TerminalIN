@@ -150,6 +150,32 @@ curl -s -X POST http://127.0.0.1:37123/api/v1/layout \
 
 ---
 
+### POST /api/v1/memo
+ワークスペースにメモを記録する。snap している内容（プロジェクト）の説明・TODO 等を
+外部ツール / エージェントから書き込める。メモは `workspaces.json` で永続化され、
+`snapped.json` の `workspaces[].memo` と `GET /api/v1/status` の `workspaces[].memo`
+から読み出せる（AtelierX / Obsidian エクスポート連携用）。
+
+```bash
+curl -s -X POST http://127.0.0.1:37123/api/v1/memo \
+  -H 'Content-Type: application/json' \
+  -d '{"memo":"TiN 状態判定v2の検証作業。Terminal×3 + ドキュメント"}'
+```
+
+リクエストボディ:
+
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `memo` | string | ✓ | メモ本文（空文字でクリア） |
+| `workspaceId` | number | — | 対象 workspace ID（省略時は最初の ws） |
+
+レスポンス例:
+```json
+{"ok": true, "workspaceId": 1, "memo": "..."}
+```
+
+---
+
 ### POST /api/v1/snap
 既に起動しているウィンドウを指定スロットにスナップする。
 
