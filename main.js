@@ -3222,6 +3222,10 @@ function uninstallClaudeHooks() {
 // 処理中/許可待ちを判定する。title の ✳ 残存に騙されない。
 // 返り値: { tabs: [{tty, title, state}], ttys: Set } / 失敗時 null。
 // state: 'busy'(処理中) / 'perm'(許可待ち) / 'live'(稼働中=入力待ち)
+// busy スピナー行: 行頭のスピナー記号 + 「〜ing…」(v2.1.168 実測:「✽ Waddling… (6m 6s)」
+// 「· Composing…」等)。'ing…' 単独の広範マッチだと応答本文の "Loading…" 等に誤反応し、
+// busy が最優先確定のため実際の許可待ち(perm)をマスクする → 記号付き行頭に限定する。
+const BUSY_SPINNER_RE = /(^|[\r\n])\s*[·✢✳✶✻✽✦∗*+]\s?\S+ing…/;
 let _statusBusy = false;
 let _statusCache = null;
 async function getClaudeStatuses() {
@@ -3243,7 +3247,9 @@ async function getClaudeStatuses() {
     // 1タブ200KB超)は転送しない。※contents は AppleScript 予約語と衝突して
     // tab オブジェクト自身が返るため raw コード «property pcnt» で参照する。
     // 判定は JS 側(下)で行い、レコードは RS(0x1e)/US(0x1f) 区切りで受け取る。
-    const script = 'set rs to character id 30\nset us to character id 31\ntell application "Terminal"\nset tl to tty of every tab of every window\nset cl to custom title of every tab of every window\nset pl to «property pcnt» of every tab of every window\nend tell\nset out to ""\nrepeat with wi from 1 to count tl\ntry\nset wt to item wi of tl\nset wc to item wi of cl\nset wp to item wi of pl\nrepeat with ti from 1 to count wt\ntry\nset t1 to item ti of wt\nset c1 to item ti of wc\nset p1 to item ti of wp\nif t1 is missing value then set t1 to ""\nif c1 is missing value then set c1 to ""\nif p1 is missing value then set p1 to ""\nset out to out & (t1 as string) & us & (c1 as string) & us & (p1 as string) & rs\nend try\nend repeat\nend try\nend repeat\nreturn out';
+    // ※ tell application "Terminal" は未起動だと Apple Event が Terminal を自動起動
+    //   してしまう(quit しても 6 秒以内に復活)ため、is running を先に確認して回避。
+    const script = 'set rs to character id 30\nset us to character id 31\nif application "Terminal" is not running then return ""\ntell application "Terminal"\nset tl to tty of every tab of every window\nset cl to custom title of every tab of every window\nset pl to «property pcnt» of every tab of every window\nend tell\nset out to ""\nrepeat with wi from 1 to count tl\ntry\nset wt to item wi of tl\nset wc to item wi of cl\nset wp to item wi of pl\nrepeat with ti from 1 to count wt\ntry\nset t1 to item ti of wt\nset c1 to item ti of wc\nset p1 to item ti of wp\nif t1 is missing value then set t1 to ""\nif c1 is missing value then set c1 to ""\nif p1 is missing value then set p1 to ""\nset out to out & (t1 as string) & us & (c1 as string) & us & (p1 as string) & rs\nend try\nend repeat\nend try\nend repeat\nreturn out';
     const { stdout: term } = await execFileAsync('osascript', ['-e', script], { timeout: 10000, maxBuffer: 8 * 1024 * 1024 });
     // ── 判定(JS 側) ──
     // 窓は画面の最後22行(桁数に依存しない)。フッター/メニュー/入力ボックス/
@@ -3263,7 +3269,7 @@ async function getClaudeStatuses() {
       if (!ttys.has(tty) || !title) continue;
       const tail = f[2].split('\n').slice(-22).join('\n');
       let state = 'live';
-      if (tail.includes('esc to interrupt') || tail.includes('ing…')) state = 'busy';
+      if (tail.includes('esc to interrupt') || BUSY_SPINNER_RE.test(tail)) state = 'busy';
       else if ((tail.includes('❯ 1.') && tail.includes(' 2. ')) || (tail.includes('❯ 2.') && tail.includes(' 1. '))
         || (tail.includes('❯ 3.') && tail.includes(' 1. '))) state = 'perm';
       list.push({ tty, title, state });
@@ -3289,11 +3295,22 @@ function classifyPtyState(gw, ttys) {
   // 近くにあり、かつスピナー再描画が生きている(直近3秒にデータ受信)」で判定。
   // idle になると再描画が止まる → 自然に busy が外れる
   const fresh = Date.now() - (gw.lastDataAt || 0) < 3000;
-  if (fresh && (plain.includes('esc to interrupt') || plain.includes('ing…'))) return 'busy';
+  if (fresh && (plain.includes('esc to interrupt') || BUSY_SPINNER_RE.test(plain))) return 'busy';
   const hk = hookStates.get(gw.tty);
   if (hk && (hk.state === 'perm' || hk.state === 'busy' || hk.state === 'input')) return hk.state;
+  // 番号メニュー検出。ストリームは画面と違い消去されないため、解消済みメニューの
+  // 残骸(「❯ 1.」等)が tailBuf に残って false perm(赤誤爆+通知スパム)になり得る。
+  // → 生バッファ上で「最後の ❯ より後に TUI の消去シーケンス(カーソル上移動 \x1b[nA /
+  //   画面消去 \x1b[J)が流れていない」ことを要求する。ink はメニュー解消時に必ず
+  //   カーソル上移動+消去で再描画するため、残骸なら消去が後続している。
+  //   (行末消去 \x1b[K は描画中にも行単位で流れるため判定に使わない)
   if ((/❯ 1\./.test(plain) && / 2\. /.test(plain)) || (/❯ 2\./.test(plain) && / 1\. /.test(plain))
-    || (/❯ 3\./.test(plain) && / 1\. /.test(plain))) return 'perm';  // 番号メニュー
+    || (/❯ 3\./.test(plain) && / 1\. /.test(plain))) {
+    const raw = String(gw.tailBuf || '').slice(-2000);
+    const lastMenu = raw.lastIndexOf('❯ ');
+    const erasedAfter = lastMenu >= 0 && /\x1b\[\d*[AJ]/.test(raw.slice(lastMenu));
+    if (!erasedAfter) return 'perm';
+  }
   return 'input';
 }
 
