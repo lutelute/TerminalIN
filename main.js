@@ -3105,6 +3105,110 @@ ipcMain.handle('ai-colorize', async (event) => {
   }
 });
 
+// ── Claude Code hooks 連携（プッシュ型状態通知） ──
+// ~/.claude/settings.json に設置した hooks が /tmp/tin-claude-status/<tty>.json に
+// {"state":"busy|perm|input","ts":epoch} を書く。TiN は fs.watch で検知して即時更新。
+// ps/osascript ヒューリスティックより正確・低遅延（設置は Shell メニューから opt-in）。
+const TIN_HOOK_DIR = '/tmp/tin-claude-status';
+const hookStates = new Map();   // tty(例: ttys003) → { state, ts }
+let _hookNudgeTimer = null;
+function readHookStates() {
+  hookStates.clear();
+  let files = [];
+  try { files = fs.readdirSync(TIN_HOOK_DIR); } catch { return; }
+  for (const f of files) {
+    if (!f.endsWith('.json')) continue;
+    try {
+      const j = JSON.parse(fs.readFileSync(path.join(TIN_HOOK_DIR, f), 'utf8'));
+      if (j && j.state) hookStates.set(f.replace(/\.json$/, ''), { state: j.state, ts: j.ts || 0 });
+    } catch {} // 書き込み途中の読みは無視（次のイベントで再読込される）
+  }
+}
+function watchHookDir() {
+  try { fs.mkdirSync(TIN_HOOK_DIR, { recursive: true }); } catch {}
+  readHookStates();
+  try {
+    fs.watch(TIN_HOOK_DIR, () => {
+      readHookStates();
+      // 300ms debounce して renderer に再判定を促す（6秒 poll を待たずに反映）
+      if (_hookNudgeTimer) return;
+      _hookNudgeTimer = setTimeout(() => {
+        _hookNudgeTimer = null;
+        for (const [, ws] of workspaces) {
+          if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('claude-status-nudge');
+        }
+      }, 300);
+    });
+  } catch (e) { console.warn('[tin] hook dir watch failed:', e?.message || e); }
+}
+
+// hook コマンド生成。$PPID は /bin/sh の親 = claude プロセスなので、その tty に書く。
+// 文字列 "tin-claude-status" を設置/解除の識別マーカーとして使う。末尾 exit 0 で
+// tty 無し(ヘッドレス)でも hook エラーにしない。
+function _hookCmdSetState(state) {
+  return `d=${TIN_HOOK_DIR}; mkdir -p "$d"; t=$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' '); [ -n "$t" ] && [ "$t" != "??" ] && printf '{"state":"${state}","ts":%s}' "$(date +%s)" > "$d/$t.json"; exit 0`;
+}
+const TIN_HOOK_COMMANDS = {
+  UserPromptSubmit: _hookCmdSetState('busy'),   // 指示を送った → 処理開始
+  PostToolUse: _hookCmdSetState('busy'),        // ツール完了(許可承認後の再開もここで拾う)
+  Stop: _hookCmdSetState('input'),              // 応答完了 → 入力待ち
+  SessionStart: _hookCmdSetState('input'),      // セッション開始直後は入力待ち
+  // Notification は message で分岐: permission 要求 → perm / それ以外(待機通知等) → input
+  Notification: `d=${TIN_HOOK_DIR}; mkdir -p "$d"; t=$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' '); in=$(cat); s=input; case "$in" in *ermission*) s=perm;; esac; [ -n "$t" ] && [ "$t" != "??" ] && printf '{"state":"%s","ts":%s}' "$s" "$(date +%s)" > "$d/$t.json"; exit 0`,
+  SessionEnd: `t=$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' '); [ -n "$t" ] && [ "$t" != "??" ] && rm -f "${TIN_HOOK_DIR}/$t.json"; exit 0`,
+};
+
+function _claudeSettingsPath() {
+  return path.join(app.getPath('home'), '.claude', 'settings.json');
+}
+// settings.json の hooks から TiN 由来エントリを除去（共通処理）。除去後の json を返す
+function _stripTinHooks(json) {
+  if (!json.hooks) return json;
+  for (const ev of Object.keys(json.hooks)) {
+    if (!Array.isArray(json.hooks[ev])) continue;
+    for (const g of json.hooks[ev]) {
+      if (g && Array.isArray(g.hooks)) {
+        g.hooks = g.hooks.filter(h => !String((h && h.command) || '').includes('tin-claude-status'));
+      }
+    }
+    json.hooks[ev] = json.hooks[ev].filter(g => g && Array.isArray(g.hooks) && g.hooks.length > 0);
+    if (json.hooks[ev].length === 0) delete json.hooks[ev];
+  }
+  if (Object.keys(json.hooks).length === 0) delete json.hooks;
+  return json;
+}
+function installClaudeHooks() {
+  const p = _claudeSettingsPath();
+  let json = {};
+  if (fs.existsSync(p)) {
+    try { json = JSON.parse(fs.readFileSync(p, 'utf8')); }
+    catch (e) { return { ok: false, error: `~/.claude/settings.json のパースに失敗しました。手動で修正してください: ${e.message}` }; }
+    try { fs.copyFileSync(p, p + '.tin-backup'); } catch {}
+  } else {
+    try { fs.mkdirSync(path.dirname(p), { recursive: true }); } catch {}
+  }
+  _stripTinHooks(json);   // 旧バージョンの TiN hook を除去してから追加（更新冪等）
+  json.hooks = json.hooks || {};
+  for (const [ev, cmd] of Object.entries(TIN_HOOK_COMMANDS)) {
+    json.hooks[ev] = json.hooks[ev] || [];
+    const group = { hooks: [{ type: 'command', command: cmd }] };
+    if (ev === 'PostToolUse') group.matcher = '*';
+    json.hooks[ev].push(group);
+  }
+  try { fs.writeFileSync(p, JSON.stringify(json, null, 2) + '\n'); } catch (e) { return { ok: false, error: e.message }; }
+  return { ok: true };
+}
+function uninstallClaudeHooks() {
+  const p = _claudeSettingsPath();
+  if (!fs.existsSync(p)) return { ok: true };
+  let json;
+  try { json = JSON.parse(fs.readFileSync(p, 'utf8')); }
+  catch (e) { return { ok: false, error: `~/.claude/settings.json のパースに失敗: ${e.message}` }; }
+  _stripTinHooks(json);
+  try { fs.writeFileSync(p, JSON.stringify(json, null, 2) + '\n'); } catch (e) { return { ok: false, error: e.message }; }
+  return { ok: true };
+}
+
 // ── 状態判定: claude が動いているタブを ps+osascript で特定し、history の内容から
 // 処理中/許可待ちを判定する。title の ✳ 残存に騙されない。各 {tty, title, state} を返す。
 // state: 'busy'(処理中) / 'perm'(許可待ち) / 'live'(稼働中=入力待ち)
@@ -3143,9 +3247,14 @@ const CLAUDE_STATE_META = {
   busy:  { color: '#3c78e6', label: '処理中' },    // 🔵 待てば良い
 };
 function classifyClaudeState(m, title) {
-  if (m.state === 'busy') return 'busy';             // history の "esc to interrupt"(確実)
+  // 優先順位: ①history の busy(esc to interrupt=「動いている」事実が最強。許可承認直後
+  // など hook がまだ古い瞬間も正しく busy になる) ②hooks のプッシュ状態(正確・即時)
+  // ③history のメニュー検出 ④title の Braille スピナー(フォールバック)
+  if (m.state === 'busy') return 'busy';
+  const hk = hookStates.get(m.tty);
+  if (hk && (hk.state === 'perm' || hk.state === 'busy' || hk.state === 'input')) return hk.state;
   if (m.state === 'perm') return 'perm';
-  if (/[⠀-⣿]/.test(title)) return 'busy';           // フォールバック: title の Braille スピナー
+  if (/[⠀-⣿]/.test(title)) return 'busy';
   return 'input';
 }
 
@@ -3271,6 +3380,7 @@ app.whenReady().then(() => {
   writeSnappedJson();
   startFrontmostPoll();
   registerHotkeys();
+  watchHookDir();   // Claude Code hooks の状態ファイル監視（設置済みなら即時状態反映）
   if (appSettings.orchApi) startRestServer();
 
   // stickyWindows=false の場合: 残存 sticky を起動時に即解除 (前バージョンの遺産を清掃)
@@ -3387,6 +3497,30 @@ app.whenReady().then(() => {
       { label: 'Edit Auto-Snap Config...', click: () => {
         autoSnap.ensureConfig();
         require('child_process').exec(`open "${autoSnap.CONFIG_FILE}"`);
+      }},
+      { type: 'separator' },
+      { label: 'Claude 状態フックを設置...', click: () => {
+        const r = installClaudeHooks();
+        dialog.showMessageBox({
+          type: r.ok ? 'info' : 'error',
+          title: 'Claude 状態フック',
+          message: r.ok ? 'フックを設置しました' : '設置に失敗しました',
+          detail: r.ok
+            ? '~/.claude/settings.json に TiN 連携フックを追加しました（元ファイルは settings.json.tin-backup に保存）。\n\n'
+              + 'claude の状態（処理中 / 許可待ち / 入力待ち）がイベント発生と同時に TiN へ通知され、'
+              + '色とバッジが即時・正確になります。\n\n'
+              + '※ 既に起動中の claude セッションには適用されません。新しく起動したセッションから有効です。'
+            : r.error,
+        });
+      }},
+      { label: 'Claude 状態フックを解除...', click: () => {
+        const r = uninstallClaudeHooks();
+        dialog.showMessageBox({
+          type: r.ok ? 'info' : 'error',
+          title: 'Claude 状態フック',
+          message: r.ok ? 'フックを解除しました' : '解除に失敗しました',
+          detail: r.ok ? '~/.claude/settings.json から TiN 連携フックを除去しました。状態判定は従来のヒューリスティック（ps + 画面内容）に戻ります。' : r.error,
+        });
       }},
       { type: 'separator' },
       { label: 'Save Workspace Preset...', accelerator: 'CmdOrCtrl+Shift+S', click: () => {

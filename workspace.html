@@ -2113,6 +2113,9 @@ function notifyAction(name, label, st) {
 }
 setInterval(refreshStatusColors, 6000);
 setTimeout(refreshStatusColors, 1500);
+// hooks 設置時: main が状態ファイル変化を fs.watch で検知して nudge してくる → 即再判定
+// (6秒 poll を待たないので、許可待ち通知の遅延が ~1秒未満になる)
+ipcRenderer.on('claude-status-nudge', () => refreshStatusColors());
 
 // AI 色判定を実行 (haiku が端末の用途を判定して色割当)。もう一度押すと解除。
 async function runAiColorize(btn) {
