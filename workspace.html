@@ -184,6 +184,9 @@
   .glp-size-item.active { background:rgba(60,120,230,0.12); border-color:rgba(60,120,230,0.6); }
   .glp-size-item span { font-size:9px; color:rgba(0,0,0,0.45); font-weight:600; }
   .glp-size-item.active span { color:rgba(60,120,230,0.9); }
+  /* number入力のスピナー(▲▼)が幅を食って2桁が見切れるため非表示にする */
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
   .glp-custom-row { display:flex; align-items:center; gap:6px; padding-top:4px; border-top:1px solid rgba(0,0,0,0.06); }
   .glp-custom-row label { font-size:10px; color:rgba(0,0,0,0.45); }
   .glp-custom-row input { width:34px; text-align:center; font-size:11px; border:1px solid rgba(0,0,0,0.15); border-radius:4px; padding:3px 4px; }
@@ -3580,10 +3583,10 @@ function openGridLayoutPopup(anchorEl) {
   customRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
   const cLabel = document.createElement('label'); cLabel.textContent = 'Custom'; cLabel.style.cssText = 'font-size:10px;color:rgba(0,0,0,0.4);flex-shrink:0;';
   const cIn = document.createElement('input'); cIn.type='number'; cIn.min='1'; cIn.max='20'; cIn.value=editCols;
-  cIn.style.cssText = 'width:30px;text-align:center;font-size:11px;border:1px solid rgba(0,0,0,0.15);border-radius:4px;padding:2px 3px;';
+  cIn.style.cssText = 'width:34px;text-align:center;font-size:11px;border:1px solid rgba(0,0,0,0.15);border-radius:4px;padding:2px 3px;';
   const xLbl = document.createElement('span'); xLbl.textContent='×'; xLbl.style.cssText='font-size:11px;color:rgba(0,0,0,0.35);';
   const rIn = document.createElement('input'); rIn.type='number'; rIn.min='1'; rIn.max='20'; rIn.value=editRows;
-  rIn.style.cssText = 'width:30px;text-align:center;font-size:11px;border:1px solid rgba(0,0,0,0.15);border-radius:4px;padding:2px 3px;';
+  rIn.style.cssText = 'width:34px;text-align:center;font-size:11px;border:1px solid rgba(0,0,0,0.15);border-radius:4px;padding:2px 3px;';
   const applyCustom = () => {
     const nc=Math.max(1,Math.min(20,parseInt(cIn.value)||1)), nr=Math.max(1,Math.min(20,parseInt(rIn.value)||1));
     if (nc===editCols && nr===editRows) return;
