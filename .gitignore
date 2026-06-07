@@ -8,3 +8,4 @@ build/
 .daemon-src-hash
 .env
 logs/
+.claude/handover/
