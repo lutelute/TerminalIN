@@ -89,17 +89,19 @@ function loadRecentHistory(maxEntries = 20) {
 }
 
 // ── Claude CLI 呼び出し ──
-function callClaude(prompt) {
+// model: 'haiku'(既定・速い) | 'sonnet'(賢い)。timeoutMs で長文生成にも対応。
+function callClaude(prompt, model = 'haiku', timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const claudePath = process.env.HOME + '/.local/bin/claude';
     const os = require('os');
+    const safeModel = /^[a-z0-9.\-]+$/i.test(model) ? model : 'haiku';  // シェル注入防止
     // プロンプトを一時ファイルに書き出して stdin からパイプ
     const tmpFile = path.join(os.tmpdir(), `tin-prompt-${Date.now()}.txt`);
     fs.writeFileSync(tmpFile, prompt, 'utf-8');
-    const child = require('child_process').spawn('sh', ['-c', `cat "${tmpFile}" | "${claudePath}" -p --model haiku`], {
+    const child = require('child_process').spawn('sh', ['-c', `cat "${tmpFile}" | "${claudePath}" -p --model ${safeModel}`], {
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd: os.tmpdir(),
-      timeout: 30000,
+      timeout: timeoutMs,
       env: { ...process.env },
     });
     let stdout = '', stderr = '';
@@ -252,4 +254,4 @@ ${windowList}
   }
 }
 
-module.exports = { loadConfig, ensureConfig, clusterWindows, colorizeWindows, executeAutoSnap, appendHistory, loadRecentHistory, CONFIG_FILE, HISTORY_FILE };
+module.exports = { loadConfig, ensureConfig, clusterWindows, colorizeWindows, executeAutoSnap, appendHistory, loadRecentHistory, callClaude, CONFIG_FILE, HISTORY_FILE };

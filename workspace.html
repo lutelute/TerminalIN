@@ -527,6 +527,29 @@
   .memo-area:focus { border-color: rgba(60,120,230,0.5); background: #fff; }
   .memo-area::placeholder { color: rgba(0,0,0,0.25); }
   body.compact .section-memo { display: none; }
+  /* メモ AI ツールバー */
+  .memo-ai-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 5px; }
+  .memo-ai-btn {
+    font-size: 10px; font-weight: 600; white-space: nowrap;
+    border: 1px solid rgba(120,70,200,0.25); border-radius: 5px;
+    padding: 3px 7px; cursor: pointer;
+    background: rgba(120,70,200,0.08); color: rgba(90,50,170,0.9);
+  }
+  .memo-ai-btn:hover:not(:disabled) { background: rgba(120,70,200,0.18); }
+  .memo-ai-btn:disabled { opacity: 0.5; cursor: default; }
+  .memo-ai-model {
+    font-size: 10px; margin-left: auto; border: 1px solid rgba(0,0,0,0.12);
+    border-radius: 5px; padding: 2px 3px; background: rgba(0,0,0,0.02);
+    color: rgba(0,0,0,0.6); cursor: pointer; outline: none;
+  }
+  .memo-chat-row { display: flex; gap: 4px; margin-top: 5px; }
+  .memo-chat-input {
+    flex: 1; box-sizing: border-box; font-size: 11px; font-family: inherit;
+    border: 1px solid rgba(0,0,0,0.12); border-radius: 5px; padding: 4px 7px;
+    outline: none; color: rgba(0,0,0,0.75); background: rgba(0,0,0,0.02);
+  }
+  .memo-chat-input:focus { border-color: rgba(120,70,200,0.5); background: #fff; }
+  .memo-chat-input::placeholder { color: rgba(0,0,0,0.25); }
 
   /* ── Console fixed to bottom (常時表示) ── */
   .section-console {
@@ -2558,6 +2581,9 @@ function _memoRefreshTitle() {
   const has = _memoArea.value.trim().length > 0;
   _memoTitle.innerHTML = `<span class="section-toggle">${memoCollapsed ? '▸' : '▾'}</span> MEMO${has ? ' ✎' : ''}`;
   _memoArea.style.display = memoCollapsed ? 'none' : 'block';
+  // AI バー/チャットも折り畳みに追従 (定義前の初回呼び出しでは未定義なのでガード)
+  if (typeof _memoAiBar !== 'undefined') _memoAiBar.style.display = memoCollapsed ? 'none' : 'flex';
+  if (typeof _memoChatRow !== 'undefined') _memoChatRow.style.display = memoCollapsed ? 'none' : 'flex';
 }
 _memoTitle.addEventListener('click', () => { memoCollapsed = !memoCollapsed; _memoRefreshTitle(); if (!memoCollapsed) _memoArea.focus(); });
 let _memoSaveTimer = null;
@@ -2576,8 +2602,88 @@ function setMemoText(text) {
   if (text.trim()) memoCollapsed = false;  // メモがあるワークスペースは開いた状態で表示
   _memoRefreshTitle();
 }
+// ── メモ AI ツールバー (A:自動生成 B:整理 C:次アクション D:質問) ──
+// 全て main の memo-ai IPC 経由でローカル claude CLI を呼ぶ (API キー不要)
+const _memoAiBar = document.createElement('div');
+_memoAiBar.className = 'memo-ai-bar';
+let _memoAiBusy = false;
+function _memoAppend(text) {
+  // AI 出力をメモ末尾に追記 (既存メモは保持)。保存もトリガー
+  const cur = _memoArea.value.trim();
+  _memoArea.value = (cur ? cur + '\n\n' : '') + text;
+  ipcRenderer.send('set-workspace-memo', { memo: _memoArea.value });
+  _memoRefreshTitle();
+}
+async function _runMemoAi(action, btn, opts = {}) {
+  if (_memoAiBusy) return;
+  _memoAiBusy = true;
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  try {
+    const r = await ipcRenderer.invoke('memo-ai', {
+      action, memo: _memoArea.value, question: opts.question,
+      model: _memoModelSel.value,
+    });
+    if (r && r.ok) {
+      if (action === 'organize') {  // 整理は置換
+        _memoArea.value = r.text;
+        ipcRenderer.send('set-workspace-memo', { memo: _memoArea.value });
+        _memoRefreshTitle();
+      } else if (action === 'chat') {
+        _memoAppend(`Q: ${opts.question}\nA: ${r.text}`);
+      } else {
+        _memoAppend(r.text);
+      }
+    } else {
+      showToast('AI: ' + ((r && r.error) || '失敗'));
+    }
+  } catch (e) { showToast('AIエラー: ' + e.message); }
+  finally { _memoAiBusy = false; if (btn) { btn.textContent = label; btn.disabled = false; } }
+}
+function _mkAiBtn(label, title, action) {
+  const b = document.createElement('button');
+  b.className = 'memo-ai-btn'; b.textContent = label; b.title = title;
+  b.addEventListener('click', (e) => { e.stopPropagation(); _runMemoAi(action, b); });
+  return b;
+}
+const _memoModelSel = document.createElement('select');
+_memoModelSel.className = 'memo-ai-model'; _memoModelSel.title = 'モデル選択';
+_memoModelSel.innerHTML = '<option value="haiku">haiku (速)</option><option value="sonnet">sonnet (賢)</option>';
+_memoModelSel.addEventListener('click', e => e.stopPropagation());
+_memoAiBar.appendChild(_mkAiBtn('✨生成', 'snap 状況からメモを自動生成', 'generate'));
+_memoAiBar.appendChild(_mkAiBtn('整理', 'メモを整形・TODO 抽出', 'organize'));
+_memoAiBar.appendChild(_mkAiBtn('次アクション', '次にやることを提案', 'next'));
+_memoAiBar.appendChild(_memoModelSel);
+// D: 質問入力欄
+const _memoChatRow = document.createElement('div');
+_memoChatRow.className = 'memo-chat-row';
+const _memoChatInput = document.createElement('input');
+_memoChatInput.className = 'memo-chat-input'; _memoChatInput.type = 'text';
+_memoChatInput.placeholder = 'AI に質問… (Enter)';
+_memoChatInput.addEventListener('keydown', (e) => {
+  e.stopPropagation();
+  if (e.key === 'Enter' && _memoChatInput.value.trim() && !_memoAiBusy) {
+    const q = _memoChatInput.value.trim();
+    _memoChatInput.value = '';
+    _runMemoAi('chat', null, { question: q });
+  }
+});
+const _memoChatBtn = document.createElement('button');
+_memoChatBtn.className = 'memo-ai-btn'; _memoChatBtn.textContent = '送信';
+_memoChatBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (_memoChatInput.value.trim() && !_memoAiBusy) {
+    const q = _memoChatInput.value.trim(); _memoChatInput.value = '';
+    _runMemoAi('chat', null, { question: q });
+  }
+});
+_memoChatRow.appendChild(_memoChatInput);
+_memoChatRow.appendChild(_memoChatBtn);
+
 _memoSection.appendChild(_memoTitle);
 _memoSection.appendChild(_memoArea);
+_memoSection.appendChild(_memoAiBar);
+_memoSection.appendChild(_memoChatRow);
 _memoRefreshTitle();
 // xterm container cache: ptyId → DOM element (survives render, avoids re-mount)
 const _termContainers = new Map();
