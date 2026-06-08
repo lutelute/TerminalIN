@@ -3111,6 +3111,39 @@ ipcMain.on('switch-to-workspace-of', (_event, { windowNumber }) => {
 
 ipcMain.on('trigger-auto-snap', (_event, opts) => triggerAutoSnap(opts));
 
+// ── メモ AI: ワークスペースのメモ + snap 状況を文脈にローカル claude CLI を呼ぶ ──
+// action: 'generate'(自動生成) | 'organize'(整理) | 'next'(次アクション) | 'chat'(質問)
+// API キー不要(サブスクの claude CLI を流用)。結果テキストを返すだけで保存はしない
+// (renderer が textarea に反映 → ユーザー編集 → 既存の set-workspace-memo で保存)
+ipcMain.handle('memo-ai', async (event, { action, memo, question, model } = {}) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return { ok: false, error: 'no workspace' };
+  const snapList = [...ws.snappedExternals.values()]
+    .map((info, i) => `${i + 1}. [${info.app}] ${info.title}`).join('\n') || '(snap なし)';
+  const memoText = (memo || '').trim() || '(メモは空です)';
+  const ctx = `## ワークスペース「${ws.name}」\n\n### snap 中のウィンドウ\n${snapList}\n\n### 現在のメモ\n${memoText}`;
+  let prompt;
+  if (action === 'generate') {
+    prompt = `あなたは作業記録アシスタントです。以下の snap 中ウィンドウ（ターミナルの claude タスクや開いているアプリ）から、このワークスペースで何のプロジェクト・作業をしているかを推測し、メモの下書きを書いてください。\n\n${ctx}\n\n## 出力ルール\n- 1〜3行の簡潔な日本語\n- 1行目はプロジェクト/作業の要約、続けて主な作業内容\n- 前置き・説明・マークダウン見出しは不要。メモ本文だけを出力`;
+  } else if (action === 'organize') {
+    prompt = `以下のメモを読みやすく整理してください。\n\n${ctx}\n\n## 出力ルール\n- 内容は変えず、重複削除・箇条書き化・TODO は「- [ ]」で抽出\n- 日本語。前置き不要、整理後のメモ本文だけを出力`;
+  } else if (action === 'next') {
+    prompt = `以下のメモと作業状況から、次にやるべきこと（次アクション）を提案してください。\n\n${ctx}\n\n## 出力ルール\n- 「- [ ] 」形式のチェックリストで 2〜5 個\n- 具体的で着手可能な粒度。前置き不要、リストだけを出力`;
+  } else if (action === 'chat') {
+    if (!(question || '').trim()) return { ok: false, error: '質問が空です' };
+    prompt = `あなたはこのワークスペースの作業を手伝うアシスタントです。文脈を踏まえて簡潔に日本語で答えてください。\n\n${ctx}\n\n## 質問\n${question}`;
+  } else {
+    return { ok: false, error: `unknown action: ${action}` };
+  }
+  try {
+    const text = await autoSnap.callClaude(prompt, model === 'sonnet' ? 'sonnet' : 'haiku', 60000);
+    return { ok: true, text: (text || '').trim() };
+  } catch (e) {
+    console.warn('[tin] memo-ai failed:', e?.message || e);
+    return { ok: false, error: e.message };
+  }
+});
+
 // ── AI 色判定: snapped 端末の用途を haiku が判定して色を割り当てる ──
 ipcMain.handle('ai-colorize', async (event) => {
   const ws = findWorkspace(event.sender);
