@@ -3189,7 +3189,8 @@ const TIN_HOOK_COMMANDS = {
   Stop: _hookCmdSetState('input'),              // 応答完了 → 入力待ち
   SessionStart: _hookCmdSetState('input'),      // セッション開始直後は入力待ち
   // Notification は message で分岐: permission 要求 → perm / それ以外(待機通知等) → input
-  Notification: `d=${TIN_HOOK_DIR}; mkdir -p "$d"; t=$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' '); in=$(cat); s=input; case "$in" in *ermission*) s=perm;; esac; [ -n "$t" ] && [ "$t" != "??" ] && printf '{"state":"%s","ts":%s}' "$s" "$(date +%s)" > "$d/$t.json"; exit 0`,
+  // (英語 "needs your permission" と日本語 "許可" の両方を拾う)
+  Notification: `d=${TIN_HOOK_DIR}; mkdir -p "$d"; t=$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' '); in=$(cat); s=input; case "$in" in *ermission*|*許可*) s=perm;; esac; [ -n "$t" ] && [ "$t" != "??" ] && printf '{"state":"%s","ts":%s}' "$s" "$(date +%s)" > "$d/$t.json"; exit 0`,
   SessionEnd: `t=$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' '); [ -n "$t" ] && [ "$t" != "??" ] && rm -f "${TIN_HOOK_DIR}/$t.json"; exit 0`,
 };
 
@@ -3201,12 +3202,15 @@ function _stripTinHooks(json) {
   if (!json.hooks) return json;
   for (const ev of Object.keys(json.hooks)) {
     if (!Array.isArray(json.hooks[ev])) continue;
-    for (const g of json.hooks[ev]) {
-      if (g && Array.isArray(g.hooks)) {
-        g.hooks = g.hooks.filter(h => !String((h && h.command) || '').includes('tin-claude-status'));
-      }
-    }
-    json.hooks[ev] = json.hooks[ev].filter(g => g && Array.isArray(g.hooks) && g.hooks.length > 0);
+    json.hooks[ev] = json.hooks[ev].filter(g => {
+      // TiN の hook だけを抜き、それで空になったグループのみ除去する。
+      // 元から hooks 配列を持たない/空のグループ(手書き・将来フォーマット)は
+      // TiN 由来でないので触らない(以前は黙って削除しておりユーザー設定を壊し得た)
+      if (!g || !Array.isArray(g.hooks)) return true;
+      const had = g.hooks.length;
+      g.hooks = g.hooks.filter(h => !String((h && h.command) || '').includes('tin-claude-status'));
+      return !(had > 0 && g.hooks.length === 0);
+    });
     if (json.hooks[ev].length === 0) delete json.hooks[ev];
   }
   if (Object.keys(json.hooks).length === 0) delete json.hooks;

@@ -322,6 +322,19 @@ tin://workspace/focus
 tin://terminal/new?cwd=/path/to/dir
 ```
 
+**ワークスペースメモの Obsidian / Markdown エクスポート:**
+
+各ワークスペースにはドロワーの MEMO セクションでメモ（プロジェクト内容・TODO）を残せます。
+メモ + snap 中ウィンドウの一覧は Markdown としてエクスポートできます（要: Orchestration API ON）。
+
+```bash
+node scripts/export-memo-obsidian.mjs                      # stdout に出力
+node scripts/export-memo-obsidian.mjs ~/Obsidian/TiN.md    # ファイルに日時見出し付きで追記
+node scripts/export-memo-obsidian.mjs --daily ~/Obsidian/daily   # daily/YYYY-MM-DD.md に追記
+```
+
+cron で定期実行すれば「いつ・どのプロジェクトで・何を開いていたか」の自動作業記録になります。
+
 ---
 
 ## トラブルシューティング
