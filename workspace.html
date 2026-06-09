@@ -152,6 +152,7 @@
     z-index: 30; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
   }
   body.gp-edit #gp-toolbar { display: flex; }
+  body.gp-edit #gp-grid { opacity: 1; }  /* 編集中はセル境界を見せる */
   #gp-toolbar button {
     padding: 4px 10px; border-radius: 5px; font-size: 11px; font-weight: 600;
     cursor: pointer; border: 1px solid rgba(0,0,0,0.1); background: #f5f5f5;
@@ -3481,8 +3482,10 @@ function render() {
   if (gpEl) {
     const ovCells = gpSlotLayout || Array.from({ length: gridCols * gridRows },
       (_, k) => ({ id: k, col: k % gridCols, row: Math.floor(k / gridCols), colSpan: 1, rowSpan: 1 }));
-    gpEl.style.gridTemplateColumns = `repeat(${gridCols}, 1fr)`;
-    gpEl.style.gridTemplateRows = `repeat(${gridRows}, 1fr)`;
+    gpEl.style.gridTemplateColumns = (gpColRatios && gpColRatios.length === gridCols)
+      ? gpColRatios.map(r => r + 'fr').join(' ') : `repeat(${gridCols}, 1fr)`;
+    gpEl.style.gridTemplateRows = (gpRowRatios && gpRowRatios.length === gridRows)
+      ? gpRowRatios.map(r => r + 'fr').join(' ') : `repeat(${gridRows}, 1fr)`;
     gpEl.innerHTML = '';
     for (const c of ovCells) {
       const d = document.createElement('div');
@@ -3625,6 +3628,7 @@ document.getElementById('content').addEventListener('mousedown', (e) => {
 // ── Grid panel click-through (ウィンドウレベル) ──
 // pointer-events:none はCSS内のみ。実際のクリックスルーには setIgnoreMouseEvents が必要。
 let gpEditMode = false; // グリッドJSブロックとこのブロックで共有
+let gpColRatios = null, gpRowRatios = null; // 列/行の比率 (null=均等)。main の getSlotBounds と同じ意味
 {
   const gridPanel = document.getElementById('grid-panel');
   let _ctState = false;
@@ -3673,12 +3677,113 @@ function toggleCollapse() {
 collapseBtn.addEventListener('click', toggleCollapse);
 ipcRenderer.on('toggle-compact', toggleCollapse);
 
-ipcRenderer.on('update-grid-panel', (_e, { cols, rows, slotLayout }) => {
+ipcRenderer.on('update-grid-panel', (_e, { cols, rows, colRatios, rowRatios, slotLayout }) => {
   if (cols) gridCols = cols;
   if (rows) gridRows = rows;
+  gpColRatios = colRatios ?? null;
+  gpRowRatios = rowRatios ?? null;
   gpSlotLayout = slotLayout ?? null;
   render();
+  if (gpEditMode) gpRenderEditLines();
 });
+
+// ── Grid ratio edit (✏️ ボタン): grid-overlay.html の編集ロジックを統合パネルに移植 ──
+// 列/行の境界線をドラッグ → update-grid-ratios(ライブ追従) / commit-grid-ratios(確定+保存)。
+// main の getSlotBounds が colRatios/rowRatios で実端末位置を計算するため実端末も追従する。
+function _gpCumulative(ratios, n) {
+  const cum = [0];
+  if (!ratios || ratios.length !== n) {
+    for (let i = 1; i <= n; i++) cum.push(i / n);
+  } else {
+    let s = 0;
+    for (let i = 0; i < n; i++) { s += ratios[i]; cum.push(s); }
+  }
+  return cum;
+}
+function gpApplyRatios() {
+  const gpEl = document.getElementById('gp-grid');
+  if (!gpEl) return;
+  gpEl.style.gridTemplateColumns = (gpColRatios && gpColRatios.length === gridCols)
+    ? gpColRatios.map(r => r + 'fr').join(' ') : `repeat(${gridCols}, 1fr)`;
+  gpEl.style.gridTemplateRows = (gpRowRatios && gpRowRatios.length === gridRows)
+    ? gpRowRatios.map(r => r + 'fr').join(' ') : `repeat(${gridRows}, 1fr)`;
+}
+function gpRenderEditLines() {
+  const panel = document.getElementById('grid-panel');
+  panel.querySelectorAll('.gp-col-line, .gp-row-line').forEach(el => el.remove());
+  if (!gpEditMode) return;
+  const cumC = _gpCumulative(gpColRatios, gridCols);
+  const cumR = _gpCumulative(gpRowRatios, gridRows);
+  for (let i = 1; i < gridCols; i++) {
+    const line = document.createElement('div');
+    line.className = 'gp-col-line';
+    line.style.left = `${cumC[i] * 100}%`;
+    line.addEventListener('mousedown', (e) => gpStartLineDrag(e, 'col', i));
+    panel.appendChild(line);
+  }
+  for (let i = 1; i < gridRows; i++) {
+    const line = document.createElement('div');
+    line.className = 'gp-row-line';
+    line.style.top = `${cumR[i] * 100}%`;
+    line.addEventListener('mousedown', (e) => gpStartLineDrag(e, 'row', i));
+    panel.appendChild(line);
+  }
+}
+function gpStartLineDrag(e, type, index) {
+  e.preventDefault();
+  e.stopPropagation();
+  const target = e.currentTarget;
+  target.classList.add('dragging');
+  const panel = document.getElementById('grid-panel');
+  const rect = panel.getBoundingClientRect();
+  const totalSize = type === 'col' ? rect.width : rect.height;
+  const origin = type === 'col' ? rect.left : rect.top;
+  const onMove = (ev) => {
+    const pos = (type === 'col' ? ev.clientX : ev.clientY) - origin;
+    const ratio = pos / totalSize;
+    const cum = type === 'col' ? _gpCumulative(gpColRatios, gridCols) : _gpCumulative(gpRowRatios, gridRows);
+    // 隣接境界の 5% 内側までに制限 (セルが潰れないように)
+    const clamped = Math.max(cum[index - 1] + 0.05, Math.min(cum[index + 1] - 0.05, ratio));
+    if (!gpColRatios) gpColRatios = Array(gridCols).fill(1 / gridCols);
+    if (!gpRowRatios) gpRowRatios = Array(gridRows).fill(1 / gridRows);
+    const arr = type === 'col' ? gpColRatios : gpRowRatios;
+    arr[index - 1] = clamped - cum[index - 1];
+    arr[index] = cum[index + 1] - clamped;  // 隣接2セルの和は保存される → 動くのは境界 index のみ
+    gpApplyRatios();
+    target.style[type === 'col' ? 'left' : 'top'] = `${clamped * 100}%`;
+    ipcRenderer.send('update-grid-ratios', { colRatios: gpColRatios, rowRatios: gpRowRatios });
+  };
+  const onUp = () => {
+    target.classList.remove('dragging');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    ipcRenderer.send('commit-grid-ratios', { colRatios: gpColRatios, rowRatios: gpRowRatios });
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+function gpEnterEditMode() {
+  gpEditMode = true;
+  document.body.classList.add('gp-edit');
+  notifyEditMode(true);
+  gpRenderEditLines();
+}
+function gpExitEditMode() {
+  gpEditMode = false;
+  document.body.classList.remove('gp-edit');
+  document.getElementById('grid-panel')
+    .querySelectorAll('.gp-col-line, .gp-row-line').forEach(el => el.remove());
+  notifyEditMode(false);
+  ipcRenderer.send('commit-grid-ratios', { colRatios: gpColRatios, rowRatios: gpRowRatios });
+}
+function gpResetRatios() {
+  gpColRatios = null;
+  gpRowRatios = null;
+  gpApplyRatios();
+  gpRenderEditLines();
+  ipcRenderer.send('commit-grid-ratios', { colRatios: null, rowRatios: null });
+}
+ipcRenderer.on('enter-grid-edit-mode', gpEnterEditMode);
 
 // ── Window active/inactive state ──
 window.addEventListener('focus', () => document.body.classList.remove('window-inactive'));
@@ -3906,20 +4011,37 @@ function openGridLayoutPopup(anchorEl) {
     buildLayoutPresets();
     redrawGrid(); updateActions();
   };
+  // 値を ±delta して 1〜20 にクランプ → 適用 (↑↓キーと▲▼ボタンで共用)
+  const stepCustom = (inp, delta) => {
+    inp.value = Math.max(1, Math.min(20, (parseInt(inp.value, 10) || 1) + delta));
+    applyCustom();
+  };
+  // ▲▼ ステッパー (inline style で確実に表示。spinner 非表示のため明示実装)
+  const mkStepper = (inp) => {
+    const box = document.createElement('div');
+    box.style.cssText = 'display:flex;flex-direction:column;gap:1px;flex:none;margin-left:-3px;';
+    const mk = (txt, delta, title) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = txt; b.title = title; b.tabIndex = -1;
+      b.style.cssText = 'display:flex;align-items:center;justify-content:center;width:16px;height:12px;flex:none;padding:0;font-size:8px;line-height:1;border:1px solid rgba(0,0,0,0.2);border-radius:3px;background:rgba(0,0,0,0.05);color:rgba(0,0,0,0.6);cursor:pointer;';
+      b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); stepCustom(inp, delta); });
+      return b;
+    };
+    box.appendChild(mk('▲', 1, '+1'));
+    box.appendChild(mk('▼', -1, '-1'));
+    return box;
+  };
   [cIn,rIn].forEach(inp => {
     inp.addEventListener('input', applyCustom);
     // ↑↓ で増減 (1〜20。spinner 非表示のためキー操作を明示実装)
     inp.addEventListener('keydown', e => {
-      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-        e.preventDefault();
-        inp.value = Math.max(1, Math.min(20, (parseInt(inp.value, 10) || 1) + (e.key === 'ArrowUp' ? 1 : -1)));
-        applyCustom();
-      }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); stepCustom(inp, 1); }
+      if (e.key === 'ArrowDown') { e.preventDefault(); stepCustom(inp, -1); }
       e.stopPropagation();
     });
     inp.addEventListener('click', e => e.stopPropagation());
   });
-  customRow.appendChild(cLabel); customRow.appendChild(cIn); customRow.appendChild(xLbl); customRow.appendChild(rIn);
+  customRow.appendChild(cLabel); customRow.appendChild(cIn); customRow.appendChild(mkStepper(cIn)); customRow.appendChild(xLbl); customRow.appendChild(rIn); customRow.appendChild(mkStepper(rIn));
   presetSec.appendChild(customRow);
   popup.appendChild(presetSec);
 
