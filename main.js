@@ -2266,8 +2266,10 @@ function createWorkspace(name, savedState) {
   // drag 中は snapped 外部ウィンドウの AX 追従を停止し、主スレッドを空ける。
   // 外部ターミナルは drag 終了時の retileAll で一括配置する。
   let _dragging = false;
+  let _lastDragEventAt = 0; // will-move/move の最終時刻 — moved 取りこぼし検知用
   let _groupyDirty = false; // 外部ウィンドウ追従が必要かどうか
   const onWinMove = () => {
+    _lastDragEventAt = Date.now();
     // 1. embedded BrowserWindow は setBounds() で即座に同期 (ブロックしない)
     for (const [slot, gw] of ws.gridWindows) {
       if (gw.win && !gw.win.isDestroyed()) {
@@ -2309,7 +2311,7 @@ function createWorkspace(name, savedState) {
 
   win.on('move', onWinMove);
   win.on('resize', onWinMove);
-  win.on('will-move', () => { if (!_dragging) { _dragging = true; } });
+  win.on('will-move', () => { _dragging = true; _lastDragEventAt = Date.now(); });
   win.on('moved', () => {
     _dragging = false;
     // 設定に従って drag 終了時の挙動を切り替え
@@ -2345,7 +2347,14 @@ function createWorkspace(name, savedState) {
   // snap/unsnap の即時操作には影響しない。snapped の grace period は 3 回 miss = ~4.5s。
   const pollFn = async () => {
     if (!ws.win || ws.win.isDestroyed()) return;
-    if (_dragging) return;
+    if (_dragging) {
+      // will-move 後に moved が発火しないことがある (タイトルバーをクリックして
+      // 動かさず離した等)。放置すると poll が永久停止し、新規ウィンドウを認識
+      // しなくなる。move イベントが 2 秒途絶えていたらドラッグ終了とみなす。
+      if (Date.now() - _lastDragEventAt < 2000) return;
+      console.warn('[tin] poll: _dragging stuck without move events — auto reset');
+      _dragging = false;
+    }
 
     // TiN 自身が別 Space に移動した検知 (Mission Control / 直接 Space 移動)
     // sticky 方式: snapped windows は全 Space に存在するため CGS 移動は不要
