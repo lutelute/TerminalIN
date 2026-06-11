@@ -9,6 +9,35 @@ const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const autoSnap = require('./auto-snap');
 
+// ── File logging (クラッシュ事後解析用) ──
+// Finder 起動時は stdout が捨てられ、クラッシュ原因が一切残らない。
+// console.log/warn/error をフックして ~/Library/Logs/TiN/main.log に tee する。
+(() => {
+  try {
+    const logDir = app.getPath('logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    const logFile = path.join(logDir, 'main.log');
+    try {
+      const st = fs.statSync(logFile);
+      if (st.size > 5 * 1024 * 1024) fs.renameSync(logFile, logFile + '.old');
+    } catch {}
+    const stream = fs.createWriteStream(logFile, { flags: 'a' });
+    const fmt = (a) => {
+      if (typeof a === 'string') return a;
+      if (a instanceof Error) return a.stack || a.message;
+      try { return JSON.stringify(a); } catch { return String(a); }
+    };
+    for (const level of ['log', 'warn', 'error']) {
+      const orig = console[level].bind(console);
+      console[level] = (...args) => {
+        orig(...args);
+        try { stream.write(`${new Date().toISOString()} [${level}] ${args.map(fmt).join(' ')}\n`); } catch {}
+      };
+    }
+  } catch {}
+})();
+console.log(`[tin] ===== starting (pid ${process.pid}) =====`);
+
 // N-API native addon: AXUIElement 操作を Electron main process 内で直接実行。
 // TiN.app の TCC 権限をそのまま使用。
 let axHelper = null;
@@ -182,9 +211,13 @@ const SETTINGS_JSON = path.join(INTEGRATION_DIR, 'settings.json');
 const DEFAULT_HOTKEYS = {
   snapFrontmost:   'Command+Option+S',
   unsnapFrontmost: 'Command+Option+W',
+  snapAll:         'Command+Option+A',
   focusTiN:        'Command+Option+T',
   slot1: '', slot2: '', slot3: '', slot4: '',
 };
+
+// ターミナル系アプリの判定 (workspace.html の TERMINAL_APPS と同期を保つこと)
+const TERMINAL_APPS = new Set(['Terminal', 'iTerm2', 'iTerm', 'Alacritty', 'Hyper', 'WezTerm', 'Kitty', 'ターミナル', 'Warp']);
 const DEFAULT_SETTINGS = {
   pollIntervalMs: 3000,
   dragEndMode: 'position',  // 'position' | 'full' | 'off'
@@ -329,6 +362,12 @@ async function writeWorkspacesJson() {
         origW: info.origW, origH: info.origH,
         snappedAt: info.snappedAt || 0,
       });
+    }
+    // 復元に失敗して保留中のエントリも書き戻す (次回起動で再度復元を試せる)。
+    // 同じ windowNumber / slot が生きた snap で使われていればそちらを優先。
+    for (const p of (ws._unrestoredSnaps || [])) {
+      if (snapped.some(s => s.windowNumber === p.windowNumber || s.slot === p.slot)) continue;
+      snapped.push(p);
     }
     payload.workspaces.push({
       name: ws.name,
@@ -533,6 +572,7 @@ async function restoreSnappedWindows(ws, persistedList) {
 
 // ── Batch restore (全 workspace の復元を1回の daemon 呼び出しでまとめる) ──
 let _restoreTimer = null;
+let _restoreRetryDone = false;  // 復元再試行は起動ごとに 1 回だけ
 function scheduleRestoreAll() {
   if (_restoreTimer) return;
   _restoreTimer = setTimeout(() => {
@@ -568,10 +608,11 @@ async function restoreAllPending() {
 
     const restored = [];
     const missing = [];
+    const unrestored = [];  // マッチしなかった生エントリ — 捨てずに保持して再試行・再保存する
     for (const p of persistedList) {
       // 現 Space を優先、見つからなければ全 Space から探す
       const live = matchPersistedToLive(p, liveWindows) || matchPersistedToLive(p, liveAllSpaces);
-      if (!live) { missing.push({ app: p.app, title: p.title, slot: p.slot }); continue; }
+      if (!live) { missing.push({ app: p.app, title: p.title, slot: p.slot }); unrestored.push(p); continue; }
       if (ws.snappedExternals.has(live.windowNumber)) continue;
       let slot = p.slot;
       const total = ws.gridCols * ws.gridRows;
@@ -599,6 +640,10 @@ async function restoreAllPending() {
       }
       restored.push({ app: live.app, title: live.title, slot });
     }
+    // マッチしなかったエントリは保持: workspaces.json に書き戻し続けることで
+    // 「クラッシュ→再起動直後にウィンドウ列挙が間に合わず復元失敗→直後の自動保存で
+    //  snap 情報が永久消滅」する問題を防ぐ (24h stale 期限は loadPersistedWorkspaces 側)。
+    ws._unrestoredSnaps = unrestored;
     // renderer に通知
     try {
       ws.win.webContents.send('restore-report', { restored, missing });
@@ -623,6 +668,23 @@ async function restoreAllPending() {
     }
   }
   scheduleSyncSnapped();
+
+  // 未復元が残っていれば 5 秒後に 1 回だけ再試行
+  // (クラッシュ→再起動直後はウィンドウ列挙・Terminal 側の復元が間に合わないことがある)
+  const unrestoredTotal = [...workspaces.values()].reduce((n, w) => n + (w._unrestoredSnaps?.length || 0), 0);
+  if (unrestoredTotal > 0 && !_restoreRetryDone) {
+    _restoreRetryDone = true;
+    console.log(`[tin] ${unrestoredTotal} snap(s) unrestored — retrying in 5s`);
+    setTimeout(() => {
+      for (const [, w] of workspaces) {
+        if (w._unrestoredSnaps && w._unrestoredSnaps.length) {
+          w._pendingRestore = w._unrestoredSnaps;
+          w._unrestoredSnaps = [];
+        }
+      }
+      scheduleRestoreAll();
+    }, 5000);
+  }
 }
 
 // ── Workspace colors ──
@@ -641,7 +703,42 @@ const workspaces = new Map();
 let nextWsId = 1;
 let nextPtyId = 1;
 
-process.on('uncaughtException', (err) => { if (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED') return; });
+process.on('uncaughtException', (err) => {
+  if (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED') return;
+  console.error('[tin] uncaughtException:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[tin] unhandledRejection:', reason);
+});
+
+// renderer / 子プロセスのクラッシュは main が生き残るため気づけない。
+// ログに残し、workspace ウィンドウの renderer は自動 reload で復旧する
+// (did-finish-load の hydrate-snapped で snap 状態は復元される)。
+app.on('render-process-gone', (_event, webContents, details) => {
+  console.error(`[tin] render-process-gone: reason=${details.reason} exitCode=${details.exitCode}`);
+  // 'killed' も対象にする: macOS はメモリ圧迫等でプロセスを SIGKILL するため
+  // 除外すると白画面のまま放置される。意図的な quit は 'clean-exit' のみ。
+  if (details.reason === 'clean-exit') return;
+  for (const [, ws] of workspaces) {
+    if (ws.win && !ws.win.isDestroyed() && ws.win.webContents === webContents) {
+      // reload ループ防止: 30 秒以内に再クラッシュしたら自動 reload は諦める
+      const now = Date.now();
+      if (ws._lastRendererReload && now - ws._lastRendererReload < 30000) {
+        console.error(`[tin] workspace "${ws.name}" renderer crashed again within 30s — not reloading (check main.log)`);
+        continue;
+      }
+      ws._lastRendererReload = now;
+      console.error(`[tin] workspace "${ws.name}" renderer gone — reloading`);
+      setTimeout(() => {
+        try { if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.reload(); } catch (e) { console.error('[tin] renderer reload failed:', e); }
+      }, 500);
+    }
+  }
+});
+app.on('child-process-gone', (_event, details) => {
+  if (details.reason === 'clean-exit' || details.reason === 'killed') return;
+  console.error(`[tin] child-process-gone: type=${details.type} name=${details.name || ''} reason=${details.reason} exitCode=${details.exitCode}`);
+});
 
 // 外部ウィンドウ一覧 (snap/retile/auto-snap/release 処理用)。TiN 自身は除外して
 // 自己 snap などの副作用を防ぐ。
@@ -1255,6 +1352,88 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
   return { ok: true, slot };
 });
 
+// ── All Snap: 開いているターミナルウィンドウを一括 snap ──
+// スロットが足りない場合は grid を自動拡張する (cols 優先 → 上限 20 で rows)。
+async function snapAllTerminals(ws) {
+  if (!ws || !ws.win || ws.win.isDestroyed()) return { ok: false, reason: 'no-workspace' };
+  const all = await listWindows();
+  const targets = all.filter(w => TERMINAL_APPS.has(w.app) && !isExternalSnapped(w.windowNumber));
+  if (targets.length === 0) return { ok: true, snapped: 0, total: 0, skipped: 0, cols: ws.gridCols, rows: ws.gridRows };
+
+  // 必要スロット数を満たすまで grid を拡張。
+  // 1 セルの最低サイズを保証 — 細かすぎる grid は中身が見えなくなるため、
+  // 画面サイズから実用的な上限 (maxCols/maxRows) を算出し、それ以上は拡張しない。
+  // 上限で snap しきれなかった分は戻り値 skipped で UI に知らせる。
+  const MIN_CELL_W = 180, MIN_CELL_H = 220;
+  const area = getGridArea(ws);
+  const maxCols = Math.min(20, Math.max(ws.gridCols, area ? Math.max(1, Math.floor(area.width / MIN_CELL_W)) : 20));
+  const maxRows = Math.min(20, Math.max(ws.gridRows, area ? Math.max(1, Math.floor(area.height / MIN_CELL_H)) : 20));
+  const need = ws.snappedExternals.size + ws.gridWindows.size + targets.length;
+  let cols = ws.gridCols, rows = ws.gridRows;
+  while (cols * rows < need && (cols < maxCols || rows < maxRows)) {
+    if (cols < maxCols) cols++; else rows++;
+  }
+  if (cols !== ws.gridCols || rows !== ws.gridRows) {
+    console.log(`[tin] snap-all: grid ${ws.gridCols}x${ws.gridRows} → ${cols}x${rows} (need ${need} slots)`);
+    ws.gridCols = cols;
+    ws.gridRows = rows;
+    ws.colRatios = null;
+    ws.rowRatios = null;
+    ws.slotLayout = null;
+    if (ws.win && !ws.win.isDestroyed()) {
+      ws.win.webContents.send('update-grid-panel', { cols, rows, colRatios: null, rowRatios: null, slotLayout: null });
+    }
+  }
+
+  beginStabilize('snap-all', ws);
+  const moveCmds = [];
+  const snappedWns = [];
+  for (const w of targets) {
+    const slot = nextFreeSlot(ws);
+    if (slot < 0) break;  // grid 上限 (20x20) を超えた分は snap しない
+    ws.snappedExternals.set(w.windowNumber, {
+      app: w.app, pid: w.pid, title: w.title, windowNumber: w.windowNumber,
+      windowIndex: w.windowIndex || 0, slot,
+      origX: w.x, origY: w.y, origW: w.width, origH: w.height,
+      snappedAt: Date.now(),
+    });
+    ws._lastKnownSnappedWns.add(w.windowNumber);
+    snappedIndexAdd(w.windowNumber, ws);
+    const pos = getSlotBounds(ws, slot);
+    if (pos) moveCmds.push({ windowNumber: w.windowNumber, pid: w.pid, app: w.app, title: w.title, windowIndex: w.windowIndex || 0, ...pos });
+    snappedWns.push(w.windowNumber);
+  }
+
+  try {
+    if (axHelper && axHelper.moveWindowsToActiveSpace && snappedWns.length) {
+      axHelper.moveWindowsToActiveSpace(snappedWns);
+      await new Promise(r => setTimeout(r, 80));
+    }
+    if (moveCmds.length) await batchMove(moveCmds);
+    if (appSettings.stickyWindows && axHelper && axHelper.setWindowSticky && snappedWns.length) {
+      axHelper.setWindowSticky(snappedWns, true);
+    }
+  } catch (e) { console.warn('[tin] snap-all AX op failed:', e?.message || e); }
+
+  // 既存 snap の再タイル (grid が広がった場合のサイズ調整) + renderer 同期
+  try { await retileAll(ws); } catch (e) { console.warn('[tin] snap-all retile failed:', e?.message || e); }
+  try {
+    const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot }));
+    ws.win.webContents.send('hydrate-snapped', hydrate);
+  } catch {}
+  scheduleSyncSnapped(0);
+  scheduleSaveWorkspaces();
+  const skipped = targets.length - snappedWns.length;
+  console.log(`[tin] snap-all: snapped ${snappedWns.length}/${targets.length} terminals (grid ${cols}x${rows}${skipped ? `, ${skipped} skipped` : ''})`);
+  return { ok: true, snapped: snappedWns.length, total: targets.length, skipped, cols, rows };
+}
+
+ipcMain.handle('snap-all-external', async (event) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return { ok: false, reason: 'no-workspace' };
+  return snapAllTerminals(ws);
+});
+
 ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
   const t0 = Date.now();
   const ws = findWorkspace(event.sender);
@@ -1507,6 +1686,7 @@ function registerHotkeys() {
   const actions = {
     snapFrontmost:   () => { const ws = activeWs(); if (ws) snapFrontmostWindow(ws).catch(() => {}); },
     unsnapFrontmost: () => { const ws = activeWs(); if (ws) unsnapFrontmostWindow(ws).catch(() => {}); },
+    snapAll:         () => { const ws = activeWs(); if (ws) snapAllTerminals(ws).catch(e => console.warn('[tin] snap-all hotkey failed:', e?.message || e)); },
     focusTiN: () => {
       for (const [, ws] of workspaces) {
         if (ws.win && !ws.win.isDestroyed()) { ws.win.show(); ws.win.focus(); }
@@ -3547,7 +3727,9 @@ function startFrontmostPoll() {
 
 app.whenReady().then(() => {
   writeInfoJson();
-  writeSnappedJson();
+  // NOTE: ここで writeSnappedJson() を呼んではいけない。
+  // workspace 未作成の時点で snapped.json が空配列で上書きされ、
+  // クラッシュ直後の外部連携状態が消える。復元後の scheduleSyncSnapped に任せる。
   startFrontmostPoll();
   registerHotkeys();
   watchHookDir();   // Claude Code hooks の状態ファイル監視（設置済みなら即時状態反映）
@@ -3663,6 +3845,16 @@ app.whenReady().then(() => {
         }
       }},
       { type: 'separator' },
+      { label: 'Snap All Terminals', click: () => {
+        // フォーカス中の workspace を優先、なければ最初の workspace
+        const focused = BrowserWindow.getFocusedWindow();
+        let target = null;
+        for (const [, ws] of workspaces) {
+          if (ws.win && !ws.win.isDestroyed() && ws.win === focused) { target = ws; break; }
+        }
+        if (!target) target = [...workspaces.values()].find(ws => ws.win && !ws.win.isDestroyed());
+        if (target) snapAllTerminals(target).catch(e => console.warn('[tin] snap-all menu failed:', e?.message || e));
+      }},
       { label: 'Auto Snap (AI)', accelerator: 'CmdOrCtrl+Shift+G', click: () => triggerAutoSnap({ filter: 'terminal' }) },
       { label: 'Edit Auto-Snap Config...', click: () => {
         autoSnap.ensureConfig();
@@ -3782,6 +3974,11 @@ function writeWorkspacesJsonSync() {
         origX: info.origX, origY: info.origY, origW: info.origW, origH: info.origH,
         snappedAt: info.snappedAt || 0,
       });
+    }
+    // 未復元エントリの書き戻し (async 版 writeWorkspacesJson と同じ理由)
+    for (const p of (ws._unrestoredSnaps || [])) {
+      if (snapped.some(s => s.windowNumber === p.windowNumber || s.slot === p.slot)) continue;
+      snapped.push(p);
     }
     payload.workspaces.push({
       name: ws.name,

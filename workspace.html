@@ -453,6 +453,10 @@
     overflow-x: auto; overflow-y: hidden;
   }
   #titlebar-grid::-webkit-scrollbar { display: none; }
+  /* タブ溢れ対策: 画面外にまだタブがあることを端のフェードで示す */
+  #titlebar-grid.fade-right { -webkit-mask-image: linear-gradient(to right, black calc(100% - 32px), transparent); }
+  #titlebar-grid.fade-left { -webkit-mask-image: linear-gradient(to right, transparent, black 32px); }
+  #titlebar-grid.fade-left.fade-right { -webkit-mask-image: linear-gradient(to right, transparent, black 32px, black calc(100% - 32px), transparent); }
   /* grid-selector をタブの後ろ (右側) に配置 */
   #titlebar-grid .grid-selector { margin-left: auto; display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
   #titlebar-grid .grid-opt {
@@ -1660,6 +1664,34 @@ async function removeGridTerminal(slot) {
 }
 
 // ── External terminals ──
+// ── Groupy タブバー溢れ対策 ──
+// タブが増えてバーに収まらないとき: (1) 端のフェードで「まだある」ことを示す
+// (2) アクティブタブが画面外なら自動スクロールで見える位置へ
+// (3) マウスホイール縦回転を横スクロールに変換
+let _tabOverflowBound = false;
+function updateTabOverflow(scrollToActive = false) {
+  const row = document.getElementById('titlebar-grid');
+  if (!row) return;
+  if (!_tabOverflowBound) {
+    _tabOverflowBound = true;
+    row.addEventListener('scroll', () => updateTabOverflow(false), { passive: true });
+    row.addEventListener('wheel', (e) => {
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { row.scrollLeft += e.deltaY; e.preventDefault(); }
+    }, { passive: false });
+  }
+  if (scrollToActive) {
+    const active = row.querySelector('.groupy-tab.active');
+    if (active) {
+      const rL = row.scrollLeft, rR = rL + row.clientWidth;
+      const aL = active.offsetLeft, aR = aL + active.offsetWidth;
+      if (aL < rL || aR > rR) active.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+    }
+  }
+  const overflowing = row.scrollWidth > row.clientWidth + 2;
+  row.classList.toggle('fade-left', overflowing && row.scrollLeft > 2);
+  row.classList.toggle('fade-right', overflowing && row.scrollLeft + row.clientWidth < row.scrollWidth - 2);
+}
+
 function showToast(msg, kind = 'info') {
   const t = document.createElement('div');
   t.textContent = msg;
@@ -3054,6 +3086,8 @@ function render() {
     _titlebarGrid.appendChild(aiColorBtn);
     // コントロールは row1 の右側ボタン群に移動済み (コンパクト)
     _titlebarGrid.appendChild(selector);
+    // タブ溢れチェック + アクティブタブを見える位置へ (レイアウト確定後)
+    requestAnimationFrame(() => updateTabOverflow(true));
   } else {
     gridTitle.appendChild(selector);
   }
@@ -3334,7 +3368,7 @@ function render() {
     // タブバー
     const tabsBar = document.createElement('div');
     tabsBar.className = 'avail-tabs';
-    const makeTab = (key, label, count, aiFilter) => {
+    const makeTab = (key, label, count, aiFilter, withSnapAll) => {
       const tab = document.createElement('div');
       tab.className = `avail-tab ${key}${activeAvailTab === key ? ' active' : ''}`;
       const labelSpan = document.createElement('span');
@@ -3344,6 +3378,34 @@ function render() {
       countSpan.textContent = String(count);
       tab.appendChild(labelSpan);
       tab.appendChild(countSpan);
+      if (withSnapAll) {
+        const all = document.createElement('span');
+        all.className = 'tab-ai';
+        all.textContent = 'ALL';
+        all.title = '全ターミナルを一括スナップ（スロット不足時はグリッド自動拡張、⌘⌥A）';
+        all.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          try {
+            const r = await ipcRenderer.invoke('snap-all-external', {});
+            if (r && r.ok) {
+              if (r.snapped > 0) {
+                let msg = `${r.snapped} 枚を一括スナップ (grid ${r.cols}×${r.rows})`;
+                if (r.skipped > 0) msg += ` / ${r.skipped} 枚はグリッド上限で未スナップ`;
+                showToast(msg);
+              } else if (r.skipped > 0) {
+                showToast(`グリッド上限 (${r.cols}×${r.rows}) に空きなし`, 'error');
+              } else {
+                showToast('スナップ対象のターミナルなし');
+              }
+            } else {
+              showToast('一括スナップ失敗', 'error');
+            }
+          } catch {
+            showToast('一括スナップ失敗', 'error');
+          }
+        });
+        tab.appendChild(all);
+      }
       if (aiFilter) {
         const ai = document.createElement('span');
         ai.className = 'tab-ai';
@@ -3362,7 +3424,7 @@ function render() {
       });
       return tab;
     };
-    tabsBar.appendChild(makeTab('term', 'Terminal', availableTerminal.length, 'terminal'));
+    tabsBar.appendChild(makeTab('term', 'Terminal', availableTerminal.length, 'terminal', true));
     tabsBar.appendChild(makeTab('finder', 'Finder', availableFinder.length, 'finder'));
     tabsBar.appendChild(makeTab('apps', 'Apps', availableApps.length, null));
     tabsBar.appendChild(makeTab('tin', 'TiN', availableTiN.length, null));
