@@ -196,7 +196,7 @@ const WORKSPACES_FORMAT_VERSION = 1;
 // 保存済みセッションが古すぎる場合は復元しない閾値 (24時間)
 const WORKSPACES_STALE_MS = 24 * 60 * 60 * 1000;
 // Groupy コンテナモード定数
-const TITLEBAR_H = 68;        // TiN ヘッダー高さ (hiddenInset 2行)
+const TITLEBAR_H = 36;        // TiN ヘッダー高さ (hiddenInset 1行 — workspace.html #titlebar と一致させる)
 const NATIVE_TITLEBAR_H = 28; // macOS ネイティブタイトルバー高さ (参考値)
 // 外部アプリは TiN ヘッダーの直下に配置 — タイトルバーを完全に表示する
 const GROUPY_Y_OFFSET = TITLEBAR_H; // 68px: 外部アプリは TiN ヘッダーの下から
@@ -2309,7 +2309,7 @@ function createWorkspace(name, savedState) {
     x: winX,
     y: winY,
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 12, y: 10 },
+    trafficLightPosition: { x: 12, y: 12 },  // 36px バーの垂直センター
     transparent: true,        // グリッドパネル部分を透過させスナップウィンドウを表示
     backgroundColor: '#00000000',
     hasShadow: true,

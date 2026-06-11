@@ -48,7 +48,13 @@ else
 fi
 
 # Accessibility 権限チェック — リビルドで CDHash が変わると TCC がリセットされる
-AX_OK=$(curl -s http://localhost:37123/api/ax-trust 2>/dev/null | grep -c '"trusted":true' || true)
+# REST サーバーの起動が遅れることがあるためリトライ (起動前の誤検出防止)
+AX_OK=0
+for i in 1 2 3 4 5; do
+  AX_OK=$(curl -s http://localhost:37123/api/ax-trust 2>/dev/null | grep -c '"trusted":true' || true)
+  [ "$AX_OK" != "0" ] && break
+  sleep 2
+done
 if [ "$AX_OK" = "0" ]; then
   echo ""
   echo "[install] ⚠️  Accessibility 権限が失われています。"

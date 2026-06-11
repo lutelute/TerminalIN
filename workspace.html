@@ -322,27 +322,15 @@
   }
 
   /* ── Titlebar ── */
+  /* 1行構成 (高さは main.js の TITLEBAR_H と一致させること) */
   #titlebar {
-    height: 68px;
+    height: 36px;
     -webkit-app-region: drag;
-    display: flex; flex-direction: column;
-    padding: 0 10px 0 72px;
+    display: flex; align-items: center; gap: 4px;
+    padding: 0 8px 0 72px;
     flex-shrink: 0;
     border-bottom: 1px solid rgba(0,0,0,0.1);
   }
-  #titlebar-row1 {
-    display: flex; align-items: center;
-    height: 38px; width: 100%;
-  }
-  /* ── Groupy タブバー (row2) ── */
-  #titlebar-row2 {
-    display: flex; align-items: flex-end;
-    height: 28px; width: 100%;
-    padding: 0 8px 0 4px;
-    overflow-x: auto; overflow-y: hidden;
-    gap: 2px;
-  }
-  #titlebar-row2::-webkit-scrollbar { display: none; }
 
   /* タブアイテム */
   .groupy-tab {
@@ -446,10 +434,12 @@
   }
   #collapse-btn:hover { background: rgba(0,0,0,0.06); color: rgba(40,40,70,0.6); }
 
+  /* タブのスクロール領域: タブ自体は no-drag のため、
+     空白部分はウィンドウドラッグ可能 (親 #titlebar の drag を継承) */
   #titlebar-grid {
     display: flex; align-items: flex-end; gap: 2px;
-    height: 100%; flex: 1;
-    -webkit-app-region: no-drag;
+    height: 100%; flex: 1; min-width: 0;
+    padding: 0 4px;
     overflow-x: auto; overflow-y: hidden;
   }
   #titlebar-grid::-webkit-scrollbar { display: none; }
@@ -457,14 +447,19 @@
   #titlebar-grid.fade-right { -webkit-mask-image: linear-gradient(to right, black calc(100% - 32px), transparent); }
   #titlebar-grid.fade-left { -webkit-mask-image: linear-gradient(to right, transparent, black 32px); }
   #titlebar-grid.fade-left.fade-right { -webkit-mask-image: linear-gradient(to right, transparent, black 32px, black calc(100% - 32px), transparent); }
-  /* grid-selector をタブの後ろ (右側) に配置 */
-  #titlebar-grid .grid-selector { margin-left: auto; display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
-  #titlebar-grid .grid-opt {
+  /* 右端固定コントロール (+ / 🎨 / grid selector) — タブが増えてもスクロールで消えない */
+  #titlebar-controls {
+    display: flex; align-items: center; gap: 2px;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+  #titlebar-controls .grid-selector { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+  #titlebar-controls .grid-opt {
     -webkit-app-region: no-drag;
     padding: 4px 9px; font-size: 11px; min-width: 26px;
     line-height: 1;
   }
-  #titlebar-grid .grid-size-cycle { min-width: 38px; }
+  #titlebar-controls .grid-size-cycle { min-width: 38px; }
 
   body.collapsed #content, body.collapsed #status { display: none; }
   body.collapsed #sidebar { width: 40px; min-width: 40px; }
@@ -472,7 +467,7 @@
     flex-direction: column; height: 100%; padding: 42px 0 8px; align-items: center; gap: 6px;
     -webkit-app-region: drag;
   }
-  body.collapsed #titlebar-row1, body.collapsed #titlebar-row2 { flex-direction: column; height: auto; width: auto; padding: 0; }
+  body.collapsed #titlebar-controls { display: none; }
   body.collapsed #title { writing-mode: vertical-rl; font-size: 11px; letter-spacing: 1px; flex: 1; cursor: default; }
   body.collapsed #title:hover { background: transparent; }
   body.collapsed #title-input { display: none !important; }
@@ -1090,9 +1085,7 @@
   }
 
   /* ── Compact mode ── */
-  body.compact #titlebar { height: 56px; padding-left: 64px; }
-  body.compact #titlebar-row1 { height: 30px; }
-  body.compact #titlebar-row2 { height: 24px; }
+  body.compact #titlebar { height: 32px; padding-left: 64px; }
   body.compact #title { font-size: 12px; }
   body.compact #content { padding: 5px; gap: 3px; }
   body.compact .section-title { display: none; }
@@ -1199,19 +1192,14 @@
 
 <div id="sidebar">
   <div id="titlebar">
-    <div id="titlebar-row1">
-      <!-- ドロワートグルボタン -->
-      <div class="drawer-btn" id="drawer-toggle-btn" title="Drawer — ウィンドウリストパネルを開閉" onclick="toggleDrawer()">☰</div>
-      <span id="title">TiN</span>
-      <input id="title-input" type="text" />
-      <div style="flex:1"></div>
-      <!-- モード切り替えボタン -->
-      <div id="view-mode-btn" class="drawer-btn" title="View — グリッド分割 / フルスクリーンタブ を切り替え" onclick="toggleViewMode()">⊞</div>
-      <div id="collapse-btn" title="Collapse sidebar (Cmd+B)" style="display:none">‹</div>
-    </div>
-    <div id="titlebar-row2">
-      <div id="titlebar-grid"></div>
-    </div>
+    <!-- 1行構成: ☰ タイトル | タブ(スクロール) | コントロール(右端固定) ⊞ -->
+    <div class="drawer-btn" id="drawer-toggle-btn" title="Drawer — ウィンドウリストパネルを開閉" onclick="toggleDrawer()">☰</div>
+    <span id="title">TiN</span>
+    <input id="title-input" type="text" />
+    <div id="titlebar-grid"></div>
+    <div id="titlebar-controls"></div>
+    <div id="view-mode-btn" class="drawer-btn" title="View — グリッド分割 / フルスクリーンタブ を切り替え" onclick="toggleViewMode()">⊞</div>
+    <div id="collapse-btn" title="Collapse sidebar (Cmd+B)" style="display:none">‹</div>
   </div>
   <div id="content"></div>
   <div id="console-fixed"></div>
@@ -2854,6 +2842,8 @@ function render() {
   _gridSection.innerHTML = '';
   const _titlebarGrid = document.getElementById('titlebar-grid');
   if (_titlebarGrid) _titlebarGrid.innerHTML = '';
+  const _titlebarControls = document.getElementById('titlebar-controls');
+  if (_titlebarControls) _titlebarControls.innerHTML = '';
   const gridCount = Object.keys(gridSlots).length + snappedExternals.size;
   const gridTitle = document.createElement('div');
   gridTitle.className = 'section-title';
@@ -3063,29 +3053,24 @@ function render() {
       });
       _titlebarGrid.appendChild(tab);
     }
-    // ☰ ドロワートグル (タブ隣)
-    const drawerTabBtn = document.createElement('div');
-    drawerTabBtn.className = 'groupy-tab-add';
-    drawerTabBtn.title = 'パネルを開く / 閉じる';
-    drawerTabBtn.textContent = '☰';
-    drawerTabBtn.addEventListener('click', () => toggleDrawer());
-    _titlebarGrid.appendChild(drawerTabBtn);
+    // 右端固定コントロール (タブが増えてもスクロールで消えない)。
+    // ☰ はタイトルバー左端の drawer-toggle-btn と重複するため廃止。
+    const ctrlHost = _titlebarControls || _titlebarGrid;
     // + ボタン (新しい PTY ターミナル)
     const addTabBtn = document.createElement('div');
     addTabBtn.className = 'groupy-tab-add';
     addTabBtn.title = '新しいターミナルを追加';
     addTabBtn.textContent = '+';
     addTabBtn.addEventListener('click', () => ipcRenderer.invoke('add-grid-terminal'));
-    _titlebarGrid.appendChild(addTabBtn);
+    ctrlHost.appendChild(addTabBtn);
     // 🎨 AI 色判定ボタン (haiku が端末の用途を判定して色分け / 再押下で解除)
     const aiColorBtn = document.createElement('div');
     aiColorBtn.className = 'groupy-tab-add';
     aiColorBtn.title = 'AI が端末の用途を判定して色分け (もう一度押すと解除)';
     aiColorBtn.textContent = '🎨';
     aiColorBtn.addEventListener('click', () => runAiColorize(aiColorBtn));
-    _titlebarGrid.appendChild(aiColorBtn);
-    // コントロールは row1 の右側ボタン群に移動済み (コンパクト)
-    _titlebarGrid.appendChild(selector);
+    ctrlHost.appendChild(aiColorBtn);
+    ctrlHost.appendChild(selector);
     // タブ溢れチェック + アクティブタブを見える位置へ (レイアウト確定後)
     requestAnimationFrame(() => updateTabOverflow(true));
   } else {
