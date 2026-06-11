@@ -3481,10 +3481,16 @@ const BUSY_SPINNER_RE = /(^|[\r\n])\s*[·✢✳✶✻✽✦∗*+]\s?\S+ing…/;
 let _statusBusy = false;
 let _statusCache = null;
 let _statusCacheAt = 0;
+let _statusFailStreak = 0;    // ps/osascript の連続失敗回数
+let _statusBackoffUntil = 0;  // この時刻まで状態ポーリングを休止
 async function getClaudeStatuses() {
   // 再入防止: 前回の osascript がまだ走っていたら直近結果を返す。poll(6秒) と
   // hooks nudge が重なっても osascript プロセスを積み上げない(PC 負荷の安全弁)
   if (_statusBusy) return _statusCache;
+  // 連続失敗バックオフ: ps すら timeout する状況 = システム超高負荷。
+  // そこに 3 秒ごとの spawn を続けると負荷を自ら上乗せし、最悪 OS の
+  // リソース圧迫 kill (SIGKILL → 痕跡なしの突然死) を誘発するため休む。
+  if (Date.now() < _statusBackoffUntil) return _statusCache;
   // TTL キャッシュ: hooks nudge 連発(ツール連打で ~2回/秒)のたびに osascript
   // (0.3秒) を再実行しない。tabs/ttys は 2 秒前の値で十分 — hookStates は別経路
   // (fs.watch→readHookStates)で常に最新になり、classifyClaudeState が ts 比較で
@@ -3495,6 +3501,7 @@ async function getClaudeStatuses() {
     // コマンドのベース名が claude のプロセスに限定（claude-watchdog.sh や
     // /tmp/claude-501 を参照する clangd 等、"claude を含むだけ" の誤検知を排除）
     const { stdout: ps } = await execAsync("ps -axo tty,command | awk '{c=$2; sub(/.*\\//, \"\", c); if (c==\"claude\") print $1}'", { timeout: 3000 });
+    _statusFailStreak = 0;  // ps が時間内に通った = システムは応答している
     const ttys = new Set(ps.split('\n').map(s => s.trim()).filter(t => t && t !== '??'));
     if (!ttys.size) { _statusCacheAt = Date.now(); return (_statusCache = { tabs: [], ttys }); }
     // ── PC 負荷の設計(実測ベース) ──
@@ -3536,6 +3543,12 @@ async function getClaudeStatuses() {
     return (_statusCache = { tabs: list, ttys });
   } catch (e) {
     console.warn('[tin] getClaudeStatuses failed:', e?.message || e, '|| STDERR:', (e && e.stderr) ? String(e.stderr).trim() : '(empty)');
+    _statusFailStreak++;
+    if (_statusFailStreak >= 5) {
+      _statusBackoffUntil = Date.now() + 60000;
+      _statusFailStreak = 0;
+      console.warn('[tin] getClaudeStatuses: 5 consecutive failures — backing off 60s (system overloaded?)');
+    }
     return null;
   } finally { _statusBusy = false; }
 }
