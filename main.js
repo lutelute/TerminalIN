@@ -1218,7 +1218,8 @@ function createGridTerminal(ws, slot) {
 
   gridWin.on('closed', () => {
     try { p.kill(); } catch {}
-    ws.gridWindows.delete(slot);
+    // slot は flip/compact で変わるため、現在の gw.slot で消す (他人のエントリ誤削除ガード付き)
+    if (ws.gridWindows.get(gw.slot) === gw) ws.gridWindows.delete(gw.slot);
   });
 
   return gw;
@@ -1360,6 +1361,10 @@ async function snapAllTerminals(ws) {
   const targets = all.filter(w => TERMINAL_APPS.has(w.app) && !isExternalSnapped(w.windowNumber));
   if (targets.length === 0) return { ok: true, snapped: 0, total: 0, skipped: 0, cols: ws.gridCols, rows: ws.gridRows };
 
+  // CGWindowList は z-order (最前面が先頭) のため、そのままだと「最後に触った窓が左上」
+  // になり直感と逆。windowNumber 昇順 ≈ 生成順に並べ、古い窓から左上→右下に配置する。
+  targets.sort((a, b) => a.windowNumber - b.windowNumber);
+
   // 必要スロット数を満たすまで grid を拡張。
   // 1 セルの最低サイズを保証 — 細かすぎる grid は中身が見えなくなるため、
   // 画面サイズから実用的な上限 (maxCols/maxRows) を算出し、それ以上は拡張しない。
@@ -1432,6 +1437,58 @@ ipcMain.handle('snap-all-external', async (event) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return { ok: false, reason: 'no-workspace' };
   return snapAllTerminals(ws);
+});
+
+// ── Flip: グリッドの並びを左右/上下に一斉反転 ──
+// 通常グリッドは slot index を鏡映リマップ、柔軟グリッド (slotLayout) はセル座標を反転
+// (id は窓に紐付いたままなので座標だけ動かせば窓も付いてくる)。
+// 列/行の比率も同時に反転して見た目を完全にミラーする。
+async function flipGrid(ws, axis) {
+  if (!ws || !ws.win || ws.win.isDestroyed()) return { ok: false, reason: 'no-workspace' };
+  const cols = ws.gridCols, rows = ws.gridRows;
+
+  if (ws.slotLayout) {
+    for (const cell of ws.slotLayout) {
+      if (axis === 'h') cell.col = cols - cell.col - cell.colSpan;
+      else cell.row = rows - cell.row - cell.rowSpan;
+    }
+  } else {
+    const remap = (slot) => {
+      const col = slot % cols, row = Math.floor(slot / cols);
+      return axis === 'h' ? row * cols + (cols - 1 - col) : (rows - 1 - row) * cols + col;
+    };
+    const newGrid = new Map();
+    for (const [slot, gw] of ws.gridWindows) {
+      gw.slot = remap(slot);
+      if (gw.win && !gw.win.isDestroyed()) gw.win.setTitle(`TiN — ${ws.name} [${gw.slot}]`);
+      newGrid.set(gw.slot, gw);
+    }
+    ws.gridWindows = newGrid;
+    for (const [, info] of ws.snappedExternals) info.slot = remap(info.slot);
+  }
+
+  if (axis === 'h' && ws.colRatios) ws.colRatios = [...ws.colRatios].reverse();
+  if (axis === 'v' && ws.rowRatios) ws.rowRatios = [...ws.rowRatios].reverse();
+
+  ws.win.webContents.send('update-grid-panel', {
+    cols, rows, colRatios: ws.colRatios, rowRatios: ws.rowRatios, slotLayout: ws.slotLayout,
+  });
+  await retileAll(ws);
+  try {
+    const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot }));
+    ws.win.webContents.send('hydrate-snapped', hydrate);
+  } catch {}
+  ws._lastPollIdentity = ''; // 次 poll で gridSlots を確実に再送
+  scheduleSyncSnapped(0);
+  scheduleSaveWorkspaces();
+  console.log(`[tin] flip-grid: axis=${axis} (${cols}x${rows}, ${ws.snappedExternals.size} ext + ${ws.gridWindows.size} grid)`);
+  return { ok: true, axis, cols, rows };
+}
+
+ipcMain.handle('flip-grid', async (event, { axis } = {}) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return { ok: false, reason: 'no-workspace' };
+  return flipGrid(ws, axis === 'v' ? 'v' : 'h');
 });
 
 ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
@@ -3867,6 +3924,14 @@ app.whenReady().then(() => {
         }
         if (!target) target = [...workspaces.values()].find(ws => ws.win && !ws.win.isDestroyed());
         if (target) snapAllTerminals(target).catch(e => console.warn('[tin] snap-all menu failed:', e?.message || e));
+      }},
+      { label: 'Flip Grid Horizontally (左右反転)', click: () => {
+        const target = [...workspaces.values()].find(ws => ws.win && !ws.win.isDestroyed());
+        if (target) flipGrid(target, 'h').catch(e => console.warn('[tin] flip-h menu failed:', e?.message || e));
+      }},
+      { label: 'Flip Grid Vertically (上下反転)', click: () => {
+        const target = [...workspaces.values()].find(ws => ws.win && !ws.win.isDestroyed());
+        if (target) flipGrid(target, 'v').catch(e => console.warn('[tin] flip-v menu failed:', e?.message || e));
       }},
       { label: 'Auto Snap (AI)', accelerator: 'CmdOrCtrl+Shift+G', click: () => triggerAutoSnap({ filter: 'terminal' }) },
       { label: 'Edit Auto-Snap Config...', click: () => {

@@ -769,6 +769,29 @@
   }
   .avail-tab .tab-ai:hover { background: rgba(0,0,0,0.1); color: rgba(0,0,0,0.7); }
 
+  /* 一括スナップの大ボタン (Terminal タブ選択時のみ表示) */
+  .avail-snap-all {
+    display: flex; align-items: center; gap: 6px;
+    width: 100%; margin: 6px 0 2px; padding: 7px 10px;
+    border: none; border-radius: 7px; cursor: pointer;
+    font-family: inherit; font-size: 11.5px; font-weight: 700;
+    color: #fff; background: rgba(60,120,230,0.88);
+    transition: background 0.12s, transform 0.05s;
+    -webkit-app-region: no-drag;
+  }
+  .avail-snap-all:hover { background: rgba(45,105,215,1); }
+  .avail-snap-all:active { transform: scale(0.985); }
+  .avail-snap-all:disabled { opacity: 0.5; cursor: default; }
+  .avail-snap-all .sa-icon { font-size: 13px; line-height: 1; }
+  .avail-snap-all .sa-count {
+    font-size: 10px; font-weight: 600; opacity: 0.9;
+    background: rgba(255,255,255,0.18); border-radius: 4px; padding: 1px 5px;
+  }
+  .avail-snap-all .sa-kbd {
+    margin-left: auto; font-size: 9px; font-weight: 600; opacity: 0.75;
+    font-family: 'SF Mono', 'Menlo', monospace; letter-spacing: 0.5px;
+  }
+
   /* Search */
   .avail-search { padding: 4px 2px 6px; }
   .avail-search input {
@@ -2895,6 +2918,19 @@ function render() {
   retileBtn.title = 'Retile — スナップ済みウィンドウを現在のデスクトップに集合してグリッドに整列';
   retileBtn.addEventListener('click', () => ipcRenderer.invoke('retile-now'));
   selector.appendChild(retileBtn);
+  // Flip ボタン (グリッドの並びを一斉反転)
+  const flipHBtn = document.createElement('button');
+  flipHBtn.className = 'grid-opt';
+  flipHBtn.textContent = '⇄';
+  flipHBtn.title = 'Flip ⇄ — グリッドの並びを左右反転（列幅の比率もミラー）';
+  flipHBtn.addEventListener('click', () => ipcRenderer.invoke('flip-grid', { axis: 'h' }));
+  selector.appendChild(flipHBtn);
+  const flipVBtn = document.createElement('button');
+  flipVBtn.className = 'grid-opt';
+  flipVBtn.textContent = '⇅';
+  flipVBtn.title = 'Flip ⇅ — グリッドの並びを上下反転（行高の比率もミラー）';
+  flipVBtn.addEventListener('click', () => ipcRenderer.invoke('flip-grid', { axis: 'v' }));
+  selector.appendChild(flipVBtn);
   const prevSpaceBtn = document.createElement('button');
   prevSpaceBtn.className = 'grid-opt';
   prevSpaceBtn.textContent = '\u25c4';
@@ -3353,7 +3389,7 @@ function render() {
     // タブバー
     const tabsBar = document.createElement('div');
     tabsBar.className = 'avail-tabs';
-    const makeTab = (key, label, count, aiFilter, withSnapAll) => {
+    const makeTab = (key, label, count, aiFilter) => {
       const tab = document.createElement('div');
       tab.className = `avail-tab ${key}${activeAvailTab === key ? ' active' : ''}`;
       const labelSpan = document.createElement('span');
@@ -3363,34 +3399,6 @@ function render() {
       countSpan.textContent = String(count);
       tab.appendChild(labelSpan);
       tab.appendChild(countSpan);
-      if (withSnapAll) {
-        const all = document.createElement('span');
-        all.className = 'tab-ai';
-        all.textContent = 'ALL';
-        all.title = '全ターミナルを一括スナップ（スロット不足時はグリッド自動拡張、⌘⌥A）';
-        all.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          try {
-            const r = await ipcRenderer.invoke('snap-all-external', {});
-            if (r && r.ok) {
-              if (r.snapped > 0) {
-                let msg = `${r.snapped} 枚を一括スナップ (grid ${r.cols}×${r.rows})`;
-                if (r.skipped > 0) msg += ` / ${r.skipped} 枚はグリッド上限で未スナップ`;
-                showToast(msg);
-              } else if (r.skipped > 0) {
-                showToast(`グリッド上限 (${r.cols}×${r.rows}) に空きなし`, 'error');
-              } else {
-                showToast('スナップ対象のターミナルなし');
-              }
-            } else {
-              showToast('一括スナップ失敗', 'error');
-            }
-          } catch {
-            showToast('一括スナップ失敗', 'error');
-          }
-        });
-        tab.appendChild(all);
-      }
       if (aiFilter) {
         const ai = document.createElement('span');
         ai.className = 'tab-ai';
@@ -3409,11 +3417,45 @@ function render() {
       });
       return tab;
     };
-    tabsBar.appendChild(makeTab('term', 'Terminal', availableTerminal.length, 'terminal', true));
+    tabsBar.appendChild(makeTab('term', 'Terminal', availableTerminal.length, 'terminal'));
     tabsBar.appendChild(makeTab('finder', 'Finder', availableFinder.length, 'finder'));
     tabsBar.appendChild(makeTab('apps', 'Apps', availableApps.length, null));
     tabsBar.appendChild(makeTab('tin', 'TiN', availableTiN.length, null));
     _availSection.appendChild(tabsBar);
+
+    // 一括スナップ: Terminal タブでは目に見えるアクションボタンとして表示
+    if (activeAvailTab === 'term' && availableTerminal.length > 0) {
+      const snapAllBtn = document.createElement('button');
+      snapAllBtn.className = 'avail-snap-all';
+      snapAllBtn.innerHTML =
+        `<span class="sa-icon">⊞</span><span>全部スナップ</span>` +
+        `<span class="sa-count">${availableTerminal.length}枚</span>` +
+        `<span class="sa-kbd">⌘⌥A</span>`;
+      snapAllBtn.title = '開いているターミナルを全部グリッドにスナップ（開いた順に左上から配置、スロット不足時はグリッド自動拡張）';
+      snapAllBtn.addEventListener('click', async () => {
+        snapAllBtn.disabled = true;
+        try {
+          const r = await ipcRenderer.invoke('snap-all-external', {});
+          if (r && r.ok) {
+            if (r.snapped > 0) {
+              let msg = `${r.snapped} 枚を一括スナップ (grid ${r.cols}×${r.rows})`;
+              if (r.skipped > 0) msg += ` / ${r.skipped} 枚はグリッド上限で未スナップ`;
+              showToast(msg);
+            } else if (r.skipped > 0) {
+              showToast(`グリッド上限 (${r.cols}×${r.rows}) に空きなし`, 'error');
+            } else {
+              showToast('スナップ対象のターミナルなし');
+            }
+          } else {
+            showToast('一括スナップ失敗', 'error');
+          }
+        } catch {
+          showToast('一括スナップ失敗', 'error');
+        }
+        snapAllBtn.disabled = false;
+      });
+      _availSection.appendChild(snapAllBtn);
+    }
 
     // search input (render 跨ぎで input 要素を保持 → focus/値維持)
     const searchWrap = document.createElement('div');
