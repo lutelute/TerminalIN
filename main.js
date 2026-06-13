@@ -1532,6 +1532,18 @@ ipcMain.handle('raise-snapped', async (event, { windowNumber }) => {
   return { ok: false };
 });
 
+// ── IPC: 内蔵 PTY グリッド窓を前面化 (ホイール/タブ切り替え用) ──
+ipcMain.handle('focus-grid-terminal', (event, { slot }) => {
+  const ws = findWorkspace(event.sender) || [...workspaces.values()][0];
+  if (!ws) return { ok: false };
+  const gw = ws.gridWindows.get(slot);
+  if (gw && gw.win && !gw.win.isDestroyed()) {
+    try { gw.win.show(); gw.win.moveTop(); gw.win.focus(); } catch {}
+    return { ok: true };
+  }
+  return { ok: false };
+});
+
 // ── IPC: wobble (ジグザグに揺らして場所を示す) + raise ──
 // 「クリックしたカードがどのウィンドウか視覚的に示す」ための軽量アニメ。
 // raise で最前面化した上で、左右+上+元位置の 3-pulse で視認性を高める。

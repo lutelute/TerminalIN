@@ -1299,6 +1299,7 @@ let availSearchText = '';
 let _availSearchInput = null;
 // 最前面 window の windowNumber (slot card のハイライト用)
 let frontmostWindowNumber = 0;
+let activePtySlot = null;   // ホイール/タブで内蔵PTYを選択中の slot (null=外部窓がアクティブ)
 
 // ── Title renaming (click to edit) ──
 titleEl.addEventListener('click', () => {
@@ -1679,6 +1680,38 @@ async function removeGridTerminal(slot) {
 // タブが増えてバーに収まらないとき: (1) 端のフェードで「まだある」ことを示す
 // (2) アクティブタブが画面外なら自動スクロールで見える位置へ
 // (3) マウスホイール縦回転を横スクロールに変換
+// ── ホイール/ショートカットでの窓巡回 ──
+let _wheelSwitchLock = 0;
+function _allWindowTabs() {
+  const host = document.getElementById('titlebar-grid');
+  return host ? [...host.querySelectorAll('.groupy-tab')] : [];
+}
+// タブ要素を直接アクティブ化 (クリックと共通動作)。pty/ext は dataset で判定。
+function switchToTab(tab) {
+  if (!tab) return;
+  _allWindowTabs().forEach(t => t.classList.toggle('active', t === tab));
+  if (tab.dataset.kind === 'pty') {
+    const slot = Number(tab.dataset.slot);
+    frontmostWindowNumber = 0; activePtySlot = slot;
+    ipcRenderer.invoke('focus-grid-terminal', { slot });
+  } else {
+    const wn = Number(tab.dataset.wn);
+    frontmostWindowNumber = wn; activePtySlot = null;
+    if (currentViewMode === 'tab') { activateTab(Number(tab.dataset.slot) || 0); }
+    else { render(); ipcRenderer.invoke('raise-snapped', { windowNumber: wn }); }
+  }
+  requestAnimationFrame(() => updateTabOverflow(true));
+}
+// 見えているタブ順で隣の窓へ。端は循環。dir: +1=次 / -1=前。
+function cycleActiveWindow(dir) {
+  const tabs = _allWindowTabs();
+  if (!tabs.length) return;
+  let idx = tabs.findIndex(t => t.classList.contains('active'));
+  if (idx < 0) idx = dir > 0 ? -1 : 0;   // 未選択時: 次→先頭 / 前→末尾
+  const next = (idx + dir + tabs.length) % tabs.length;
+  switchToTab(tabs[next]);
+}
+
 let _tabOverflowBound = false;
 function updateTabOverflow(scrollToActive = false) {
   const row = document.getElementById('titlebar-grid');
@@ -1687,7 +1720,13 @@ function updateTabOverflow(scrollToActive = false) {
     _tabOverflowBound = true;
     row.addEventListener('scroll', () => updateTabOverflow(false), { passive: true });
     row.addEventListener('wheel', (e) => {
-      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { row.scrollLeft += e.deltaY; e.preventDefault(); }
+      // 縦ホイール = 窓切り替え。横回転(トラックパッド)はタブ列の横スクロールに残す。
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      e.preventDefault();
+      const now = Date.now();
+      if (now - _wheelSwitchLock < 140) return;  // 1ノッチ=1ステップに間引き
+      _wheelSwitchLock = now;
+      cycleActiveWindow(e.deltaY > 0 ? 1 : -1);
     }, { passive: false });
   }
   if (scrollToActive) {
@@ -3030,8 +3069,16 @@ function render() {
     // PTY ターミナルタブ
     for (const [slot, data] of Object.entries(gridSlots)) {
       const tab = document.createElement('div');
-      const isActive = frontmostWindowNumber === 0 && Number(slot) === 0;
+      tab.dataset.kind = 'pty';
+      tab.dataset.slot = slot;
+      const isActive = (activePtySlot !== null)
+        ? (activePtySlot === Number(slot))
+        : (frontmostWindowNumber === 0 && Number(slot) === 0);
       tab.className = 'groupy-tab' + (isActive ? ' active' : '');
+      tab.addEventListener('click', e => {
+        if (e.target.closest('.tab-close')) return;
+        switchToTab(tab);
+      });
       {
         const _ps = Number(slot);
         const _pi = stateIntensityFor(undefined, _ps);
@@ -3057,6 +3104,9 @@ function render() {
     for (const [wn, info] of snappedExternals) {
       const isActive = wn === frontmostWindowNumber;
       const tab = document.createElement('div');
+      tab.dataset.kind = 'ext';
+      tab.dataset.wn = wn;
+      tab.dataset.slot = info.slot ?? 0;
       tab.className = 'groupy-tab' + (isActive ? ' active' : '');
       applyStateStyle(tab, wn, info.slot ?? 0, info.title, 5, 0.14);  // 濃さ=深刻度
       const isFinder = isFinderApp(info.app||'');
