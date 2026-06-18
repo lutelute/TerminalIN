@@ -213,10 +213,10 @@ const TIN_START_TIME = Date.now();
 // アプリ設定
 const SETTINGS_JSON = path.join(INTEGRATION_DIR, 'settings.json');
 const DEFAULT_HOTKEYS = {
-  snapFrontmost:   'Command+Option+S',
-  unsnapFrontmost: 'Command+Option+W',
-  snapAll:         'Command+Option+A',
-  focusTiN:        'Command+Option+T',
+  snapFrontmost:   'CommandOrControl+Alt+S',
+  unsnapFrontmost: 'CommandOrControl+Alt+W',
+  snapAll:         'CommandOrControl+Alt+A',
+  focusTiN:        'CommandOrControl+Alt+T',
   slot1: '', slot2: '', slot3: '', slot4: '',
 };
 
@@ -3560,6 +3560,8 @@ let _statusCacheAt = 0;
 let _statusFailStreak = 0;    // ps/osascript の連続失敗回数
 let _statusBackoffUntil = 0;  // この時刻まで状態ポーリングを休止
 async function getClaudeStatuses() {
+  // Windows は ps/osascript による状態スキャンが無い → 空を返す(色付けは hooks 経由・第2マイルストーンで session_id 化)
+  if (platform.isWin) return { tabs: [], ttys: new Set() };
   // 再入防止: 前回の osascript がまだ走っていたら直近結果を返す。poll(6秒) と
   // hooks nudge が重なっても osascript プロセスを積み上げない(PC 負荷の安全弁)
   if (_statusBusy) return _statusCache;
