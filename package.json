@@ -4,6 +4,7 @@
   "description": "Terminal workspace manager for macOS",
   "main": "main.js",
   "scripts": {
+    "install": "node scripts/rebuild-native.js",
     "start": "electron .",
     "predev": "node scripts/predev.js",
     "dev": "electron . --dev",
