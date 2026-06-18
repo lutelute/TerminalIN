@@ -7,6 +7,7 @@ const { spawn, exec, execFile, execSync } = require('child_process');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
+const platform = require('./lib/platform');
 const autoSnap = require('./auto-snap');
 
 // ── File logging (クラッシュ事後解析用) ──
@@ -54,6 +55,7 @@ try {
 let _yabaiPath = null;
 function getYabaiPath() {
   if (_yabaiPath !== null) return _yabaiPath;
+  if (platform.isWin) return (_yabaiPath = '');  // yabai は macOS 専用ツール
   try {
     _yabaiPath = execSync('which yabai', { timeout: 2000 }).toString().trim();
   } catch { _yabaiPath = ''; }
@@ -159,6 +161,8 @@ async function moveWindowsViaYabai(windowNumbers, direction, targetSpaceId) {
 // チェック中に osascript がブロックするため特に顕著)。execFile はコマンドを
 // そのまま渡せるのでシェル escape も不要。
 function runOsascript(script, timeoutMs = 2500) {
+  // osascript は macOS 専用。Windows では即座にエラー扱いで resolve(呼び出し側は { err, stdout } を期待)。
+  if (platform.isWin) return Promise.resolve({ err: new Error('osascript unavailable on Windows'), stdout: '' });
   return new Promise((resolve) => {
     execFile('osascript', ['-e', script], { timeout: timeoutMs, encoding: 'utf8' }, (err, stdout) => {
       resolve({ err, stdout });
@@ -1183,19 +1187,23 @@ function createGridTerminal(ws, slot) {
   gridWin.excludedFromShownWindowsMenu = true;
 
   const ptyId = nextPtyId++;
-  const p = pty.spawn(process.env.SHELL || '/bin/zsh', [], {
+  const p = pty.spawn(platform.defaultShell(), [], {
     name: 'xterm-256color',
     cols: 80, rows: 24,
-    cwd: process.env.HOME || '/',
+    cwd: platform.homeDir(),
     env: { ...process.env, TERM: 'xterm-256color' },
+    ...platform.ptyOptions(),
   });
 
   const gw = { win: gridWin, pty: p, ptyId, slot, tailBuf: '', lastDataAt: 0, tty: '' };
   // 状態判定用: 出力ストリームの末尾を保持(claude の busy/perm パターン検出)。
   // tty は claude の ps 集合・hooks 状態ファイルとの突合キー
-  execAsync(`ps -o tty= -p ${p.pid}`, { timeout: 2000 })
-    .then(({ stdout }) => { gw.tty = stdout.trim(); })
-    .catch(() => {});
+  if (!platform.isWin) {
+    // Windows に tty 概念なし → skip(状態突合は第2マイルストーンで hooks session_id 化)
+    execAsync(`ps -o tty= -p ${p.pid}`, { timeout: 2000 })
+      .then(({ stdout }) => { gw.tty = stdout.trim(); })
+      .catch(() => {});
+  }
 
   p.onData(data => {
     // 大量出力時は連結せず data 末尾のみ保持(文字列連結コストの安全弁)
@@ -1247,11 +1255,12 @@ ipcMain.handle('create-terminal', (event, opts = {}) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return { id: -1 };
   const id = nextPtyId++;
-  const p = pty.spawn(process.env.SHELL || '/bin/zsh', [], {
+  const p = pty.spawn(platform.defaultShell(), [], {
     name: 'xterm-256color',
     cols: opts.cols || 80, rows: opts.rows || 24,
-    cwd: opts.cwd || process.env.HOME || '/',
+    cwd: opts.cwd || platform.homeDir(),
     env: { ...process.env, TERM: 'xterm-256color' },
+    ...platform.ptyOptions(),
   });
   ws.sidebarPtys.set(id, p);
   p.onData(data => { if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('terminal-data', { id, data }); });
@@ -2377,10 +2386,7 @@ function createWorkspace(name, savedState) {
     minHeight: 300,
     x: winX,
     y: winY,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 12, y: 12 },  // 36px バーの垂直センター
-    transparent: true,        // グリッドパネル部分を透過させスナップウィンドウを表示
-    backgroundColor: '#00000000',
+    ...platform.browserWindowChrome(),  // mac: hiddenInset+trafficLight+transparent / win: hidden+overlay+不透過
     hasShadow: true,
     alwaysOnTop: false,
     acceptFirstMouse: true,
@@ -3321,7 +3327,7 @@ function promptTextInput(title, label, defaultValue = '') {
   return new Promise((resolve) => {
     const w = new BrowserWindow({
       width: 400, height: 160, resizable: false,
-      titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 12, y: 12 },
+      ...(platform.isMac ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 12, y: 12 } } : {}),
       webPreferences: { nodeIntegration: true, contextIsolation: false },
     });
     const html = `<!DOCTYPE html><html><head><style>
@@ -3429,7 +3435,8 @@ ipcMain.handle('ai-colorize', async (event) => {
 // ~/.claude/settings.json に設置した hooks が /tmp/tin-claude-status/<tty>.json に
 // {"state":"busy|perm|input","ts":epoch} を書く。TiN は fs.watch で検知して即時更新。
 // ps/osascript ヒューリスティックより正確・低遅延（設置は Shell メニューから opt-in）。
-const TIN_HOOK_DIR = '/tmp/tin-claude-status';
+// macOS は従来通り /tmp(設置済み hooks パスとの後方互換)。Windows のみ %TEMP% を使う。
+const TIN_HOOK_DIR = platform.isWin ? path.join(platform.tmpDir(), 'tin-claude-status') : '/tmp/tin-claude-status';
 const hookStates = new Map();   // tty(例: ttys003) → { state, ts }
 let _hookNudgeTimer = null;
 function readHookStates() {

@@ -5,16 +5,17 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "predev": "osascript -e 'tell application \"TiN\" to quit' 2>/dev/null; pkill -f 'TiN.app/Contents/MacOS/TiN' 2>/dev/null; sleep 1; exit 0",
+    "predev": "node scripts/predev.js",
     "dev": "electron . --dev",
     "build": "electron-builder --mac",
-    "predist": "npx node-gyp rebuild",
-    "prebuild": "npx node-gyp rebuild",
-    "dist": "electron-builder --mac --publish never"
+    "predist": "node scripts/rebuild-native.js",
+    "prebuild": "node scripts/rebuild-native.js",
+    "dist": "electron-builder --mac --publish never",
+    "dist:win": "node scripts/rebuild-native.js && electron-builder --win --publish never"
   },
   "keywords": [],
   "author": "shigenoburyuto",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
   "build": {
     "appId": "com.shigenoburyuto.tin",
@@ -51,6 +52,19 @@
         "NSSupportsSuddenTermination": false
       }
     },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64", "arm64"] },
+        { "target": "zip", "arch": ["x64", "arm64"] }
+      ],
+      "icon": "icon_1024.png",
+      "files": ["!build/Release/*.node"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
     "files": [
       "main.js",
       "auto-snap.js",
@@ -58,7 +72,8 @@
       "grid-terminal.html",
       "grid-overlay.html",
       "package.json",
-      "build/Release/ax_helper.node",
+      "lib/**",
+      "build/Release/*.node",
       "node_modules/@xterm/**",
       "node_modules/node-pty/**",
       "!atelierx-plugin/**",
@@ -67,7 +82,7 @@
       "!scripts/**"
     ],
     "asarUnpack": [
-      "build/Release/ax_helper.node",
+      "build/Release/*.node",
       "node_modules/node-pty/**"
     ]
   },
