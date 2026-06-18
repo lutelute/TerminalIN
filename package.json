@@ -22,6 +22,7 @@
     "appId": "com.shigenoburyuto.tin",
     "productName": "TiN",
     "afterPack": "scripts/clean-xattr.js",
+    "npmRebuild": false,
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [
