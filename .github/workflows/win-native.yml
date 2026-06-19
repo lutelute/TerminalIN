@@ -3,6 +3,10 @@ name: win-native
 # Windows ネイティブ addon(ax_helper=win-helper.cc / node-pty)を
 # Electron ABI でビルドし、成果物(.node + DLL)を artifact にする。
 # VM 等のビルド環境が無い端末へ持ち込んで起動するためのもの。
+#
+# 重要: Parallels on Apple Silicon の Windows は arm64。x64 でビルドした .node は
+# "is not a valid Win32 application" でロードできず、内蔵ターミナル(node-pty)も
+# 外部ウィンドウ操作(ax_helper)も動かない。下記 matrix で arm64 も必ずビルドすること。
 
 on:
   workflow_dispatch: {}
@@ -16,8 +20,13 @@ on:
 
 jobs:
   build:
-    # windows-latest は VS18(プレビュー)を積み node-gyp が認識できないため 2022 に固定
+    # windows-latest は VS18(プレビュー)を積み node-gyp が認識できないため 2022 に固定。
+    # arm64 は x64 ランナー上でクロスコンパイル(amd64_arm64)する。
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
     steps:
       - uses: actions/checkout@v4
 
@@ -36,7 +45,8 @@ jobs:
       - name: Setup MSVC dev environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: x64
+          # x64 はネイティブ、arm64 は x64 ホストからのクロス(amd64_arm64)
+          arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'x64' }}
 
       - name: Build ax_helper (win-helper.cc) for Electron ABI
         shell: bash
@@ -45,11 +55,11 @@ jobs:
             --runtime=electron \
             --target=${{ steps.ev.outputs.v }} \
             --dist-url=https://electronjs.org/headers \
-            --arch=x64 \
+            --arch=${{ matrix.arch }} \
             --msvs_version=2022
 
       - name: Rebuild node-pty for Electron ABI
-        run: npx --yes @electron/rebuild --force --only node-pty
+        run: npx --yes @electron/rebuild --force --only node-pty --arch ${{ matrix.arch }}
 
       - name: List build outputs
         shell: bash
@@ -59,7 +69,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: win-native-x64
+          name: win-native-${{ matrix.arch }}
           if-no-files-found: warn
           path: |
             build/Release/ax_helper.node
