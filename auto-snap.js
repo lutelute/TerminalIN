@@ -92,6 +92,10 @@ function loadRecentHistory(maxEntries = 20) {
 // model: 'haiku'(既定・速い) | 'sonnet'(賢い)。timeoutMs で長文生成にも対応。
 function callClaude(prompt, model = 'haiku', timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
+    // auto-snap の AI 補完は sh + ~/.local/bin/claude 前提。Windows は最小版では未対応。
+    if (process.platform === 'win32') {
+      return reject(new Error('auto-snap AI (callClaude) is not yet supported on Windows'));
+    }
     const claudePath = process.env.HOME + '/.local/bin/claude';
     const os = require('os');
     const safeModel = /^[a-z0-9.\-]+$/i.test(model) ? model : 'haiku';  // シェル注入防止
