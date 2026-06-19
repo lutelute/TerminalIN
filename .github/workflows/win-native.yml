@@ -1,0 +1,59 @@
+name: win-native
+
+# Windows ネイティブ addon(ax_helper=win-helper.cc / node-pty)を
+# Electron ABI でビルドし、成果物(.node + DLL)を artifact にする。
+# VM 等のビルド環境が無い端末へ持ち込んで起動するためのもの。
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [feature/win-window-manager]
+    paths:
+      - native/win-helper.cc
+      - binding.gyp
+      - package.json
+      - .github/workflows/win-native.yml
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps (skip native build)
+        run: npm install --ignore-scripts
+
+      - name: Resolve Electron version
+        id: ev
+        shell: bash
+        run: echo "v=$(node -p "require('electron/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Build ax_helper (win-helper.cc) for Electron ABI
+        shell: bash
+        run: |
+          npx node-gyp rebuild \
+            --runtime=electron \
+            --target=${{ steps.ev.outputs.v }} \
+            --dist-url=https://electronjs.org/headers \
+            --arch=x64
+
+      - name: Rebuild node-pty for Electron ABI
+        run: npx --yes @electron/rebuild --force --only node-pty
+
+      - name: List build outputs
+        shell: bash
+        run: |
+          echo "=== ax_helper ==="; ls -la build/Release/ || true
+          echo "=== node-pty ==="; ls -la node_modules/node-pty/build/Release/ || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-native-x64
+          if-no-files-found: warn
+          path: |
+            build/Release/ax_helper.node
+            node_modules/node-pty/build/Release/**
