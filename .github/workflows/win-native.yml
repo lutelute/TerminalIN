@@ -32,6 +32,11 @@ jobs:
         shell: bash
         run: echo "v=$(node -p "require('electron/package.json').version")" >> "$GITHUB_OUTPUT"
 
+      - name: Setup MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Build ax_helper (win-helper.cc) for Electron ABI
         shell: bash
         run: |
@@ -39,7 +44,8 @@ jobs:
             --runtime=electron \
             --target=${{ steps.ev.outputs.v }} \
             --dist-url=https://electronjs.org/headers \
-            --arch=x64
+            --arch=x64 \
+            --msvs_version=2022
 
       - name: Rebuild node-pty for Electron ABI
         run: npx --yes @electron/rebuild --force --only node-pty
