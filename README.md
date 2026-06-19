@@ -15,6 +15,10 @@
   <a href="https://github.com/lutelute/TerminalIN/releases"><img src="https://img.shields.io/github/downloads/lutelute/TerminalIN/total?style=flat-square&color=44cc11&label=downloads" alt="Total downloads"></a>
 </p>
 
+<p align="center">
+  <img src="assets/demo.gif" alt="TiN デモ — 複数アプリを 1 つのタブ／グリッドウィンドウにまとめる" width="100%">
+</p>
+
 ---
 
 ## 概要
