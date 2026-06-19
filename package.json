@@ -1,7 +1,7 @@
 {
   "name": "tin",
-  "version": "1.6.0",
-  "description": "Terminal workspace manager for macOS",
+  "version": "1.7.0",
+  "description": "Terminal workspace manager for macOS & Windows",
   "main": "main.js",
   "scripts": {
     "install": "node scripts/rebuild-native.js",
