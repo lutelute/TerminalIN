@@ -16,7 +16,8 @@
 </p>
 
 <p align="center">
-  <img src="assets/demo.gif" alt="TiN デモ — 複数アプリを 1 つのタブ／グリッドウィンドウにまとめる" width="100%">
+  <img src="assets/demo.gif" alt="TiN デモ — 整列・状態色・スロット並べ替え" width="100%">
+  <br><sub><i>※ 動作イメージ（UI を再現したアニメーション）</i></sub>
 </p>
 
 ---
