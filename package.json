@@ -12,9 +12,19 @@
     "prebuild": "npx node-gyp rebuild",
     "dist": "electron-builder --mac --publish never"
   },
-  "keywords": [],
+  "keywords": [
+    "macos",
+    "window-manager",
+    "terminal",
+    "electron",
+    "productivity",
+    "workspace",
+    "tabs",
+    "groupy",
+    "claude-code"
+  ],
   "author": "shigenoburyuto",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
   "build": {
     "appId": "com.shigenoburyuto.tin",
