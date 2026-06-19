@@ -59,8 +59,7 @@
         { "target": "nsis", "arch": ["x64", "arm64"] },
         { "target": "zip", "arch": ["x64", "arm64"] }
       ],
-      "icon": "icon_1024.png",
-      "files": ["!build/Release/*.node"]
+      "icon": "icon_1024.png"
     },
     "nsis": {
       "oneClick": false,
