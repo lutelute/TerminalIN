@@ -16,7 +16,8 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # windows-latest は VS18(プレビュー)を積み node-gyp が認識できないため 2022 に固定
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
