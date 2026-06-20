@@ -1165,6 +1165,45 @@ function getSlotBounds(ws, slot) {
   return { x, y, width: x2 - x, height: y2 - y };
 }
 
+// フォーカス中ウィンドウが属する workspace を返す(無ければ最初の生存 workspace)。
+function wsFromFocused() {
+  const focused = BrowserWindow.getFocusedWindow();
+  if (focused) {
+    for (const [, ws] of workspaces) {
+      if (!ws.win || ws.win.isDestroyed()) continue;
+      if (ws.win === focused) return ws;
+      for (const [, gw] of ws.gridWindows) if (gw.win === focused) return ws;
+    }
+  }
+  return [...workspaces.values()].find(ws => ws.win && !ws.win.isDestroyed()) || null;
+}
+
+// #5: ワークスペース(TiN ウィンドウ + grid 端末 + スナップ外部窓)を別ディスプレイへ移動。
+// dir=+1 で次、-1 で前のディスプレイへ。現ディスプレイ内の相対位置を保ちクランプ配置 → retile。
+function moveWorkspaceToDisplay(ws, dir = 1) {
+  if (!ws || !ws.win || ws.win.isDestroyed()) return false;
+  const displays = screen.getAllDisplays();
+  if (displays.length < 2) return false;
+  const b = ws.win.getBounds();
+  const cur = screen.getDisplayNearestPoint({ x: b.x + b.width / 2, y: b.y + b.height / 2 });
+  const idx = displays.findIndex(d => d.id === cur.id);
+  const target = displays[((idx + dir) % displays.length + displays.length) % displays.length];
+  if (!target || target.id === cur.id) return false;
+  const ca = cur.workArea, ta = target.workArea;
+  const relX = (b.x - ca.x) / Math.max(1, ca.width);
+  const relY = (b.y - ca.y) / Math.max(1, ca.height);
+  const nw = Math.min(b.width, ta.width);
+  const nh = Math.min(b.height, ta.height);
+  let nx = Math.round(ta.x + relX * ta.width);
+  let ny = Math.round(ta.y + relY * ta.height);
+  nx = Math.max(ta.x, Math.min(nx, ta.x + ta.width - nw));
+  ny = Math.max(ta.y, Math.min(ny, ta.y + ta.height - nh));
+  ws.win.setBounds({ x: nx, y: ny, width: nw, height: nh });
+  retileAll(ws).catch(() => {});  // grid 端末 + スナップ窓を新ディスプレイのスロットへ
+  scheduleSaveWorkspaces();
+  return true;
+}
+
 // ── Raise all workspace windows (grid + snapped externals) ──
 let lastRaiseTime = 0;
 
@@ -4076,6 +4115,11 @@ app.whenReady().then(() => {
       { label: 'Close Workspace', accelerator: 'CmdOrCtrl+Shift+W', click: () => {
         const win = BrowserWindow.getFocusedWindow();
         if (win) win.close();
+      }},
+      { type: 'separator' },
+      { label: 'Move Workspace to Next Display', accelerator: 'CmdOrCtrl+Shift+M', click: () => {
+        const ws = wsFromFocused();
+        if (ws && !moveWorkspaceToDisplay(ws, 1)) console.log('[tin] move-to-display: single display or no target');
       }},
     ]},
     { label: 'Shell', submenu: [
