@@ -3123,15 +3123,13 @@ function render() {
   prevSpaceBtn.textContent = '\u25c4';
   prevSpaceBtn.title = 'Space ◄ — TiN + スナップ済みウィンドウをまとめて前のデスクトップへ';
   prevSpaceBtn.addEventListener('click', () => ipcRenderer.invoke('push-to-space', { direction: -1 }));
-  // #12/#14: Space(仮想デスクトップ)は Windows で外部窓制御に非公開COMが要り未対応。
-  // 動かないボタンを出さないよう Windows では Space 系 UI を非表示にする(capability-gate)。
-  if (process.platform !== 'win32') selector.appendChild(prevSpaceBtn);
+  selector.appendChild(prevSpaceBtn);
   const nextSpaceBtn = document.createElement('button');
   nextSpaceBtn.className = 'grid-opt';
   nextSpaceBtn.textContent = '\u25ba';
   nextSpaceBtn.title = 'Space ► — TiN + スナップ済みウィンドウをまとめて次のデスクトップへ';
   nextSpaceBtn.addEventListener('click', () => ipcRenderer.invoke('push-to-space', { direction: +1 }));
-  if (process.platform !== 'win32') selector.appendChild(nextSpaceBtn);
+  selector.appendChild(nextSpaceBtn);
 
   // ── Space ピッカーボタン (↗) ──
   const spacePickerBtn = document.createElement('button');
@@ -3178,7 +3176,17 @@ function render() {
     document.body.appendChild(_spacePickerPopup);
     setTimeout(() => document.addEventListener('mousedown', _spacePickerOutside), 0);
   });
-  if (process.platform !== 'win32') selector.appendChild(spacePickerBtn);
+  selector.appendChild(spacePickerBtn);
+  // #12/#14: Windows は VirtualDesktopAccessor.dll がロードできた時だけ Space UI を出す。
+  // DLL 無し(既定)では capability OFF → 動かない Space ボタンを隠す。
+  // mac は常時表示(yabai/CGS)。capability は main の 'space-capability' で判定。
+  if (process.platform === 'win32') {
+    const _spaceBtns = [prevSpaceBtn, nextSpaceBtn, spacePickerBtn];
+    _spaceBtns.forEach(b => { b.style.display = 'none'; });
+    ipcRenderer.invoke('space-capability')
+      .then(cap => { if (cap) _spaceBtns.forEach(b => { b.style.display = ''; }); })
+      .catch(() => {});
+  }
 
   // ── yabai SA 状態インジケーター ──
   const saBtn = document.createElement('button');
