@@ -10,11 +10,48 @@
 // DPI スケールの変換が必要 (setDpiScale で外から注入)。
 
 const koffi = require('koffi');
+const fs = require('fs');
+const path = require('path');
 
 const user32 = koffi.load('user32.dll');
 const kernel32 = koffi.load('kernel32.dll');
 let dwmapi = null;
 try { dwmapi = koffi.load('dwmapi.dll'); } catch { /* optional */ }
+
+// ── 仮想デスクトップ (mac の Space 相当): VirtualDesktopAccessor.dll があれば有効化 ──
+// 外部(他プロセス)窓のデスクトップ移動には非公開 COM(IVirtualDesktopManagerInternal)が
+// 要り、Windows ビルドごとに ABI が変わる。これを安定ラップした第三者 DLL
+// (github.com/Ciantic/VirtualDesktopAccessor)を **オプション依存** でロードする。
+// DLL は同梱しない。次のいずれかに置く: TIN_VDA_DLL(明示パス) /
+// %APPDATA%\TiN\VirtualDesktopAccessor.dll / win-helper.js と同じディレクトリ。
+// 見つからなければ Space 系は no-op のまま(capability OFF)。
+let vda = null;
+(function loadVDA() {
+  const candidates = [
+    process.env.TIN_VDA_DLL,
+    path.join(process.env.APPDATA || '', 'TiN', 'VirtualDesktopAccessor.dll'),
+    path.join(__dirname, 'VirtualDesktopAccessor.dll'),
+  ].filter(Boolean);
+  for (const p of candidates) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const lib = koffi.load(p);
+      vda = {
+        count:      lib.func('int GetDesktopCount()'),
+        current:    lib.func('int GetCurrentDesktopNumber()'),
+        goTo:       lib.func('void GoToDesktopNumber(int)'),
+        moveWin:    lib.func('int MoveWindowToDesktopNumber(uintptr_t, int)'),
+        winDesktop: lib.func('int GetWindowDesktopNumber(uintptr_t)'),
+      };
+      // ロード健全性チェック(GetDesktopCount が妥当な値を返すか)
+      const n = vda.count();
+      if (!(n >= 1 && n < 100)) { vda = null; continue; }
+      console.log('[tin] VirtualDesktopAccessor loaded:', p, `(${n} desktops)`);
+      break;
+    } catch (e) { vda = null; /* 次の候補へ */ }
+  }
+  if (!vda) console.log('[tin] VirtualDesktopAccessor 未検出 — 仮想デスクトップ機能は無効 (capability OFF)');
+})();
 
 // ── 構造体 ──
 const RECT = koffi.struct('RECT', { left: 'long', top: 'long', right: 'long', bottom: 'long' });
@@ -300,13 +337,48 @@ function isAXTrusted() {
   return true;
 }
 
-// ── 仮想デスクトップ (mac の Space 相当) — 現状 no-op ──
-// IVirtualDesktopManager は COM かつ Windows ビルドごとに ABI が変わるため後回し。
-function moveToSpace() { return 0; }
-function moveWindowsToActiveSpace() { return 0; }
-function moveWindowsToSpaceId() { return 0; }
-function getSpaceForWindows() { return []; }
-function getSpacesList() { return []; }
+// ── 仮想デスクトップ (mac の Space 相当) — VirtualDesktopAccessor.dll があれば有効 ──
+// vda 未ロード時は全て no-op(空配列/0/false)。main.js の if(axHelper.xxx) ガードと
+// spacesCapable() による UI 出し分けで「未対応なら静かに無効」を担保する。
+function spacesCapable() { return !!vda; }
+
+function getSpacesList() {
+  if (!vda) return [];
+  try {
+    const n = vda.count(), cur = vda.current();
+    const out = [];
+    for (let i = 0; i < n; i++) out.push({ id: i, index: i + 1, label: `Desktop ${i + 1}`, isCurrent: i === cur });
+    return out;
+  } catch { return []; }
+}
+function getSpaceForWindows(wns) {
+  if (!vda || !Array.isArray(wns)) return [];
+  return wns.map(wn => { try { return vda.winDesktop(Number(wn)); } catch { return -1; } });
+}
+function moveWindowsToSpaceId(wns, spaceId) {
+  if (!vda || !Array.isArray(wns)) return 0;
+  let moved = 0;
+  for (const c of wns) {
+    const wn = Number(typeof c === 'object' ? c.windowNumber : c);
+    try { if (vda.moveWin(wn, Number(spaceId))) moved++; } catch { /* ignore */ }
+  }
+  return moved;
+}
+function moveToSpace(wns, direction) {
+  if (!vda || !Array.isArray(wns)) return 0;
+  try {
+    const cur = vda.current(), cnt = vda.count();
+    let target = cur + (Number(direction) || 0);
+    target = Math.max(0, Math.min(cnt - 1, target));
+    if (target === cur) return 0;
+    return moveWindowsToSpaceId(wns, target);
+  } catch { return 0; }
+}
+function moveWindowsToActiveSpace(wns) {
+  if (!vda) return 0;
+  try { return moveWindowsToSpaceId(wns, vda.current()); } catch { return 0; }
+}
+// sticky(全 Space 表示)は VDA でも非対応(pinned は別 API)。
 function setWindowSticky() { return false; }
 function getWindowIdFromHandle(h) { return Number(h) || 0; }
 
@@ -325,6 +397,7 @@ module.exports = {
   moveWindowsToSpaceId,
   getSpaceForWindows,
   getSpacesList,
+  spacesCapable,
   setWindowSticky,
   getWindowIdFromHandle,
   getExePathForApp,

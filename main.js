@@ -2162,6 +2162,13 @@ ipcMain.handle('push-to-space', async (event, { direction }) => {
 
 // ── Space 一覧取得 ──
 // yabai query を優先、なければ CGS native で返す
+// 仮想デスクトップ(Space)機能が使えるか。Windows は VirtualDesktopAccessor.dll が
+// ロードできた時だけ true。renderer は Windows でこれが true の時のみ Space UI を出す。
+ipcMain.handle('space-capability', () => {
+  if (!IS_WIN) return true; // macOS は従来通り(yabai/CGS)
+  try { return !!(axHelper && axHelper.spacesCapable && axHelper.spacesCapable()); } catch { return false; }
+});
+
 ipcMain.handle('get-spaces', async () => {
   const p = getYabaiPath();
   if (p && await yabaiIsRunning()) {
