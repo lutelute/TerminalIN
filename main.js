@@ -49,6 +49,15 @@ try {
   console.warn('[tin] ax_helper not available, falling back to osascript:', e.message);
 }
 
+// Windows: Win32 SetWindowPos は物理ピクセル、main.js の矩形は screen API の DIP。
+// win-helper に primary display の scaleFactor を注入して DIP→物理px 変換させる。
+// 拡大表示(125/150%)で snap 窓の位置/サイズがずれる問題の対策。
+// macOS の ax_helper は setDpiScale を持たない(AX は論理座標)ので guard で no-op。
+function syncDpiScale() {
+  if (!axHelper || typeof axHelper.setDpiScale !== 'function') return;
+  try { axHelper.setDpiScale(screen.getPrimaryDisplay().scaleFactor || 1); } catch {}
+}
+
 // ── yabai 統合: Space 移動 ──
 // yabai の window id = CGWindowID のため直接使用可能。
 // SIP 部分無効 + `sudo yabai --load-sa` が必要。
@@ -3828,6 +3837,7 @@ function startFrontmostPoll() {
 }
 
 app.whenReady().then(() => {
+  syncDpiScale();   // Windows: DIP→物理px 変換スケールを注入 (mac は no-op)
   writeInfoJson();
   // NOTE: ここで writeSnappedJson() を呼んではいけない。
   // workspace 未作成の時点で snapped.json が空配列で上書きされ、
@@ -3882,7 +3892,7 @@ app.whenReady().then(() => {
     }
     beginStabilize('display-removed');
   });
-  screen.on('display-metrics-changed', () => beginStabilize('display-metrics-changed'));
+  screen.on('display-metrics-changed', () => { syncDpiScale(); beginStabilize('display-metrics-changed'); });
 
   const template = [
     { label: app.name, submenu: [

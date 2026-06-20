@@ -25,6 +25,17 @@
 static inline int32_t hwndToNum(HWND h) { return (int32_t)(intptr_t)h; }
 static inline HWND numToHwnd(int32_t n) { return (HWND)(intptr_t)n; }
 
+// DPI スケール (Electron 側から setDpiScale で注入)。
+// main.js は screen API の DIP 座標で矩形を渡すが、Win32 SetWindowPos は物理ピクセル。
+// 物理px = DIP * scale。これを掛けないと拡大表示(125/150%)の環境で snap した窓が
+// 位置もサイズもずれる(= リサイズ/レイアウトが効かない主因)。
+// 注: primary display の単一スケール。混在 DPI マルチモニタは将来 GetDpiForWindow で改善余地。
+static double g_dpiScale = 1.0;
+static inline int scaleRound(int v) {
+  double d = v * g_dpiScale;
+  return (int)(d + (d >= 0 ? 0.5 : -0.5));
+}
+
 // UTF-16 -> UTF-8
 static std::string toUtf8(const wchar_t* w) {
   if (!w || !w[0]) return std::string();
@@ -174,12 +185,16 @@ static napi_value MoveWindows(napi_env env, napi_callback_info info) {
     int dr = outer.right - vis.right;   // 右の不可視境界(>=0)
     int db = outer.bottom - vis.bottom; // 下の不可視境界(>=0)
 
+    // DIP(main.js) → 物理px。境界補正(dl..db)は GetWindowRect 由来で既に物理pxなので掛けない。
+    int px = scaleRound(x), py = scaleRound(y);
+    int pw = scaleRound(w), ph = scaleRound(h);
+
     UINT flags = SWP_NOZORDER | SWP_NOACTIVATE;
     if (positionOnly) {
-      if (SetWindowPos(hwnd, nullptr, x - dl, y - dt, 0, 0, flags | SWP_NOSIZE)) moved++;
+      if (SetWindowPos(hwnd, nullptr, px - dl, py - dt, 0, 0, flags | SWP_NOSIZE)) moved++;
     } else {
-      int ox = x - dl, oy = y - dt;
-      int ow = w + dl + dr, oh = h + dt + db;
+      int ox = px - dl, oy = py - dt;
+      int ow = pw + dl + dr, oh = ph + dt + db;
       if (SetWindowPos(hwnd, nullptr, ox, oy, ow, oh, flags)) moved++;
     }
   }
@@ -274,6 +289,18 @@ static napi_value GetWindowIdFromHandle(napi_env env, napi_callback_info info) {
   return result;
 }
 
+// ── setDpiScale(scale) ── Electron の screen.scaleFactor を注入。戻り値 = 適用後 scale。
+static napi_value SetDpiScale(napi_env env, napi_callback_info info) {
+  size_t argc = 1; napi_value args[1];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  if (argc >= 1) {
+    double s = 0;
+    if (napi_get_value_double(env, args[0], &s) == napi_ok && s > 0) g_dpiScale = s;
+  }
+  napi_value result; napi_create_double(env, g_dpiScale, &result);
+  return result;
+}
+
 // ── Module init ── (Space 系は export しない → main.js が自動 skip)
 static napi_value Init(napi_env env, napi_value exports) {
   napi_value fn;
@@ -291,6 +318,8 @@ static napi_value Init(napi_env env, napi_value exports) {
   napi_set_named_property(env, exports, "getWindowNumbersByPid", fn);
   napi_create_function(env, nullptr, 0, GetWindowIdFromHandle, nullptr, &fn);
   napi_set_named_property(env, exports, "getWindowIdFromHandle", fn);
+  napi_create_function(env, nullptr, 0, SetDpiScale, nullptr, &fn);
+  napi_set_named_property(env, exports, "setDpiScale", fn);
   return exports;
 }
 NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)
