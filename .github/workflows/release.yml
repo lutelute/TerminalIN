@@ -1,8 +1,9 @@
 name: release
 
 # タグ v* を push すると Windows ビルド(x64/arm64)を作り GitHub Release(draft)へ添付する。
-# Windows のウィンドウ操作バックエンドは koffi(FFI, ビルド不要・prebuilt 同梱)なので
-# native addon のコンパイルは不要。node-pty(ConPTY)のみ Electron ABI 向けに再ビルドする。
+# Windows のウィンドウ操作バックエンドは koffi(FFI, ビルド不要・prebuilt 同梱)で、
+# node-pty も prebuilds(N-API)を同梱するため、Windows ではネイティブのコンパイルは一切不要。
+# (binding.gyp の ax_helper は OS=='mac' 条件付きで Windows では何もビルドしない)
 # macOS 版は手元ビルド(npm run dist)で同 Release へ追加する。
 #
 # workflow_dispatch(tag 空)で起動するとビルド検証のみ(Release へは上げない)。
@@ -22,8 +23,6 @@ permissions:
 
 jobs:
   win:
-    # windows-latest は VS18(プレビュー)を積み node-gyp が認識できないため 2022 に固定。
-    # arm64 は x64 ランナー上でクロスコンパイル(amd64_arm64)する(node-pty 用)。
     runs-on: windows-2022
     strategy:
       fail-fast: false
@@ -36,22 +35,12 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install deps (skip native build)
+      # --ignore-scripts: ネイティブビルドを走らせない(koffi/node-pty とも prebuilt を使用)。
+      - name: Install deps (no native build)
         run: npm install --ignore-scripts
 
-      # koffi はビルド不要(prebuilt バイナリが npm パッケージに同梱)。
-      # node-pty のみ C++ のため Electron ABI / 対象 arch で再ビルドする。
-      - name: Setup MSVC dev environment (for node-pty)
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          # x64 はネイティブ、arm64 は x64 ホストからのクロス(amd64_arm64)
-          arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'x64' }}
-
-      - name: Rebuild node-pty for Electron ABI
-        run: npx --yes @electron/rebuild --force --only node-pty --arch ${{ matrix.arch }}
-
-      # npmRebuild:false なので electron-builder は native を再ビルドせず、上で作った
-      # node-pty(pty.node)と同梱の koffi prebuilt をそのままパッケージする。
+      # npmRebuild:false なので electron-builder は native を再ビルドせず、
+      # 同梱の koffi prebuilt と node-pty prebuilds をそのままパッケージする。
       - name: Package with electron-builder
         shell: bash
         run: npx electron-builder --win --${{ matrix.arch }} --publish never
