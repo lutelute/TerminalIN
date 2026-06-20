@@ -17,6 +17,24 @@ AXUIElement を直接呼ぶ。外部 helper バイナリは持たない。
 - `isAXTrusted()` — Accessibility 権限確認
 - `moveToSpace(...)` — CGS プライベート API で Space 移動
 
+### Windows バックエンド = **koffi (`win-helper.js`) が canonical**
+
+Windows のウィンドウ操作は **`win-helper.js`(koffi FFI、ビルド不要)** を `main.js` が
+`require('./win-helper.js')` でロードし、mac の `ax_helper` と**同じ export 名・戻り値スキーマ**で
+提供する。よって main.js は `if (axHelper && axHelper.xxx)` の同一コードパスで両 OS を扱う。
+
+- **koffi が正**: C++ N-API 版(`native/win-helper.cc`)は **評価のうえ却下・退役**(2026-06-20)。
+  実機(ARM64/200%)比較で koffi 版が優秀(透明グリッド描画・黒画面なし・snap 動作)だったため。
+- Win32 API を koffi で直接呼ぶ: `EnumWindows` / `SetWindowPos`(DWM 不可視縁を
+  `DWMWA_EXTENDED_FRAME_BOUNDS` で補正)/ `setDpiScale` で DIP→物理px 変換 / `BringWindowToTop`+
+  `AttachThreadInput` で raise。
+- **ビルド不要**: koffi も node-pty も prebuilt 同梱。`binding.gyp` は `OS=='mac'` 条件付きで
+  Windows では何もビルドしない(さもないと `@electron/rebuild` が ax-helper.mm を Windows で
+  コンパイルして失敗する)。
+- ウィンドウは `transparent: true`(全 OS)で**グリッドが透過しスロット越しにスナップ窓が見える**。
+  Windows は frameless+transparent のため手動ドラッグ/リサイズ + カスタム window controls を実装。
+- 仮想デスクトップ(mac の Space 相当)系は現状 no-op スタブ。
+
 ## ビルド・インストール
 
 ```bash
