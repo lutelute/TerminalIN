@@ -1,8 +1,9 @@
 name: release
 
-# タグ v* を push すると、Windows の native(ax_helper=win-helper.cc / node-pty)を
-# Electron ABI でビルドし、electron-builder で NSIS インストーラ + zip(x64/arm64)を作り、
-# GitHub Release(draft)へ添付する。macOS 版は手元ビルド(npm run dist)で同 Release へ追加する。
+# タグ v* を push すると Windows ビルド(x64/arm64)を作り GitHub Release(draft)へ添付する。
+# Windows のウィンドウ操作バックエンドは koffi(FFI, ビルド不要・prebuilt 同梱)なので
+# native addon のコンパイルは不要。node-pty(ConPTY)のみ Electron ABI 向けに再ビルドする。
+# macOS 版は手元ビルド(npm run dist)で同 Release へ追加する。
 #
 # workflow_dispatch(tag 空)で起動するとビルド検証のみ(Release へは上げない)。
 
@@ -12,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (例 v1.7.0)。空ならビルド検証のみで Release へは上げない'
+        description: 'Release tag (例 v1.8.0)。空ならビルド検証のみで Release へは上げない'
         required: false
         default: ''
 
@@ -22,7 +23,7 @@ permissions:
 jobs:
   win:
     # windows-latest は VS18(プレビュー)を積み node-gyp が認識できないため 2022 に固定。
-    # arm64 は x64 ランナー上でクロスコンパイル(amd64_arm64)する。
+    # arm64 は x64 ランナー上でクロスコンパイル(amd64_arm64)する(node-pty 用)。
     runs-on: windows-2022
     strategy:
       fail-fast: false
@@ -38,32 +39,19 @@ jobs:
       - name: Install deps (skip native build)
         run: npm install --ignore-scripts
 
-      - name: Resolve Electron version
-        id: ev
-        shell: bash
-        run: echo "v=$(node -p "require('electron/package.json').version")" >> "$GITHUB_OUTPUT"
-
-      - name: Setup MSVC dev environment
+      # koffi はビルド不要(prebuilt バイナリが npm パッケージに同梱)。
+      # node-pty のみ C++ のため Electron ABI / 対象 arch で再ビルドする。
+      - name: Setup MSVC dev environment (for node-pty)
         uses: ilammy/msvc-dev-cmd@v1
         with:
           # x64 はネイティブ、arm64 は x64 ホストからのクロス(amd64_arm64)
           arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'x64' }}
 
-      - name: Build ax_helper (win-helper.cc) for Electron ABI
-        shell: bash
-        run: |
-          npx node-gyp rebuild \
-            --runtime=electron \
-            --target=${{ steps.ev.outputs.v }} \
-            --dist-url=https://electronjs.org/headers \
-            --arch=${{ matrix.arch }} \
-            --msvs_version=2022
-
       - name: Rebuild node-pty for Electron ABI
         run: npx --yes @electron/rebuild --force --only node-pty --arch ${{ matrix.arch }}
 
       # npmRebuild:false なので electron-builder は native を再ビルドせず、上で作った
-      # build/Release/ax_helper.node と node-pty(pty.node)をそのままパッケージする。
+      # node-pty(pty.node)と同梱の koffi prebuilt をそのままパッケージする。
       - name: Package with electron-builder
         shell: bash
         run: npx electron-builder --win --${{ matrix.arch }} --publish never
