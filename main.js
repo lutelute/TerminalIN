@@ -174,6 +174,9 @@ const pkg = require('./package.json');
 // Always enable remote debugging for MCP integration.
 // 9222 が他 Electron アプリ (AtelierX 開発モード等) に占有されていたら 9223/9224 を試す。
 function pickDevToolsPort() {
+  // lsof は macOS / Linux 前提。Windows には無く execSync が毎回 ENOENT を投げる(catch で
+  // 握り潰されるが無駄な子プロセス生成失敗が起動時に走る)ため、非対応 OS は既定ポートを返す。
+  if (process.platform === 'win32') return 9222;
   const { execSync } = require('child_process');
   for (const p of [9222, 9223, 9224]) {
     try { execSync(`lsof -ti:${p}`, { stdio: ['ignore', 'pipe', 'ignore'] }); } catch { return p; }
@@ -4363,9 +4366,12 @@ function startRestServer() {
       const { spawn } = require('child_process');
       const cwd = body.cwd || null;
       const shellCmd = cwd ? `cd ${JSON.stringify(cwd)} && ${body.cmd}` : body.cmd;
-      const spawnOpts = { detached: true, stdio: 'ignore' };
+      // shell:true で OS 既定シェル経由(Unix: /bin/sh -c, Windows: cmd.exe /c)。
+      // '/bin/sh' 直指定は Windows に存在せず spawn が 'error' を投げ、リスナ未登録だとクラッシュする。
+      const spawnOpts = { detached: true, stdio: 'ignore', shell: true };
       if (cwd) { try { require('fs').accessSync(cwd); spawnOpts.cwd = cwd; } catch {} }
-      const child = spawn('/bin/sh', ['-c', shellCmd], spawnOpts);
+      const child = spawn(shellCmd, spawnOpts);
+      child.on('error', (e) => console.warn('[tin] /api/v1/launch spawn failed:', e?.message || e));
       child.unref();
       const launchedPid = child.pid;
 
