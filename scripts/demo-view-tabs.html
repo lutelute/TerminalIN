@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>TiN — view mode tab switch demo</title>
+<style>
+  /* workspace.html の配色を再現した UI デモ。個人情報は一切含めない(全てダミー)。 */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 960px; height: 600px; overflow: hidden;
+    font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', 'Hiragino Sans', sans-serif;
+    background: #c9cdd6;
+  }
+  #app {
+    width: 960px; height: 600px;
+    display: flex; flex-direction: column;
+    background: #f3f4f7;
+    border-radius: 10px; overflow: hidden;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+    position: relative;
+  }
+
+  /* ── タイトルバー(白・36px、workspace.html 準拠) ── */
+  #titlebar {
+    height: 36px; flex-shrink: 0;
+    display: flex; align-items: flex-end; gap: 4px;
+    padding: 0 10px;
+    background: #ffffff;
+    border-bottom: 1px solid rgba(0,0,0,0.1);
+  }
+  .menu-btn {
+    width: 26px; height: 26px; border-radius: 6px; margin-bottom: 4px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; color: rgba(40,40,80,0.4); flex-shrink: 0;
+  }
+  #title {
+    font-size: 14px; font-weight: 700; color: rgba(30,30,60,0.85);
+    letter-spacing: -0.2px; padding: 2px 6px; margin-bottom: 4px;
+    flex-shrink: 0;
+  }
+  #tabs {
+    display: flex; align-items: flex-end; gap: 2px;
+    height: 100%; flex: 1; min-width: 0; padding: 0 6px;
+  }
+  /* タブ(角丸上、workspace.html .groupy-tab 準拠) */
+  .tab {
+    display: flex; align-items: center; gap: 5px;
+    height: 24px; padding: 0 8px 0 7px;
+    border-radius: 5px 5px 0 0;
+    font-size: 11px; font-weight: 500;
+    color: rgba(40,40,80,0.55);
+    background: rgba(0,0,0,0.04);
+    border: 1px solid rgba(0,0,0,0.07); border-bottom: none;
+    white-space: nowrap; flex-shrink: 0; max-width: 160px;
+    transition: background 0.12s, color 0.12s;
+  }
+  .tab.active {
+    background: rgba(255,255,255,0.96);
+    color: rgba(20,20,60,0.92);
+    border-color: rgba(0,0,0,0.12);
+    font-weight: 600;
+  }
+  .tab .ic {
+    width: 13px; height: 13px; border-radius: 3px;
+    font-size: 8px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; opacity: 0.85;
+  }
+  .ic.term   { background: rgba(40,180,100,0.2);  color: #28b464; }
+  .ic.finder { background: rgba(30,120,255,0.15); color: #1e78ff; }
+  .ic.app    { background: rgba(120,80,200,0.15); color: #7850c8; }
+  .viewmode {
+    width: 28px; height: 24px; margin-bottom: 4px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; color: rgba(60,120,230,0.85);
+    background: rgba(60,120,230,0.10); border-radius: 6px;
+  }
+  .vm-label {
+    font-size: 10px; font-weight: 600; color: rgba(60,120,230,0.85);
+    margin-bottom: 8px; margin-left: 2px; flex-shrink: 0;
+  }
+
+  /* ── コンテンツ(view mode = フルスクリーン1枚) ── */
+  #stage { flex: 1; position: relative; overflow: hidden; background: #e9eaee; }
+  .panel {
+    position: absolute; inset: 8px;
+    border-radius: 8px; overflow: hidden;
+    opacity: 0; transform: scale(0.985);
+    transition: opacity 0.28s ease, transform 0.28s ease;
+    box-shadow: 0 2px 14px rgba(0,0,0,0.12);
+  }
+  .panel.show { opacity: 1; transform: scale(1); }
+
+  /* 端末パネル(ダミー) */
+  .term-win { background: #1d1f23; color: #d6d9df; display: flex; flex-direction: column; height: 100%; }
+  .winbar { height: 26px; display: flex; align-items: center; gap: 7px; padding: 0 10px; background: #2a2d33; flex-shrink: 0; }
+  .winbar .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .winbar .r { background: #ff5f57; } .winbar .y { background: #febc2e; } .winbar .g { background: #28c840; }
+  .winbar .wt { font-size: 11px; color: rgba(255,255,255,0.5); margin-left: 6px; }
+  .term-body { flex: 1; padding: 12px 14px; font-family: 'SF Mono','Menlo',monospace; font-size: 12.5px; line-height: 1.7; }
+  .term-body .pr { color: #5ec26a; } .term-body .pa { color: #5aa6ff; } .term-body .dim { color: #8b9099; } .term-body .ok { color: #b6e3b6; }
+
+  /* Finder パネル(ダミー) */
+  .finder-win { background: #fbfbfd; height: 100%; display: flex; flex-direction: column; }
+  .finder-top { height: 30px; background: #f0f0f3; border-bottom: 1px solid rgba(0,0,0,0.08); display: flex; align-items: center; padding: 0 12px; gap: 8px; font-size: 12px; color: #555; flex-shrink: 0; }
+  .finder-grid { flex: 1; padding: 16px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px 8px; align-content: start; }
+  .fitem { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+  .fitem .fic { width: 46px; height: 38px; border-radius: 6px; background: linear-gradient(160deg,#7fc4ff,#4a90e2); box-shadow: inset 0 1px 0 rgba(255,255,255,0.4); }
+  .fitem .fic.doc { background: linear-gradient(160deg,#fff,#e6e8ee); border: 1px solid #d0d3da; }
+  .fitem span { font-size: 11px; color: #444; }
+
+  /* Editor パネル(ダミー) */
+  .edit-win { background: #1e2128; height: 100%; display: flex; flex-direction: column; }
+  .edit-tabbar { height: 28px; background: #16181d; display: flex; align-items: center; padding: 0 12px; flex-shrink: 0; }
+  .edit-tabbar .et { font-size: 11px; color: #c9a26a; background: #1e2128; padding: 4px 12px; border-radius: 4px 4px 0 0; }
+  .edit-body { flex: 1; padding: 12px 0; font-family: 'SF Mono','Menlo',monospace; font-size: 12.5px; line-height: 1.65; color: #c7ccd6; }
+  .edit-body .ln { display: flex; }
+  .edit-body .no { width: 38px; text-align: right; padding-right: 14px; color: #4b5160; flex-shrink: 0; }
+  .kw { color: #c678dd; } .fn { color: #61afef; } .st { color: #98c379; } .cm { color: #6b7280; } .nm { color: #d19a66; }
+
+  /* マウスカーソル + クリックリップル */
+  #cursor {
+    position: absolute; width: 20px; height: 20px; z-index: 50;
+    left: 0; top: 0; pointer-events: none;
+    transition: left 0.5s cubic-bezier(0.45,0.05,0.2,1), top 0.5s cubic-bezier(0.45,0.05,0.2,1);
+    filter: drop-shadow(0 1px 1px rgba(0,0,0,0.4));
+  }
+  #ripple {
+    position: absolute; z-index: 40; width: 14px; height: 14px;
+    border-radius: 50%; border: 2px solid rgba(60,120,230,0.8);
+    transform: translate(-50%,-50%) scale(0.2); opacity: 0;
+    pointer-events: none;
+  }
+  #ripple.go { animation: rip 0.45s ease-out; }
+  @keyframes rip { 0% { opacity: 0.9; transform: translate(-50%,-50%) scale(0.3);} 100% { opacity: 0; transform: translate(-50%,-50%) scale(2.6);} }
+
+  /* caption */
+  #cap {
+    position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+    background: rgba(20,22,28,0.82); color: #fff; font-size: 12px; font-weight: 600;
+    padding: 6px 14px; border-radius: 14px; z-index: 60; white-space: nowrap;
+    opacity: 0; transition: opacity 0.25s; letter-spacing: 0.2px;
+  }
+  #cap.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="titlebar">
+    <div class="menu-btn">☰</div>
+    <div id="title">Workspace 1</div>
+    <div id="tabs">
+      <div class="tab active" data-i="0"><span class="ic term">T</span><span>zsh</span></div>
+      <div class="tab"        data-i="1"><span class="ic finder">F</span><span>Files</span></div>
+      <div class="tab"        data-i="2"><span class="ic app">E</span><span>Editor</span></div>
+    </div>
+    <div class="viewmode">⊟</div>
+    <div class="vm-label">View</div>
+  </div>
+
+  <div id="stage">
+    <!-- 0: 端末 -->
+    <div class="panel show" data-i="0">
+      <div class="term-win">
+        <div class="winbar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="wt">zsh — project</span></div>
+        <div class="term-body">
+          <div><span class="pr">dev@mac</span> <span class="pa">~/project</span> % npm run build</div>
+          <div class="dim">&gt; vite build</div>
+          <div class="ok">✓ 42 modules transformed.</div>
+          <div class="dim">dist/index.html&nbsp;&nbsp;0.6 kB</div>
+          <div class="dim">dist/assets/app.js&nbsp;&nbsp;128 kB</div>
+          <div class="ok">✓ built in 1.24s</div>
+          <div><span class="pr">dev@mac</span> <span class="pa">~/project</span> % _</div>
+        </div>
+      </div>
+    </div>
+    <!-- 1: Finder -->
+    <div class="panel" data-i="1">
+      <div class="finder-win">
+        <div class="finder-top">◀ ▶&nbsp;&nbsp;&nbsp;Files</div>
+        <div class="finder-grid">
+          <div class="fitem"><div class="fic"></div><span>Documents</span></div>
+          <div class="fitem"><div class="fic"></div><span>Projects</span></div>
+          <div class="fitem"><div class="fic"></div><span>Downloads</span></div>
+          <div class="fitem"><div class="fic"></div><span>Pictures</span></div>
+          <div class="fitem"><div class="fic doc"></div><span>notes.md</span></div>
+          <div class="fitem"><div class="fic doc"></div><span>readme.txt</span></div>
+          <div class="fitem"><div class="fic doc"></div><span>data.csv</span></div>
+          <div class="fitem"><div class="fic doc"></div><span>plan.pdf</span></div>
+        </div>
+      </div>
+    </div>
+    <!-- 2: Editor -->
+    <div class="panel" data-i="2">
+      <div class="edit-win">
+        <div class="edit-tabbar"><span class="et">app.js</span></div>
+        <div class="edit-body">
+          <div class="ln"><span class="no">1</span><span><span class="cm">// TiN demo</span></span></div>
+          <div class="ln"><span class="no">2</span><span><span class="kw">function</span> <span class="fn">greet</span>(name) {</span></div>
+          <div class="ln"><span class="no">3</span><span>&nbsp;&nbsp;<span class="kw">return</span> <span class="st">`Hello, ${name}!`</span>;</span></div>
+          <div class="ln"><span class="no">4</span><span>}</span></div>
+          <div class="ln"><span class="no">5</span><span></span></div>
+          <div class="ln"><span class="no">6</span><span><span class="fn">console</span>.log(<span class="fn">greet</span>(<span class="st">"world"</span>));</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="ripple"></div>
+    <div id="cap">View モード — タブで全画面を切り替え</div>
+  </div>
+
+  <!-- マウスカーソル(SVG) -->
+  <svg id="cursor" viewBox="0 0 24 24"><path d="M5 3 L5 19 L9.5 14.5 L12.5 21 L15 20 L12 13.5 L18 13.5 Z" fill="#fff" stroke="#222" stroke-width="1.2" stroke-linejoin="round"/></svg>
+</div>
+
+<script>
+  const tabs = [...document.querySelectorAll('.tab')];
+  const panels = [...document.querySelectorAll('.panel')];
+  const cursor = document.getElementById('cursor');
+  const ripple = document.getElementById('ripple');
+  const cap = document.getElementById('cap');
+  const app = document.getElementById('app');
+
+  // カーソルを要素中心へ移動(app 座標系)
+  function moveCursorTo(el) {
+    const a = app.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    const x = r.left - a.left + r.width / 2;
+    const y = r.top - a.top + r.height / 2;
+    cursor.style.left = (x - 4) + 'px';
+    cursor.style.top  = (y - 2) + 'px';
+    return { x, y };
+  }
+  function clickRipple(x, y) {
+    ripple.style.left = x + 'px';
+    ripple.style.top = y + 'px';
+    ripple.classList.remove('go'); void ripple.offsetWidth; ripple.classList.add('go');
+  }
+  // Playwright から呼ぶ: タブ i にカーソル移動→クリック→パネル切替
+  window.hoverTab = function (i) {
+    return moveCursorTo(tabs[i]);
+  };
+  window.clickTab = function (i) {
+    const { x, y } = moveCursorTo(tabs[i]);
+    clickRipple(x, y);
+    tabs.forEach((t, k) => t.classList.toggle('active', k === i));
+    panels.forEach((p, k) => p.classList.toggle('show', k === i));
+  };
+  window.showCap = function (on) { cap.classList.toggle('show', !!on); };
+  // 初期カーソル位置(右上 view ボタン付近)
+  moveCursorTo(document.querySelector('.viewmode'));
+</script>
+</body>
+</html>
