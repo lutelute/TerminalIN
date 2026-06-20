@@ -332,15 +332,6 @@
     border-bottom: 1px solid rgba(0,0,0,0.1);
   }
 
-  /* Windows: titleBarOverlay が OS 標準の min/max/close を右上にネイティブ描画する。
-     mac の traffic light 用 72px 左ガターは不要なので左は詰める。
-     右側はネイティブボタンの下に #titlebar-controls が潜らないよう、ボタン幅ぶん空ける。
-     env(titlebar-area-*) があればそれを使い(DPI 追従)、無ければ 140px にフォールバック。 */
-  body.is-win #titlebar {
-    padding-left: 8px;
-    padding-right: calc(100% - env(titlebar-area-width, calc(100% - 140px)) - env(titlebar-area-x, 0px));
-  }
-
   /* タブアイテム */
   .groupy-tab {
     display: flex; align-items: center; gap: 5px;
@@ -469,6 +460,43 @@
     line-height: 1;
   }
   #titlebar-controls .grid-size-cycle { min-width: 38px; }
+
+  /* Windows: transparent ウィンドウで app-region drag が効かないため無効化し、
+     pointer イベントによる手動ドラッグ(setupWinDrag)に切り替える。 */
+  body.is-win #titlebar { -webkit-app-region: no-drag; }
+  /* Windows: macOS の traffic light 用 72px 左ガターは不要。左端から詰めて
+     右側のカスタム min/max/close (#win-controls) と合わせ native な配置にする。 */
+  body.is-win #titlebar { padding-left: 8px; }
+
+  /* Windows: 手動リサイズハンドル (frameless+transparent はリサイズ境界が無い) */
+  .win-resize { display: none; }
+  body.is-win .win-resize { display: block; position: fixed; z-index: 9999; -webkit-app-region: no-drag; }
+  body.is-win .wr-n  { top: 0; left: 0; right: 0; height: 5px; cursor: ns-resize; }
+  body.is-win .wr-s  { bottom: 0; left: 0; right: 0; height: 5px; cursor: ns-resize; }
+  body.is-win .wr-e  { top: 0; bottom: 0; right: 0; width: 5px; cursor: ew-resize; }
+  body.is-win .wr-w  { top: 0; bottom: 0; left: 0; width: 5px; cursor: ew-resize; }
+  body.is-win .wr-ne { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+  body.is-win .wr-nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+  body.is-win .wr-se { bottom: 0; right: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+  body.is-win .wr-sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+  body.is-win.is-maximized .win-resize { display: none; }
+
+  /* Windows 用ウィンドウコントロール (最小化/最大化/閉じる)。
+     macOS は traffic light を使うため既定で非表示。body.is-win で表示。 */
+  #win-controls { display: none; }
+  body.is-win #win-controls {
+    display: flex; align-items: center; flex-shrink: 0;
+    -webkit-app-region: no-drag; margin-left: 4px;
+  }
+  #win-controls .wc {
+    width: 38px; height: 30px; display: flex; align-items: center; justify-content: center;
+    font-family: 'Segoe Fluent Icons', 'Segoe MDL2 Assets', sans-serif;
+    font-size: 10px; color: rgba(40,40,80,0.65); cursor: default; border: none; background: transparent;
+    transition: background 0.12s, color 0.12s;
+  }
+  #win-controls .wc:hover { background: rgba(0,0,0,0.07); color: rgba(20,20,40,0.95); }
+  #win-controls .wc.wc-close:hover { background: #e81123; color: #fff; }
+  body.collapsed #win-controls { display: none; }
 
   body.collapsed #content, body.collapsed #status { display: none; }
   body.collapsed #sidebar { width: 40px; min-width: 40px; }
@@ -1118,7 +1146,7 @@
 
   /* ── Compact mode ── */
   body.compact #titlebar { height: 32px; padding-left: 64px; }
-  body.is-win.compact #titlebar { padding-left: 8px; }  /* Windows は左ガター不要(右余白は body.is-win 側で確保) */
+  body.is-win.compact #titlebar { padding-left: 8px; }  /* Windows は traffic light ガター不要 */
   body.compact #title { font-size: 12px; }
   body.compact #content { padding: 5px; gap: 3px; }
   body.compact .section-title { display: none; }
@@ -1233,6 +1261,12 @@
     <div id="titlebar-controls"></div>
     <div id="view-mode-btn" class="drawer-btn" title="View — グリッド分割 / フルスクリーンタブ を切り替え" onclick="toggleViewMode()">⊞</div>
     <div id="collapse-btn" title="Collapse sidebar (Cmd+B)" style="display:none">‹</div>
+    <!-- Windows 用ウィンドウコントロール (body.is-win のときのみ表示) -->
+    <div id="win-controls">
+      <button class="wc wc-min" title="最小化" onclick="winCtl('minimize')">&#xE921;</button>
+      <button class="wc wc-max" title="最大化/元に戻す" onclick="winCtl('maximize')">&#xE922;</button>
+      <button class="wc wc-close" title="閉じる" onclick="winCtl('close')">&#xE8BB;</button>
+    </div>
   </div>
   <div id="content"></div>
   <div id="console-fixed"></div>
@@ -1248,23 +1282,116 @@
     <button class="primary" onclick="gpExitEditMode()">Done</button>
   </div>
 </div>
+<!-- Windows 用リサイズハンドル (body.is-win のみ表示) -->
+<div class="win-resize wr-n"  data-edge="n"></div>
+<div class="win-resize wr-s"  data-edge="s"></div>
+<div class="win-resize wr-e"  data-edge="e"></div>
+<div class="win-resize wr-w"  data-edge="w"></div>
+<div class="win-resize wr-ne" data-edge="ne"></div>
+<div class="win-resize wr-nw" data-edge="nw"></div>
+<div class="win-resize wr-se" data-edge="se"></div>
+<div class="win-resize wr-sw" data-edge="sw"></div>
 
 <script>
 const { ipcRenderer } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 
-// Windows: titleBarOverlay 方式に合わせた titlebar レイアウト調整を有効化する。
-// (mac traffic light 用の左ガター除去 + ネイティブ caption ボタン分の右余白)
-if (typeof process !== 'undefined' && process.platform === 'win32') {
-  document.body.classList.add('is-win');
-}
-
 const content = document.getElementById('content');
 const drawerContent = document.getElementById('drawer-content');
 const statusEl = document.getElementById('status');
 const titleEl = document.getElementById('title');
 const titleInput = document.getElementById('title-input');
+
+// ── Windows: カスタムウィンドウコントロール (hidden titlebar のためネイティブ無し) ──
+const IS_WIN = (typeof process !== 'undefined' && process.platform === 'win32');
+if (IS_WIN) document.body.classList.add('is-win');
+function winCtl(action) {
+  ipcRenderer.invoke('window-control', { action }).catch(() => {});
+}
+if (IS_WIN) {
+  ipcRenderer.on('win-maximized', (_e, maximized) => {
+    document.body.classList.toggle('is-maximized', !!maximized);
+  });
+}
+
+// ── Windows: 手動ウィンドウドラッグ ──
+// transparent:true のウィンドウでは -webkit-app-region: drag が効かないため、
+// タイトルバーの pointer イベントでカーソル位置を main に送り setPosition で動かす。
+if (IS_WIN) {
+  window.addEventListener('DOMContentLoaded', setupWinDrag);
+  if (document.readyState !== 'loading') setupWinDrag();
+}
+function setupWinDrag() {
+  const tb = document.getElementById('titlebar');
+  if (!tb || tb._dragWired) return;
+  tb._dragWired = true;
+  // ドラッグ開始候補から除外する操作要素 (ボタン/入力/タブ/タイトル等)。
+  const isInteractive = (el) => !!(el && el.closest(
+    'button, input, select, textarea, a, [onclick], .drawer-btn, #win-controls, ' +
+    '#titlebar-controls, .grid-opt, #title, #title-input, ' +
+    '.groupy-tab, .groupy-tab-add, [contenteditable]'
+  ));
+  // クリックとドラッグを移動量で区別する: pointerdown では即開始せず、
+  // しきい値(3px)を超えて初めてドラッグ開始。これによりタブ等のクリックを
+  // 飲み込まない (preventDefault しない) + 空き領域のドラッグだけ窓移動になる。
+  let pending = null;   // { id, startX, startY }
+  let dragging = false;
+  tb.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || isInteractive(e.target)) return;
+    pending = { id: e.pointerId, startX: e.screenX, startY: e.screenY };
+  });
+  tb.addEventListener('pointermove', (e) => {
+    if (pending && !dragging) {
+      if (Math.abs(e.screenX - pending.startX) > 3 || Math.abs(e.screenY - pending.startY) > 3) {
+        dragging = true;
+        try { tb.setPointerCapture(pending.id); } catch {}
+        ipcRenderer.send('win-move-start', { x: pending.startX, y: pending.startY });
+      }
+    }
+    if (dragging) ipcRenderer.send('win-move', { x: e.screenX, y: e.screenY });
+  });
+  const end = (e) => {
+    if (dragging) {
+      dragging = false;
+      try { tb.releasePointerCapture(e.pointerId); } catch {}
+      ipcRenderer.send('win-move-end');
+    }
+    pending = null;
+  };
+  tb.addEventListener('pointerup', end);
+  tb.addEventListener('pointercancel', end);
+  // ダブルクリックで最大化/復元 (Windows のタイトルバー慣習)
+  tb.addEventListener('dblclick', (e) => {
+    if (isInteractive(e.target)) return;
+    winCtl('maximize');
+  });
+  setupWinResize();
+}
+// Windows 手動リサイズ: 縁ハンドルの pointer ドラッグで window をリサイズ
+function setupWinResize() {
+  let resizing = null;
+  for (const h of document.querySelectorAll('.win-resize')) {
+    h.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      resizing = h.dataset.edge;
+      try { h.setPointerCapture(e.pointerId); } catch {}
+      ipcRenderer.send('win-resize-start', { edge: resizing, x: e.screenX, y: e.screenY });
+      e.preventDefault(); e.stopPropagation();
+    });
+    h.addEventListener('pointermove', (e) => {
+      if (resizing) ipcRenderer.send('win-resize', { x: e.screenX, y: e.screenY });
+    });
+    const end = (e) => {
+      if (!resizing) return;
+      resizing = null;
+      try { h.releasePointerCapture(e.pointerId); } catch {}
+      ipcRenderer.send('win-resize-end');
+    };
+    h.addEventListener('pointerup', end);
+    h.addEventListener('pointercancel', end);
+  }
+}
 
 // ── ドロワー表示/非表示 ──
 function toggleDrawer(forceState) {
@@ -2138,15 +2265,20 @@ function openGridSizePopup(anchorEl) {
 let sidebarCollapsed = true; // Sidebar terminals collapsed by default
 
 // アプリ種別判定 (Finder / Terminal / TiN)
-const FINDER_APPS = new Set(['Finder', 'ファインダー']);
+// ※ main.js の TERMINAL_APPS と同期を保つこと。Windows はプロセス名(拡張子なし)。
+const FINDER_APPS = new Set(['Finder', 'ファインダー', 'explorer']);  // Windows: explorer = ファイル管理
 function isFinderApp(appName) {
   return !!appName && FINDER_APPS.has(appName);
 }
-const TERMINAL_APPS = new Set(['Terminal', 'iTerm2', 'iTerm', 'Alacritty', 'Hyper', 'WezTerm', 'Kitty', 'ターミナル', 'Warp']);
+const TERMINAL_APPS = new Set([
+  'Terminal', 'iTerm2', 'iTerm', 'Alacritty', 'Hyper', 'WezTerm', 'Kitty', 'ターミナル', 'Warp',
+  'WindowsTerminal', 'cmd', 'powershell', 'pwsh', 'conhost', 'OpenConsole', 'mintty', 'wt',
+]);
 function isTerminalApp(appName) {
   return !!appName && TERMINAL_APPS.has(appName);
 }
 function isTiNApp(appName) {
+  // Windows ソース起動だと 'electron' になるが win-helper が 'TiN' に統一済み
   return appName === 'TiN';
 }
 
@@ -3755,7 +3887,7 @@ ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snapped
 
   if (snappedChanged || windows.length !== prevLen) {
     // スナップ増減・ウィンドウ数変化: グリッドと Available を両方更新
-    gpRender(gridCols, gridRows);
+    // (旧 gpRender(#gp-grid) は SIZE/LAYOUT タブ統合 cda59ba で廃止。呼び出し残骸を除去)
     _lastRenderKey = ''; // 強制再描画
     scheduleRender();
   } else {

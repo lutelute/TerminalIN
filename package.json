@@ -1,21 +1,21 @@
 {
   "name": "tin",
-  "version": "1.7.2",
+  "version": "1.8.0",
   "description": "Terminal workspace manager for macOS & Windows",
   "main": "main.js",
   "scripts": {
-    "install": "node scripts/rebuild-native.js",
     "start": "electron .",
     "predev": "node scripts/predev.js",
     "dev": "electron . --dev",
     "build": "electron-builder --mac",
-    "predist": "node scripts/rebuild-native.js",
-    "prebuild": "node scripts/rebuild-native.js",
+    "predist": "node scripts/build-native.js",
+    "prebuild": "node scripts/build-native.js",
     "dist": "electron-builder --mac --publish never",
-    "dist:win": "node scripts/rebuild-native.js && electron-builder --win --publish never"
+    "dist:win": "electron-builder --win --publish never"
   },
   "keywords": [
     "macos",
+    "windows",
     "window-manager",
     "terminal",
     "electron",
@@ -75,27 +75,32 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "TiN",
       "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
     },
     "files": [
       "main.js",
       "auto-snap.js",
+      "win-helper.js",
       "workspace.html",
       "grid-terminal.html",
       "grid-overlay.html",
       "package.json",
-      "lib/**",
-      "build/Release/*.node",
+      "build/Release/ax_helper.node",
       "node_modules/@xterm/**",
       "node_modules/node-pty/**",
+      "node_modules/koffi/**",
       "!atelierx-plugin/**",
       "!docs/**",
       "!logs/**",
       "!scripts/**"
     ],
     "asarUnpack": [
-      "build/Release/*.node",
-      "node_modules/node-pty/**"
+      "build/Release/ax_helper.node",
+      "node_modules/node-pty/**",
+      "node_modules/koffi/**"
     ]
   },
   "devDependencies": {
@@ -106,6 +111,7 @@
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "koffi": "2.12.0",
     "node-addon-api": "^8.7.0",
     "node-pty": "^1.1.0"
   }

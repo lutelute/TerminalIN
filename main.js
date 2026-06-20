@@ -7,7 +7,6 @@ const { spawn, exec, execFile, execSync } = require('child_process');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
-const platform = require('./lib/platform');
 const autoSnap = require('./auto-snap');
 
 // ── File logging (クラッシュ事後解析用) ──
@@ -42,20 +41,63 @@ console.log(`[tin] ===== starting (pid ${process.pid}) =====`);
 // N-API native addon: AXUIElement 操作を Electron main process 内で直接実行。
 // TiN.app の TCC 権限をそのまま使用。
 let axHelper = null;
-try {
-  axHelper = require('./build/Release/ax_helper.node');
-  console.log('[tin] ax_helper loaded — native AX mode');
-} catch (e) {
-  console.warn('[tin] ax_helper not available, falling back to osascript:', e.message);
+if (process.platform === 'win32') {
+  // Windows: koffi (FFI) 経由で Win32 API を呼ぶバックエンド。ax_helper と同じ API 形状。
+  try {
+    axHelper = require('./win-helper');
+    console.log('[tin] win-helper loaded — native Win32 mode');
+  } catch (e) {
+    console.warn('[tin] win-helper not available:', e.message);
+  }
+} else {
+  // macOS: AXUIElement N-API addon
+  try {
+    axHelper = require('./build/Release/ax_helper.node');
+    console.log('[tin] ax_helper loaded — native AX mode');
+  } catch (e) {
+    console.warn('[tin] ax_helper not available, falling back to osascript:', e.message);
+  }
 }
 
-// Windows: Win32 SetWindowPos は物理ピクセル、main.js の矩形は screen API の DIP。
-// win-helper に primary display の scaleFactor を注入して DIP→物理px 変換させる。
-// 拡大表示(125/150%)で snap 窓の位置/サイズがずれる問題の対策。
-// macOS の ax_helper は setDpiScale を持たない(AX は論理座標)ので guard で no-op。
-function syncDpiScale() {
-  if (!axHelper || typeof axHelper.setDpiScale !== 'function') return;
-  try { axHelper.setDpiScale(screen.getPrimaryDisplay().scaleFactor || 1); } catch {}
+// ── PTY シェル設定 (クロスプラットフォーム) ──
+// Windows では SHELL/$HOME が無いため PowerShell / USERPROFILE を既定にする。
+const IS_WIN = process.platform === 'win32';
+function getPtyShell() {
+  if (IS_WIN) {
+    // pwsh (PowerShell 7) があれば優先、無ければ Windows PowerShell、最後に cmd
+    return process.env.COMSPEC && /powershell|pwsh/i.test(process.env.SHELL || '')
+      ? process.env.SHELL
+      : (findPwsh() || 'powershell.exe');
+  }
+  return process.env.SHELL || '/bin/zsh';
+}
+let _pwshPath = undefined;
+function findPwsh() {
+  if (_pwshPath !== undefined) return _pwshPath;
+  _pwshPath = null;
+  // PATH 上の pwsh.exe を探す (無ければ powershell.exe にフォールバック)
+  try {
+    const dirs = (process.env.PATH || '').split(path.delimiter);
+    for (const d of dirs) {
+      try {
+        const cand = path.join(d, 'pwsh.exe');
+        if (fs.existsSync(cand)) { _pwshPath = cand; break; }
+      } catch {}
+    }
+  } catch {}
+  return _pwshPath;
+}
+function getHomeDir() {
+  return IS_WIN ? (process.env.USERPROFILE || process.env.HOMEPATH || 'C:\\') : (process.env.HOME || '/');
+}
+function ptySpawn(opts = {}) {
+  const env = { ...process.env, TERM: 'xterm-256color' };
+  return pty.spawn(getPtyShell(), [], {
+    name: 'xterm-256color',
+    cols: opts.cols || 80, rows: opts.rows || 24,
+    cwd: opts.cwd || getHomeDir(),
+    env,
+  });
 }
 
 // ── yabai 統合: Space 移動 ──
@@ -64,7 +106,8 @@ function syncDpiScale() {
 let _yabaiPath = null;
 function getYabaiPath() {
   if (_yabaiPath !== null) return _yabaiPath;
-  if (platform.isWin) return (_yabaiPath = '');  // yabai は macOS 専用ツール
+  // yabai は macOS 専用。Windows/Linux では探索しない。
+  if (process.platform !== 'darwin') { _yabaiPath = ''; return _yabaiPath; }
   try {
     _yabaiPath = execSync('which yabai', { timeout: 2000 }).toString().trim();
   } catch { _yabaiPath = ''; }
@@ -113,6 +156,61 @@ ipcMain.handle('get-yabai-sa-status', async () => {
 ipcMain.handle('show-message', (_event, { message }) => {
   dialog.showMessageBox({ type: 'info', message, buttons: ['OK'] });
 });
+
+// Windows: hidden titlebar のためネイティブの最小化/最大化/閉じるが無い。
+// レンダラーのカスタムボタンから呼ばれる。
+ipcMain.handle('window-control', (event, { action }) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return;
+  switch (action) {
+    case 'minimize': win.minimize(); break;
+    case 'maximize': win.isMaximized() ? win.unmaximize() : win.maximize(); break;
+    case 'close': win.close(); break;
+  }
+});
+
+// Windows: 手動ウィンドウドラッグ。transparent ウィンドウで app-region drag が
+// 効かないため、レンダラーから送られるカーソル screen 座標(DIP)で setPosition する。
+// setPosition は 'move' を発火するので snapped 追従もそのまま動く。
+let _winDrag = null;
+ipcMain.on('win-move-start', (event, { x, y }) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isMaximized()) return;
+  const [wx, wy] = win.getPosition();
+  _winDrag = { win, offX: x - wx, offY: y - wy };
+});
+ipcMain.on('win-move', (event, { x, y }) => {
+  if (!_winDrag) return;
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win !== _winDrag.win) return;
+  try { win.setPosition(Math.round(x - _winDrag.offX), Math.round(y - _winDrag.offY)); } catch {}
+});
+ipcMain.on('win-move-end', () => { _winDrag = null; });
+
+// Windows: 手動リサイズ (frameless+transparent はリサイズ境界が無いため)。
+// レンダラーの縁ハンドルから edge とカーソル screen 座標(DIP)を受け取り setBounds。
+let _winResize = null;
+ipcMain.on('win-resize-start', (event, { edge, x, y }) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win.isMaximized()) return;
+  _winResize = { win, edge, b: win.getBounds(), sx: x, sy: y };
+});
+ipcMain.on('win-resize', (event, { x, y }) => {
+  if (!_winResize) return;
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || win !== _winResize.win) return;
+  const { edge, b, sx, sy } = _winResize;
+  const dx = x - sx, dy = y - sy;
+  const minW = win.getMinimumSize()[0] || 200;
+  const minH = win.getMinimumSize()[1] || 200;
+  let { x: nx, y: ny, width: nw, height: nh } = b;
+  if (edge.includes('e')) nw = Math.max(minW, b.width + dx);
+  if (edge.includes('s')) nh = Math.max(minH, b.height + dy);
+  if (edge.includes('w')) { nw = Math.max(minW, b.width - dx); nx = b.x + (b.width - nw); }
+  if (edge.includes('n')) { nh = Math.max(minH, b.height - dy); ny = b.y + (b.height - nh); }
+  try { win.setBounds({ x: nx, y: ny, width: nw, height: nh }); } catch {}
+});
+ipcMain.on('win-resize-end', () => { _winResize = null; });
 
 // yabai で windowNumbers を next/prev Space に移動。
 // 成功した wn のリストを返す。
@@ -170,8 +268,6 @@ async function moveWindowsViaYabai(windowNumbers, direction, targetSpaceId) {
 // チェック中に osascript がブロックするため特に顕著)。execFile はコマンドを
 // そのまま渡せるのでシェル escape も不要。
 function runOsascript(script, timeoutMs = 2500) {
-  // osascript は macOS 専用。Windows では即座にエラー扱いで resolve(呼び出し側は { err, stdout } を期待)。
-  if (platform.isWin) return Promise.resolve({ err: new Error('osascript unavailable on Windows'), stdout: '' });
   return new Promise((resolve) => {
     execFile('osascript', ['-e', script], { timeout: timeoutMs, encoding: 'utf8' }, (err, stdout) => {
       resolve({ err, stdout });
@@ -183,8 +279,7 @@ const pkg = require('./package.json');
 // Always enable remote debugging for MCP integration.
 // 9222 が他 Electron アプリ (AtelierX 開発モード等) に占有されていたら 9223/9224 を試す。
 function pickDevToolsPort() {
-  // lsof は macOS / Linux 前提。Windows には無く execSync が毎回 ENOENT を投げる(catch で
-  // 握り潰されるが無駄な子プロセス生成失敗が起動時に走る)ため、非対応 OS は既定ポートを返す。
+  // lsof は macOS / Linux 前提。Windows には無く execSync が毎回 ENOENT を投げるため既定ポートを返す。
   if (process.platform === 'win32') return 9222;
   const { execSync } = require('child_process');
   for (const p of [9222, 9223, 9224]) {
@@ -196,15 +291,6 @@ app.commandLine.appendSwitch('remote-debugging-port', String(pickDevToolsPort())
 // 低消費電力モード / App Nap で daemon 通信や pollTimer が throttle されるのを防止
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
-
-// Windows: 一部 GPU/ドライバ(特に ARM64)で Chromium のハードウェアコンポジットが
-// 失敗し、ウィンドウが真っ黒で描画されない(背景色だけ出て中身が出ない)。
-// ターミナル主体の本アプリは GPU 描画の恩恵が小さいため、Windows は既定で
-// ハードウェアアクセラレーションを無効化する(= ソフトウェア合成)。
-// GPU が正常な環境では TIN_ENABLE_GPU=1 で従来挙動に戻せる。
-if (platform.isWin && process.env.TIN_ENABLE_GPU !== '1') {
-  app.disableHardwareAcceleration();
-}
 
 // ── Integration protocol (docs/PROTOCOL.md) ──
 // 外部ツール (AtelierX plugin 等) と連携するための状態ファイル書き出し。
@@ -233,16 +319,22 @@ const PRESETS_DIR = path.join(INTEGRATION_DIR, 'presets');
 const TIN_START_TIME = Date.now();
 // アプリ設定
 const SETTINGS_JSON = path.join(INTEGRATION_DIR, 'settings.json');
+// Windows では Command/Option アクセラレータが無効なため Control+Alt にマップする。
+const _MOD = IS_WIN ? 'Control+Alt' : 'Command+Option';
 const DEFAULT_HOTKEYS = {
-  snapFrontmost:   'CommandOrControl+Alt+S',
-  unsnapFrontmost: 'CommandOrControl+Alt+W',
-  snapAll:         'CommandOrControl+Alt+A',
-  focusTiN:        'CommandOrControl+Alt+T',
+  snapFrontmost:   `${_MOD}+S`,
+  unsnapFrontmost: `${_MOD}+W`,
+  snapAll:         `${_MOD}+A`,
+  focusTiN:        `${_MOD}+T`,
   slot1: '', slot2: '', slot3: '', slot4: '',
 };
 
 // ターミナル系アプリの判定 (workspace.html の TERMINAL_APPS と同期を保つこと)
-const TERMINAL_APPS = new Set(['Terminal', 'iTerm2', 'iTerm', 'Alacritty', 'Hyper', 'WezTerm', 'Kitty', 'ターミナル', 'Warp']);
+// Windows: プロセス名 (拡張子なし) — WindowsTerminal/cmd/powershell/pwsh/conhost 等
+const TERMINAL_APPS = new Set([
+  'Terminal', 'iTerm2', 'iTerm', 'Alacritty', 'Hyper', 'WezTerm', 'Kitty', 'ターミナル', 'Warp',
+  'WindowsTerminal', 'cmd', 'powershell', 'pwsh', 'conhost', 'OpenConsole', 'mintty',
+]);
 const DEFAULT_SETTINGS = {
   pollIntervalMs: 3000,
   dragEndMode: 'position',  // 'position' | 'full' | 'off'
@@ -1216,19 +1308,12 @@ function createGridTerminal(ws, slot) {
   gridWin.excludedFromShownWindowsMenu = true;
 
   const ptyId = nextPtyId++;
-  const p = pty.spawn(platform.defaultShell(), [], {
-    name: 'xterm-256color',
-    cols: 80, rows: 24,
-    cwd: platform.homeDir(),
-    env: { ...process.env, TERM: 'xterm-256color' },
-    ...platform.ptyOptions(),
-  });
+  const p = ptySpawn({ cols: 80, rows: 24 });
 
   const gw = { win: gridWin, pty: p, ptyId, slot, tailBuf: '', lastDataAt: 0, tty: '' };
   // 状態判定用: 出力ストリームの末尾を保持(claude の busy/perm パターン検出)。
-  // tty は claude の ps 集合・hooks 状態ファイルとの突合キー
-  if (!platform.isWin) {
-    // Windows に tty 概念なし → skip(状態突合は第2マイルストーンで hooks session_id 化)
+  // tty は claude の ps 集合・hooks 状態ファイルとの突合キー (macOS のみ)
+  if (!IS_WIN) {
     execAsync(`ps -o tty= -p ${p.pid}`, { timeout: 2000 })
       .then(({ stdout }) => { gw.tty = stdout.trim(); })
       .catch(() => {});
@@ -1284,13 +1369,7 @@ ipcMain.handle('create-terminal', (event, opts = {}) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return { id: -1 };
   const id = nextPtyId++;
-  const p = pty.spawn(platform.defaultShell(), [], {
-    name: 'xterm-256color',
-    cols: opts.cols || 80, rows: opts.rows || 24,
-    cwd: opts.cwd || platform.homeDir(),
-    env: { ...process.env, TERM: 'xterm-256color' },
-    ...platform.ptyOptions(),
-  });
+  const p = ptySpawn({ cols: opts.cols, rows: opts.rows, cwd: opts.cwd });
   ws.sidebarPtys.set(id, p);
   p.onData(data => { if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('terminal-data', { id, data }); });
   p.onExit(() => { ws.sidebarPtys.delete(id); if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('terminal-exit', { id }); });
@@ -1655,6 +1734,20 @@ ipcMain.handle('get-app-icon', async (_event, { appName }) => {
   if (_appIconPending.has(appName)) return _appIconPending.get(appName);
   // console.log(`[tin] get-app-icon: "${appName}"`); // debug
   const p = (async () => {
+    // Windows: 実行ファイルのアイコンを Electron 組み込みの getFileIcon で抽出。
+    if (IS_WIN) {
+      try {
+        const exe = axHelper && axHelper.getExePathForApp ? axHelper.getExePathForApp(appName) : '';
+        if (exe) {
+          const img = await app.getFileIcon(exe, { size: 'normal' });
+          const url = img && !img.isEmpty() ? img.toDataURL() : null;
+          _appIconCache.set(appName, url);
+          return url;
+        }
+      } catch (e) { console.warn('[tin] get-app-icon (win) failed:', e?.message || e); }
+      _appIconCache.set(appName, null);
+      return null;
+    }
     try {
       const safe = appName.replace(/['"\\;|&`$<>]/g, '');
       // 1. 固定パスを順に確認（高速、数µs）
@@ -2415,7 +2508,11 @@ function createWorkspace(name, savedState) {
     minHeight: 300,
     x: winX,
     y: winY,
-    ...platform.browserWindowChrome(),  // mac: hiddenInset+trafficLight+transparent / win: hidden+overlay+不透過
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 12, y: 12 },  // 36px バーの垂直センター (macOS)
+    autoHideMenuBar: IS_WIN,  // Windows: 冗長なメニューバーを隠す (Alt で表示・アクセラレータは維持)
+    transparent: true,        // グリッドパネル部分を透過させスナップウィンドウを表示
+    backgroundColor: '#00000000',
     hasShadow: true,
     alwaysOnTop: false,
     acceptFirstMouse: true,
@@ -2576,7 +2673,10 @@ function createWorkspace(name, savedState) {
       if (b) cmds.push({ windowNumber: info.windowNumber, pid: info.pid,
         app: info.app, title: info.title, windowIndex: info.windowIndex || 0, ...b });
     }
-    if (cmds.length) fireAndForgetMove(cmds, true);
+    // Windows: 位置だけでなくサイズも追従させる (TiN のリサイズ/最大化で
+    // スナップ窓が新しいスロットサイズに合うように)。mac は AX resize コストと
+    // Terminal.app の silent fail 回避のため positionOnly のまま。
+    if (cmds.length) fireAndForgetMove(cmds, !IS_WIN);
   }, 100);
   // ウィンドウ close 時にタイマーを停止
   win.once('closed', () => clearInterval(_groupyFollowTimer));
@@ -2596,6 +2696,12 @@ function createWorkspace(name, savedState) {
   win.on('move', onWinMove);
   win.on('resize', onWinMove);
   win.on('will-move', () => { _dragging = true; _lastDragEventAt = Date.now(); });
+  // Windows: 最大化状態をレンダラーに通知 (リサイズハンドルの表示制御)
+  if (IS_WIN) {
+    const sendMax = () => { if (!win.isDestroyed()) win.webContents.send('win-maximized', win.isMaximized()); };
+    win.on('maximize', sendMax);
+    win.on('unmaximize', sendMax);
+  }
   win.on('moved', () => {
     _dragging = false;
     // 設定に従って drag 終了時の挙動を切り替え
@@ -2898,6 +3004,13 @@ function createWorkspace(name, savedState) {
         ws._ctGuardTimer = setTimeout(_ctGuardLoop, 500);
         return;
       }
+      // Windows: alwaysOnTop を editMode/overlay 状態に常時同期する。
+      // ハンドラ側で解除イベントが取りこぼされても TOPMOST が固着しない安全弁
+      // (固着すると TiN が snapped 窓を覆い続けクリックスルーが壊れる)。
+      if (IS_WIN) {
+        const wantTop = !!(ws._editMode || ws._hasOverlay);
+        try { if (ws.win.isAlwaysOnTop() !== wantTop) ws.win.setAlwaysOnTop(wantTop); } catch {}
+      }
       // did-finish-load 前は OFF に固定 (getBounds が不確定なため誤判定を防ぐ)
       if (!_ctReady) {
         _setCT(false);
@@ -2927,7 +3040,15 @@ function createWorkspace(name, savedState) {
       // になる。よって左帯の OFF は不要で、むしろ左端のグリッド端末を操作不能にしていた
       // (= 左端だけ選択しづらいバグ)。ヘッダー保護とドロワー保護は下記で維持。
       const inHeader = cursor.y < b.y + TITLEBAR_H;
-      _setCT(!(inHeader || ws._hasOverlay || ws._editMode));
+      // Windows: 縁のリサイズハンドル領域(端 RESIZE_MARGIN px 以内)はクリックスルーを
+      // OFF にしてハンドルが pointer を受け取れるようにする。
+      let nearEdge = false;
+      if (IS_WIN) {
+        const RM = 7;
+        nearEdge = cursor.x < b.x + RM || cursor.x > b.x + b.width - RM ||
+                   cursor.y > b.y + b.height - RM; // 上端は header で既に OFF
+      }
+      _setCT(!(inHeader || nearEdge || ws._hasOverlay || ws._editMode));
       ws._ctGuardTimer = setTimeout(_ctGuardLoop, 50);
     } catch {
       ws._ctGuardTimer = setTimeout(_ctGuardLoop, 200);
@@ -2990,7 +3111,9 @@ app.on('browser-window-focus', (_event, focusedWin) => {
     // するため、grid 端末の操作中に呼ぶと端末がせり上がってきた TiN に覆われる
     // (= グリッド内端末の操作時に前面化するバグ)。サイドバー/ヘッダーの focus 時
     // だけ snapped を前面に集める。
-    if (!isGridWin) raiseAllWorkspaceWindows(ws);
+    // Windows: 編集モード中は TiN を最前面に保つため snapped の再前面化を抑制
+    // (mac は従来通り常に raise — 挙動を変えない)
+    if (!isGridWin && !(IS_WIN && ws._editMode)) raiseAllWorkspaceWindows(ws);
     scheduleSyncSnapped(200);
   }
 });
@@ -3014,10 +3137,33 @@ ipcMain.on('set-overlay-active', (event, active) => {
   if (active && ws.win && !ws.win.isDestroyed()) {
     ws.win.setIgnoreMouseEvents(false);
   }
+  // Windows: ポップアップ/ピッカー(TiN DOM)が手前の snapped 窓に覆われてクリック
+  // できないため、overlay 表示中は TiN を最前面に固定する。編集モード中は維持。
+  if (!IS_WIN || !ws.win || ws.win.isDestroyed()) return;
+  if (active) {
+    try { ws.win.setAlwaysOnTop(true); ws.win.moveTop(); } catch {}
+  } else if (!ws._editMode) {
+    try { ws.win.setAlwaysOnTop(false); } catch {}
+    raiseAllWorkspaceWindows(ws, true).catch(() => {});
+  }
 });
 ipcMain.on('set-edit-mode', (event, active) => {
   const ws = findWorkspace(event.sender);
-  if (ws) ws._editMode = !!active;
+  if (!ws) return;
+  ws._editMode = !!active;
+  // Windows: 通常 z-order は snapped 窓が TiN より前面のため、編集線(TiN DOM)が
+  // 窓に隠れて掴めない。編集中は TiN を最前面に上げる(透明なので窓は透けて見え、
+  // 編集線が手前に来て操作可能になる)。終了時に通常 z-order へ戻す。
+  if (!IS_WIN || !ws.win || ws.win.isDestroyed()) return;
+  if (active) {
+    // 編集中は TiN を最前面に固定 (snapped 窓が手前にあると編集線を掴めないため)。
+    // setAlwaysOnTop で確実に上に保つ。透明なので窓は透けて見える。
+    // focus() は呼ばない (browser-window-focus が snapped を再前面化するため)。
+    try { ws.win.setAlwaysOnTop(true); ws.win.moveTop(); } catch {}
+  } else {
+    try { ws.win.setAlwaysOnTop(false); } catch {}
+    raiseAllWorkspaceWindows(ws, true).catch(() => {});
+  }
 });
 
 // 統合ウィンドウ方式では raise-all-from-overlay / set-overlay-clickthrough は不要 (no-op)
@@ -3356,7 +3502,7 @@ function promptTextInput(title, label, defaultValue = '') {
   return new Promise((resolve) => {
     const w = new BrowserWindow({
       width: 400, height: 160, resizable: false,
-      ...(platform.isMac ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 12, y: 12 } } : {}),
+      titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 12, y: 12 },
       webPreferences: { nodeIntegration: true, contextIsolation: false },
     });
     const html = `<!DOCTYPE html><html><head><style>
@@ -3464,8 +3610,7 @@ ipcMain.handle('ai-colorize', async (event) => {
 // ~/.claude/settings.json に設置した hooks が /tmp/tin-claude-status/<tty>.json に
 // {"state":"busy|perm|input","ts":epoch} を書く。TiN は fs.watch で検知して即時更新。
 // ps/osascript ヒューリスティックより正確・低遅延（設置は Shell メニューから opt-in）。
-// macOS は従来通り /tmp(設置済み hooks パスとの後方互換)。Windows のみ %TEMP% を使う。
-const TIN_HOOK_DIR = platform.isWin ? path.join(platform.tmpDir(), 'tin-claude-status') : '/tmp/tin-claude-status';
+const TIN_HOOK_DIR = '/tmp/tin-claude-status';
 const hookStates = new Map();   // tty(例: ttys003) → { state, ts }
 let _hookNudgeTimer = null;
 function readHookStates() {
@@ -3589,8 +3734,9 @@ let _statusCacheAt = 0;
 let _statusFailStreak = 0;    // ps/osascript の連続失敗回数
 let _statusBackoffUntil = 0;  // この時刻まで状態ポーリングを休止
 async function getClaudeStatuses() {
-  // Windows は ps/osascript による状態スキャンが無い → 空を返す(色付けは hooks 経由・第2マイルストーンで session_id 化)
-  if (platform.isWin) return { tabs: [], ttys: new Set() };
+  // Windows: 外部 Terminal.app の tab 内容を読む手段が無いため ps/osascript 経路は無効。
+  // 外部ターミナルの claude 状態検出は未対応 (組み込み PTY は tailBuf で別途検出)。
+  if (IS_WIN) return (_statusCache = { tabs: [], ttys: new Set() });
   // 再入防止: 前回の osascript がまだ走っていたら直近結果を返す。poll(6秒) と
   // hooks nudge が重なっても osascript プロセスを積み上げない(PC 負荷の安全弁)
   if (_statusBusy) return _statusCache;
@@ -3846,7 +3992,16 @@ function startFrontmostPoll() {
 }
 
 app.whenReady().then(() => {
-  syncDpiScale();   // Windows: DIP→物理px 変換スケールを注入 (mac は no-op)
+  // Windows: Win32 は物理ピクセル、Electron screen API は DIP を返すため
+  // win-helper に DPI スケールを注入して SetWindowPos 時に変換する。
+  if (IS_WIN && axHelper && axHelper.setDpiScale) {
+    try {
+      axHelper.setDpiScale(screen.getPrimaryDisplay().scaleFactor || 1);
+      screen.on('display-metrics-changed', () => {
+        try { axHelper.setDpiScale(screen.getPrimaryDisplay().scaleFactor || 1); } catch {}
+      });
+    } catch {}
+  }
   writeInfoJson();
   // NOTE: ここで writeSnappedJson() を呼んではいけない。
   // workspace 未作成の時点で snapped.json が空配列で上書きされ、
@@ -3901,7 +4056,7 @@ app.whenReady().then(() => {
     }
     beginStabilize('display-removed');
   });
-  screen.on('display-metrics-changed', () => { syncDpiScale(); beginStabilize('display-metrics-changed'); });
+  screen.on('display-metrics-changed', () => beginStabilize('display-metrics-changed'));
 
   const template = [
     { label: app.name, submenu: [
@@ -4393,8 +4548,8 @@ function startRestServer() {
       const { spawn } = require('child_process');
       const cwd = body.cwd || null;
       const shellCmd = cwd ? `cd ${JSON.stringify(cwd)} && ${body.cmd}` : body.cmd;
-      // shell:true で OS 既定シェル経由(Unix: /bin/sh -c, Windows: cmd.exe /c)。
-      // '/bin/sh' 直指定は Windows に存在せず spawn が 'error' を投げ、リスナ未登録だとクラッシュする。
+      // shell:true で OS 既定シェル経由 (Unix: /bin/sh -c, Windows: cmd.exe /c)。
+      // '/bin/sh' 直指定は Windows に存在せず spawn が 'error' を投げ、リスナ未登録だとクラッシュする (#18)。
       const spawnOpts = { detached: true, stdio: 'ignore', shell: true };
       if (cwd) { try { require('fs').accessSync(cwd); spawnOpts.cwd = cwd; } catch {} }
       const child = spawn(shellCmd, spawnOpts);
