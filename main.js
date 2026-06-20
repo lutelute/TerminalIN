@@ -197,6 +197,15 @@ app.commandLine.appendSwitch('remote-debugging-port', String(pickDevToolsPort())
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 
+// Windows: 一部 GPU/ドライバ(特に ARM64)で Chromium のハードウェアコンポジットが
+// 失敗し、ウィンドウが真っ黒で描画されない(背景色だけ出て中身が出ない)。
+// ターミナル主体の本アプリは GPU 描画の恩恵が小さいため、Windows は既定で
+// ハードウェアアクセラレーションを無効化する(= ソフトウェア合成)。
+// GPU が正常な環境では TIN_ENABLE_GPU=1 で従来挙動に戻せる。
+if (platform.isWin && process.env.TIN_ENABLE_GPU !== '1') {
+  app.disableHardwareAcceleration();
+}
+
 // ── Integration protocol (docs/PROTOCOL.md) ──
 // 外部ツール (AtelierX plugin 等) と連携するための状態ファイル書き出し。
 // 依存関係: AtelierX 固有のコードは一切含めない — 汎用 URL scheme/ファイル IPC として公開する。
