@@ -332,6 +332,15 @@
     border-bottom: 1px solid rgba(0,0,0,0.1);
   }
 
+  /* Windows: titleBarOverlay が OS 標準の min/max/close を右上にネイティブ描画する。
+     mac の traffic light 用 72px 左ガターは不要なので左は詰める。
+     右側はネイティブボタンの下に #titlebar-controls が潜らないよう、ボタン幅ぶん空ける。
+     env(titlebar-area-*) があればそれを使い(DPI 追従)、無ければ 140px にフォールバック。 */
+  body.is-win #titlebar {
+    padding-left: 8px;
+    padding-right: calc(100% - env(titlebar-area-width, calc(100% - 140px)) - env(titlebar-area-x, 0px));
+  }
+
   /* タブアイテム */
   .groupy-tab {
     display: flex; align-items: center; gap: 5px;
@@ -1109,6 +1118,7 @@
 
   /* ── Compact mode ── */
   body.compact #titlebar { height: 32px; padding-left: 64px; }
+  body.is-win.compact #titlebar { padding-left: 8px; }  /* Windows は左ガター不要(右余白は body.is-win 側で確保) */
   body.compact #title { font-size: 12px; }
   body.compact #content { padding: 5px; gap: 3px; }
   body.compact .section-title { display: none; }
@@ -1243,6 +1253,12 @@
 const { ipcRenderer } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
+
+// Windows: titleBarOverlay 方式に合わせた titlebar レイアウト調整を有効化する。
+// (mac traffic light 用の左ガター除去 + ネイティブ caption ボタン分の右余白)
+if (typeof process !== 'undefined' && process.platform === 'win32') {
+  document.body.classList.add('is-win');
+}
 
 const content = document.getElementById('content');
 const drawerContent = document.getElementById('drawer-content');
