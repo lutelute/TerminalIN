@@ -88,34 +88,49 @@ function loadRecentHistory(maxEntries = 20) {
   } catch { return []; }
 }
 
-// ── Claude CLI 呼び出し ──
+// ── claude CLI の場所を OS 別に解決 ──
+// TIN_CLAUDE_PATH で明示上書き可。Windows は npm グローバル(claude.cmd)が PATH に乗る前提で
+// shell 経由解決。mac/Linux は $HOME/.local/bin/claude → PATH の順。
+function resolveClaude() {
+  const os = require('os');
+  if (process.env.TIN_CLAUDE_PATH) {
+    return { cmd: process.env.TIN_CLAUDE_PATH, shell: process.platform === 'win32' };
+  }
+  if (process.platform === 'win32') {
+    // PATH 上の claude(.cmd) を cmd.exe 経由で解決。Node の spawn は .cmd に shell:true が必須。
+    return { cmd: 'claude', shell: true };
+  }
+  const local = path.join(os.homedir(), '.local', 'bin', 'claude');
+  try { fs.accessSync(local); return { cmd: local, shell: false }; } catch {}
+  return { cmd: 'claude', shell: false }; // PATH fallback
+}
+
+// ── Claude CLI 呼び出し (クロスプラットフォーム) ──
 // model: 'haiku'(既定・速い) | 'sonnet'(賢い)。timeoutMs で長文生成にも対応。
+// プロンプトは stdin で渡す(`cat file | claude` のシェルパイプを廃し Windows でも動く)。
 function callClaude(prompt, model = 'haiku', timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
-    const claudePath = process.env.HOME + '/.local/bin/claude';
     const os = require('os');
-    const safeModel = /^[a-z0-9.\-]+$/i.test(model) ? model : 'haiku';  // シェル注入防止
-    // プロンプトを一時ファイルに書き出して stdin からパイプ
-    const tmpFile = path.join(os.tmpdir(), `tin-prompt-${Date.now()}.txt`);
-    fs.writeFileSync(tmpFile, prompt, 'utf-8');
-    const child = require('child_process').spawn('sh', ['-c', `cat "${tmpFile}" | "${claudePath}" -p --model ${safeModel}`], {
-      stdio: ['ignore', 'pipe', 'pipe'],
+    const safeModel = /^[a-z0-9.\-]+$/i.test(model) ? model : 'haiku';  // 引数注入防止
+    const { cmd, shell } = resolveClaude();
+    const child = require('child_process').spawn(cmd, ['-p', '--model', safeModel], {
+      stdio: ['pipe', 'pipe', 'pipe'],
       cwd: os.tmpdir(),
       timeout: timeoutMs,
       env: { ...process.env },
+      shell,
+      windowsHide: true,
     });
     let stdout = '', stderr = '';
     child.stdout.on('data', d => { stdout += d; });
     child.stderr.on('data', d => { stderr += d; });
     child.on('close', (code) => {
-      try { fs.unlinkSync(tmpFile); } catch {}
       if (code !== 0) return reject(new Error(stderr.trim() || `exit code ${code}`));
       resolve(stdout.trim());
     });
-    child.on('error', (e) => {
-      try { fs.unlinkSync(tmpFile); } catch {}
-      reject(e);
-    });
+    child.on('error', (e) => reject(e));
+    // プロンプトを stdin に書き込む(一時ファイル + cat 不要)。
+    try { child.stdin.write(prompt); child.stdin.end(); } catch (e) { reject(e); }
   });
 }
 
