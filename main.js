@@ -1156,12 +1156,13 @@ function getSlotBounds(ws, slot) {
   for (let i = 0; i < cellColSpan; i++) w += innerW * colRatios[cellCol + i] + (i > 0 ? gap : 0);
   for (let i = 0; i < cellRowSpan; i++) h += innerH * rowRatios[cellRow + i] + (i > 0 ? gap : 0);
 
-  return {
-    x: Math.round(area.x + padX + xOff),
-    y: Math.round(area.y + padTop + yOff),
-    width: Math.round(w),
-    height: Math.round(h),
-  };
+  // #8: 端を丸めて幅 = 右端 - 左端 とする(各セルの幅を個別に round すると累積誤差で
+  // 右端/下端に余白が出る)。最終列/行の右端は area の端(padding 内)にちょうど揃う。
+  const x  = Math.round(area.x + padX + xOff);
+  const y  = Math.round(area.y + padTop + yOff);
+  const x2 = Math.round(area.x + padX + xOff + w);
+  const y2 = Math.round(area.y + padTop + yOff + h);
+  return { x, y, width: x2 - x, height: y2 - y };
 }
 
 // ── Raise all workspace windows (grid + snapped externals) ──
