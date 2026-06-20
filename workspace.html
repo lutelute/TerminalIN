@@ -3123,13 +3123,15 @@ function render() {
   prevSpaceBtn.textContent = '\u25c4';
   prevSpaceBtn.title = 'Space ◄ — TiN + スナップ済みウィンドウをまとめて前のデスクトップへ';
   prevSpaceBtn.addEventListener('click', () => ipcRenderer.invoke('push-to-space', { direction: -1 }));
-  selector.appendChild(prevSpaceBtn);
+  // #12/#14: Space(仮想デスクトップ)は Windows で外部窓制御に非公開COMが要り未対応。
+  // 動かないボタンを出さないよう Windows では Space 系 UI を非表示にする(capability-gate)。
+  if (process.platform !== 'win32') selector.appendChild(prevSpaceBtn);
   const nextSpaceBtn = document.createElement('button');
   nextSpaceBtn.className = 'grid-opt';
   nextSpaceBtn.textContent = '\u25ba';
   nextSpaceBtn.title = 'Space ► — TiN + スナップ済みウィンドウをまとめて次のデスクトップへ';
   nextSpaceBtn.addEventListener('click', () => ipcRenderer.invoke('push-to-space', { direction: +1 }));
-  selector.appendChild(nextSpaceBtn);
+  if (process.platform !== 'win32') selector.appendChild(nextSpaceBtn);
 
   // ── Space ピッカーボタン (↗) ──
   const spacePickerBtn = document.createElement('button');
@@ -3176,7 +3178,7 @@ function render() {
     document.body.appendChild(_spacePickerPopup);
     setTimeout(() => document.addEventListener('mousedown', _spacePickerOutside), 0);
   });
-  selector.appendChild(spacePickerBtn);
+  if (process.platform !== 'win32') selector.appendChild(spacePickerBtn);
 
   // ── yabai SA 状態インジケーター ──
   const saBtn = document.createElement('button');
@@ -3184,7 +3186,8 @@ function render() {
   saBtn.textContent = '⚙';
   saBtn.title = 'yabai SA 状態確認中...';
   saBtn.style.opacity = '0.3';
-  selector.appendChild(saBtn);
+  // yabai は macOS 専用。Windows では SA インジケーターを出さない。
+  if (process.platform !== 'win32') selector.appendChild(saBtn);
 
   // SA 状態を非同期で確認してインジケーターを更新
   (async () => {
