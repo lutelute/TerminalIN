@@ -1078,7 +1078,15 @@ async function raiseAllWorkspaceWindows(ws, force = false) {
 
   // Snapped externals を最前面に raise (grid terminals より上に来る)
   if (ws.snappedExternals.size > 0) {
-    const cmds = [...ws.snappedExternals.values()].map(info => ({
+    let infos = [...ws.snappedExternals.values()];
+    // Tab モードでは重なった全窓を raise すると最後の非アクティブ窓が上に来て
+    // タブ切替が無効化される (Windows: tab クリック → browser-window-focus →
+    // ここで全 raise → 選択が潰れる)。アクティブタブの窓だけを前面化する。
+    if (ws.viewMode === 'tab') {
+      const active = infos.filter(i => i.slot === ws.activeTabSlot);
+      if (active.length) infos = active;
+    }
+    const cmds = infos.map(info => ({
       windowNumber: info.windowNumber, pid: info.pid, app: info.app, title: info.title,
     }));
     await raiseSpecificWindows(cmds);
