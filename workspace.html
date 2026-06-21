@@ -130,18 +130,21 @@
   body.gp-edit .gp-cell { background: rgba(0,0,0,0.03); }
   .gp-col-line, .gp-row-line {
     position: absolute;
-    background: rgba(0,0,0,0.15);
+    background: transparent;   /* 常時は透明、ホバーで表示 */
+    pointer-events: auto;      /* #grid-panel が pointer-events:none でも掴めるように */
     z-index: 20;
     transition: background 0.15s;
   }
   .gp-col-line {
-    top: 2px; bottom: 2px; width: 8px; margin-left: -4px; cursor: ew-resize;
+    top: 2px; bottom: 2px; width: 10px; margin-left: -5px; cursor: ew-resize;
   }
   .gp-row-line {
-    left: 2px; right: 2px; height: 8px; margin-top: -4px; cursor: ns-resize;
+    left: 2px; right: 2px; height: 10px; margin-top: -5px; cursor: ns-resize;
   }
-  .gp-col-line:hover, .gp-row-line:hover { background: rgba(0,0,0,0.3); }
+  .gp-col-line:hover, .gp-row-line:hover { background: rgba(60,130,230,0.55); }
   .gp-col-line.dragging, .gp-row-line.dragging { background: rgba(60,130,230,0.9); }
+  /* 編集モードでは境界を常時うっすら表示 */
+  body.gp-edit .gp-col-line, body.gp-edit .gp-row-line { background: rgba(0,0,0,0.15); }
   #gp-toolbar {
     position: absolute;
     top: 8px; left: 50%; transform: translateX(-50%);
@@ -471,14 +474,16 @@
   /* Windows: 手動リサイズハンドル (frameless+transparent はリサイズ境界が無い) */
   .win-resize { display: none; }
   body.is-win .win-resize { display: block; position: fixed; z-index: 9999; -webkit-app-region: no-drag; }
-  body.is-win .wr-n  { top: 0; left: 0; right: 0; height: 5px; cursor: ns-resize; }
-  body.is-win .wr-s  { bottom: 0; left: 0; right: 0; height: 5px; cursor: ns-resize; }
-  body.is-win .wr-e  { top: 0; bottom: 0; right: 0; width: 5px; cursor: ew-resize; }
-  body.is-win .wr-w  { top: 0; bottom: 0; left: 0; width: 5px; cursor: ew-resize; }
-  body.is-win .wr-ne { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
-  body.is-win .wr-nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
-  body.is-win .wr-se { bottom: 0; right: 0; width: 14px; height: 14px; cursor: nwse-resize; }
-  body.is-win .wr-sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+  /* 縁の掴みゾーンを広げてリサイズしやすく (5px→10px, 角は 18px)。
+     main.js _ctGuardLoop の RM(=12) 以下に収め、ゾーン全体が clickthrough OFF になるようにする。 */
+  body.is-win .wr-n  { top: 0; left: 0; right: 0; height: 10px; cursor: ns-resize; }
+  body.is-win .wr-s  { bottom: 0; left: 0; right: 0; height: 10px; cursor: ns-resize; }
+  body.is-win .wr-e  { top: 0; bottom: 0; right: 0; width: 10px; cursor: ew-resize; }
+  body.is-win .wr-w  { top: 0; bottom: 0; left: 0; width: 10px; cursor: ew-resize; }
+  body.is-win .wr-ne { top: 0; right: 0; width: 18px; height: 18px; cursor: nesw-resize; }
+  body.is-win .wr-nw { top: 0; left: 0; width: 18px; height: 18px; cursor: nwse-resize; }
+  body.is-win .wr-se { bottom: 0; right: 0; width: 20px; height: 20px; cursor: nwse-resize; }
+  body.is-win .wr-sw { bottom: 0; left: 0; width: 18px; height: 18px; cursor: nesw-resize; }
   body.is-win.is-maximized .win-resize { display: none; }
 
   /* Windows 用ウィンドウコントロール (最小化/最大化/閉じる)。
@@ -3927,6 +3932,8 @@ document.getElementById('content').addEventListener('mousedown', (e) => {
 // pointer-events:none はCSS内のみ。実際のクリックスルーには setIgnoreMouseEvents が必要。
 let gpEditMode = false; // グリッドJSブロックとこのブロックで共有
 let gpColRatios = null, gpRowRatios = null; // 列/行の比率 (null=均等)。main の getSlotBounds と同じ意味
+let _gpOnDivider = false; // カーソルが列/行の境界(分割線)上にあるか
+let _gpDragging = false;  // 分割線ドラッグ中か
 {
   const gridPanel = document.getElementById('grid-panel');
   let _ctState = false;
@@ -3943,11 +3950,17 @@ let gpColRatios = null, gpRowRatios = null; // 列/行の比率 (null=均等)。
 
   // mousemove: rAF throttle 廃止 — overlay フラグで軽量判定、遅延ゼロ
   window.addEventListener('mousemove', (e) => {
-    if (gpEditMode || _hasOverlayActive) { setClickthrough(false); return; }
+    if (gpEditMode || _hasOverlayActive || _gpDragging) { setClickthrough(false); return; }
     const gridRect = _cachedGridRect;
     const onGrid = e.clientX >= gridRect.left && e.clientX <= gridRect.right
                 && e.clientY >= gridRect.top  && e.clientY <= gridRect.bottom;
-    setClickthrough(onGrid);
+    // 列/行の境界(分割線)付近なら clickthrough を OFF にして掴めるようにする(常時幅調整)
+    const onDivider = onGrid && _gpNearDivider(e.clientX, e.clientY, gridRect);
+    if (onDivider !== _gpOnDivider) {
+      _gpOnDivider = onDivider;
+      ipcRenderer.send('set-on-divider', onDivider);
+    }
+    setClickthrough(onDivider ? false : onGrid);
   });
 
   window.addEventListener('mouseleave', () => setClickthrough(false));
@@ -3982,7 +3995,7 @@ ipcRenderer.on('update-grid-panel', (_e, { cols, rows, colRatios, rowRatios, slo
   gpRowRatios = rowRatios ?? null;
   gpSlotLayout = slotLayout ?? null;
   render();
-  if (gpEditMode) gpRenderEditLines();
+  gpRenderEditLines();  // 分割線は常時描画(非編集時は透明な掴みゾーン)
 });
 
 // ── Grid ratio edit (✏️ ボタン): grid-overlay.html の編集ロジックを統合パネルに移植 ──
@@ -3998,6 +4011,20 @@ function _gpCumulative(ratios, n) {
   }
   return cum;
 }
+// カーソルが内部の列/行境界(分割線)の ±TH px 内にあるか。gpRenderEditLines / gpStartLineDrag と
+// 同じ panel 相対比率で判定する。
+function _gpNearDivider(x, y, rect) {
+  const TH = 7;
+  const cumC = _gpCumulative(gpColRatios, gridCols);
+  for (let i = 1; i < gridCols; i++) {
+    if (Math.abs(x - (rect.left + cumC[i] * rect.width)) <= TH && y >= rect.top && y <= rect.bottom) return true;
+  }
+  const cumR = _gpCumulative(gpRowRatios, gridRows);
+  for (let i = 1; i < gridRows; i++) {
+    if (Math.abs(y - (rect.top + cumR[i] * rect.height)) <= TH && x >= rect.left && x <= rect.right) return true;
+  }
+  return false;
+}
 function gpApplyRatios() {
   const gpEl = document.getElementById('gp-grid');
   if (!gpEl) return;
@@ -4006,10 +4033,11 @@ function gpApplyRatios() {
   gpEl.style.gridTemplateRows = (gpRowRatios && gpRowRatios.length === gridRows)
     ? gpRowRatios.map(r => r + 'fr').join(' ') : `repeat(${gridRows}, 1fr)`;
 }
+// 列/行の分割線(ハンドル)を描画。編集モードに関係なく常時描画し、非編集時は
+// 透明(ホバーで表示)な掴みゾーンとして機能する(常時ドラッグ可能な幅調整)。
 function gpRenderEditLines() {
   const panel = document.getElementById('grid-panel');
   panel.querySelectorAll('.gp-col-line, .gp-row-line').forEach(el => el.remove());
-  if (!gpEditMode) return;
   const cumC = _gpCumulative(gpColRatios, gridCols);
   const cumR = _gpCumulative(gpRowRatios, gridRows);
   for (let i = 1; i < gridCols; i++) {
@@ -4032,6 +4060,8 @@ function gpStartLineDrag(e, type, index) {
   e.stopPropagation();
   const target = e.currentTarget;
   target.classList.add('dragging');
+  _gpDragging = true;
+  ipcRenderer.send('set-on-divider', true);  // ドラッグ中は clickthrough を OFF に保つ
   const panel = document.getElementById('grid-panel');
   const rect = panel.getBoundingClientRect();
   const totalSize = type === 'col' ? rect.width : rect.height;
@@ -4055,6 +4085,9 @@ function gpStartLineDrag(e, type, index) {
     target.classList.remove('dragging');
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
+    _gpDragging = false;
+    _gpOnDivider = false;
+    ipcRenderer.send('set-on-divider', false);
     ipcRenderer.send('commit-grid-ratios', { colRatios: gpColRatios, rowRatios: gpRowRatios });
   };
   document.addEventListener('mousemove', onMove);

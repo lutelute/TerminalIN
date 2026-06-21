@@ -3091,11 +3091,11 @@ function createWorkspace(name, savedState) {
       // OFF にしてハンドルが pointer を受け取れるようにする。
       let nearEdge = false;
       if (IS_WIN) {
-        const RM = 7;
+        const RM = 12; // 縁ハンドル(10px)を内包する掴みゾーン。広めにして端を掴みやすく。
         nearEdge = cursor.x < b.x + RM || cursor.x > b.x + b.width - RM ||
                    cursor.y > b.y + b.height - RM; // 上端は header で既に OFF
       }
-      _setCT(!(inHeader || nearEdge || ws._hasOverlay || ws._editMode));
+      _setCT(!(inHeader || nearEdge || ws._hasOverlay || ws._editMode || ws._onDivider));
       ws._ctGuardTimer = setTimeout(_ctGuardLoop, 50);
     } catch {
       ws._ctGuardTimer = setTimeout(_ctGuardLoop, 200);
@@ -3193,6 +3193,15 @@ ipcMain.on('set-overlay-active', (event, active) => {
     try { ws.win.setAlwaysOnTop(false); } catch {}
     raiseAllWorkspaceWindows(ws, true).catch(() => {});
   }
+});
+// 列/行の分割線(掴みゾーン)上にカーソルがある間は clickthrough を OFF に保ち、
+// 編集モードに入らなくても幅をドラッグ調整できるようにする(分割線はセル間ギャップに
+// あり手前に窓が無いので z-order 変更は不要)。
+ipcMain.on('set-on-divider', (event, on) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return;
+  ws._onDivider = !!on;
+  if (on && ws.win && !ws.win.isDestroyed()) ws.win.setIgnoreMouseEvents(false); // 50ms 遅延を橋渡し
 });
 ipcMain.on('set-edit-mode', (event, active) => {
   const ws = findWorkspace(event.sender);
