@@ -3042,9 +3042,18 @@ function createWorkspace(name, savedState) {
     // snapped ext の完全リスト（空間的に見えなくても権威あるリスト）
     const snappedSlots = {};
     const snappedList = []; // renderer の snappedExternals を authoritative に同期するため
+    // Windows: 実幅がスロット要求幅より十分大きい = アプリの最小サイズで縮みきれず列からはみ出す。
+    // これを minConstrained として renderer に伝え、タブに注意マークを出す。
+    const _scale = IS_WIN ? (screen.getPrimaryDisplay().scaleFactor || 1) : 1;
     for (const [wn, info] of ws.snappedExternals) {
       if (typeof info.slot === 'number') snappedSlots[wn] = info.slot;
-      snappedList.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
+      let minConstrained = false;
+      if (IS_WIN) {
+        const sb = getSlotBounds(ws, info.slot);
+        const live = windowsAll.find(w => w.windowNumber === wn);
+        if (sb && live && live.width > sb.width * _scale + 24) minConstrained = true;
+      }
+      snappedList.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot, minConstrained });
     }
     // 最前面 window (focused slot ハイライト用) — _frontmostInterval (500ms) のキャッシュを流用
     ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots, snappedSlots, _lastFrontmost, snappedList);

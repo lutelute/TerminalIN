@@ -377,6 +377,11 @@
     margin-left: 2px; transition: background 0.1s, color 0.1s;
   }
   .groupy-tab .tab-close:hover { background: rgba(220,50,50,0.15); color: rgba(200,40,40,0.8); }
+  /* 横幅制約マーク: アプリの最小幅が大きく列に収まりきらない窓 */
+  .groupy-tab .tab-minwarn {
+    flex-shrink: 0; margin-left: 1px; font-size: 11px; font-weight: 700;
+    color: #d9821f; cursor: help; line-height: 1;
+  }
   /* タブ右クリックメニュー */
   #tab-ctx-menu {
     position: fixed; z-index: 99999;
@@ -3281,6 +3286,9 @@ function render() {
       tab.innerHTML = `<span class="tab-icon ${iconClass}">${escHtml(iconLabel)}</span>`
         + `<span class="tab-title" title="${escHtml(info.title||'')}">${escHtml(shortTitle)}</span>`
         + statePillHtml(wn, true)
+        + (info.minConstrained
+            ? `<span class="tab-minwarn" title="このアプリは最小ウィンドウ幅が大きく、列幅に収まりきりません(Windows の仕様)。狭い列で使うなら内蔵端末(⊞ / Ctrl+Shift+T)が収まります。">↔</span>`
+            : '')
         + `<span class="tab-close" data-wn="${wn}">×</span>`;
       tab.addEventListener('click', e => {
         if (e.target.closest('.tab-close')) return;
@@ -3893,8 +3901,9 @@ ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snapped
         if (live && live.title) existing.title = live.title;
         if (live && live.app) existing.app = live.app;
         if (existing.slot !== entry.slot) { existing.slot = entry.slot; snappedChanged = true; }
+        if (existing.minConstrained !== entry.minConstrained) { existing.minConstrained = entry.minConstrained; snappedChanged = true; }
       } else {
-        snappedExternals.set(k, { title: entry.title, app: entry.app, slot: entry.slot });
+        snappedExternals.set(k, { title: entry.title, app: entry.app, slot: entry.slot, minConstrained: entry.minConstrained });
         snappedChanged = true;
       }
     }
