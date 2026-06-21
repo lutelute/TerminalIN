@@ -3009,6 +3009,20 @@ function createWorkspace(name, savedState) {
     // スナップ済みウィンドウのみタイトルを含める (terminal タイトルは常時変化するため
     // 全ウィンドウのタイトルを入れると毎 poll で IPC が発火してしまう)
     const snappedWnSet = new Set(ws.snappedExternals.keys());
+    // Windows: 最小幅で列に収まらない窓を先に判定し identity に含める。列幅変更で制約が
+    // 変わっても poll が「変化なし」で IPC をスキップしてマークが更新されない問題を防ぐ。
+    const _scale = IS_WIN ? (screen.getPrimaryDisplay().scaleFactor || 1) : 1;
+    const minConstrainedMap = new Map();
+    let _constrainedKey = '';
+    if (IS_WIN) {
+      for (const [wn, info] of ws.snappedExternals) {
+        const sb = getSlotBounds(ws, info.slot);
+        const live = windowsAll.find(w => w.windowNumber === wn);
+        const c = !!(sb && live && live.width > sb.width * _scale + 24);
+        minConstrainedMap.set(wn, c);
+        if (c) _constrainedKey += wn + ',';
+      }
+    }
     let identity = '';
     for (const w of windows) {
       identity += w.windowNumber;
@@ -3019,6 +3033,7 @@ function createWorkspace(name, savedState) {
     for (const k of ws.snappedExternals.keys()) { identity += k; identity += ','; }
     identity += '|';
     for (const k of ws.gridWindows.keys()) { identity += k; identity += ','; }
+    identity += '|'; identity += _constrainedKey;  // 制約状態の変化も検知
     if (identity === ws._lastPollIdentity && !snappedChanged) return;
     ws._lastPollIdentity = identity;
 
@@ -3042,18 +3057,9 @@ function createWorkspace(name, savedState) {
     // snapped ext の完全リスト（空間的に見えなくても権威あるリスト）
     const snappedSlots = {};
     const snappedList = []; // renderer の snappedExternals を authoritative に同期するため
-    // Windows: 実幅がスロット要求幅より十分大きい = アプリの最小サイズで縮みきれず列からはみ出す。
-    // これを minConstrained として renderer に伝え、タブに注意マークを出す。
-    const _scale = IS_WIN ? (screen.getPrimaryDisplay().scaleFactor || 1) : 1;
     for (const [wn, info] of ws.snappedExternals) {
       if (typeof info.slot === 'number') snappedSlots[wn] = info.slot;
-      let minConstrained = false;
-      if (IS_WIN) {
-        const sb = getSlotBounds(ws, info.slot);
-        const live = windowsAll.find(w => w.windowNumber === wn);
-        if (sb && live && live.width > sb.width * _scale + 24) minConstrained = true;
-      }
-      snappedList.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot, minConstrained });
+      snappedList.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot, minConstrained: minConstrainedMap.get(wn) || false });
     }
     // 最前面 window (focused slot ハイライト用) — _frontmostInterval (500ms) のキャッシュを流用
     ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots, snappedSlots, _lastFrontmost, snappedList);
