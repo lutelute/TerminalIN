@@ -1825,6 +1825,13 @@ async function addGridTerminal() {
 }
 
 async function removeGridTerminal(slot) {
+  // 楽観的に即時除去 — main の close→poll 反映(~4秒)を待たずタブを消す。
+  const key = String(slot);
+  if (gridSlots[key] !== undefined) {
+    delete gridSlots[key];
+    if (activePtySlot === Number(slot)) activePtySlot = null;
+    render();
+  }
   await ipcRenderer.invoke('remove-grid-terminal', { slot: Number(slot) });
 }
 
@@ -2869,7 +2876,7 @@ function showTabCtxMenu(x, y, { wn, isPty, slotKey }) {
   if (isPty) {
     mkItem('⤢', '前面に表示', '', () => ipcRenderer.invoke('add-grid-terminal'));
     menu.appendChild(Object.assign(document.createElement('div'), { className: 'ctx-sep' }));
-    mkItem('✕', 'ターミナルを閉じる', 'danger', () => ipcRenderer.invoke('remove-grid-terminal', { slot: Number(slotKey) }));
+    mkItem('✕', 'ターミナルを閉じる', 'danger', () => removeGridTerminal(slotKey));
   } else {
     mkItem('⤢', '前面に表示', '', () => ipcRenderer.invoke('raise-snapped', { windowNumber: wn }));
     menu.appendChild(Object.assign(document.createElement('div'), { className: 'ctx-sep' }));
@@ -3261,7 +3268,7 @@ function render() {
         + `<span class="tab-close" data-slot="${slot}">×</span>`;
       tab.querySelector('.tab-close').addEventListener('click', e => {
         e.stopPropagation();
-        ipcRenderer.invoke('remove-grid-terminal', { slot: Number(slot) });
+        removeGridTerminal(slot);  // 楽観的に即時除去
       });
       tab.addEventListener('contextmenu', e => {
         e.preventDefault(); e.stopPropagation();
@@ -3317,15 +3324,18 @@ function render() {
     // + ボタン (新しい PTY ターミナル)
     const addTabBtn = document.createElement('div');
     addTabBtn.className = 'groupy-tab-add';
-    addTabBtn.title = '新しいターミナルを追加';
+    addTabBtn.title = '内蔵ターミナルを 1 つ追加';
     addTabBtn.textContent = '+';
     addTabBtn.addEventListener('click', () => ipcRenderer.invoke('add-grid-terminal'));
     ctrlHost.appendChild(addTabBtn);
-    // 空きスロットを全部ターミナルで埋めるボタン (内蔵端末は任意幅に fit するので狭い列でも収まる)
+    // 空きスロットを全部 内蔵ターミナルで埋めるボタン (内蔵端末は任意幅に fit するので狭い列でも収まる)。
+    // グリッドサイズボタンと紛らわしくないよう端末記号 >_ にする。
     const fillTermBtn = document.createElement('div');
     fillTermBtn.className = 'groupy-tab-add';
-    fillTermBtn.title = '空きスロットを全部ターミナルで埋める';
-    fillTermBtn.textContent = '⊞';
+    fillTermBtn.title = '空きスロットを全部 内蔵ターミナルで埋める';
+    fillTermBtn.textContent = '>_';
+    fillTermBtn.style.fontFamily = "'SF Mono','Consolas',monospace";
+    fillTermBtn.style.fontSize = '11px';
     fillTermBtn.addEventListener('click', () => ipcRenderer.invoke('fill-grid-terminals'));
     ctrlHost.appendChild(fillTermBtn);
     // 🎨 AI 色判定ボタン (haiku が端末の用途を判定して色分け / 再押下で解除)
@@ -3835,7 +3845,12 @@ ipcRenderer.on('terminal-exit', (_e, { id }) => {
 });
 ipcRenderer.on('new-terminal', () => addGridTerminal());
 ipcRenderer.on('close-current', () => {
-  if (embeddedTerms.length > 0) removeEmbedded(embeddedTerms.length - 1);
+  // アクティブなグリッド内蔵端末があればそれを閉じる。無ければ drawer の console 端末。
+  if (activePtySlot !== null && gridSlots[activePtySlot] !== undefined) {
+    removeGridTerminal(activePtySlot);
+  } else if (embeddedTerms.length > 0) {
+    removeEmbedded(embeddedTerms.length - 1);
+  }
 });
 // render を debounce して DOM 再構築頻度を制限 (100ms)
 let _renderTimer = null;
