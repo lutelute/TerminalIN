@@ -1447,6 +1447,26 @@ ipcMain.handle('add-grid-terminal', (event) => {
   return { ok: true, slot };
 });
 
+// 空きスロットを全部 内蔵 PTY ターミナルで埋める。
+// 内蔵端末は FitAddon で任意の列幅に収まるため、狭い 4 コラム等でも端末作業が完結する。
+function fillGridTerminals(ws) {
+  if (!ws) return 0;
+  const cap = Math.max(1, (ws.slotLayout ? ws.slotLayout.length : ws.gridCols * ws.gridRows));
+  let count = 0;
+  let slot = nextFreeSlot(ws);
+  while (slot >= 0 && count < cap) {
+    createGridTerminal(ws, slot);   // ws.gridWindows.set(slot,...) を同期で行うため次の空きが進む
+    count++;
+    slot = nextFreeSlot(ws);
+  }
+  return count;
+}
+ipcMain.handle('fill-grid-terminals', (event) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return { ok: false };
+  return { ok: true, count: fillGridTerminals(ws) };
+});
+
 ipcMain.handle('remove-grid-terminal', (event, { slot }) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return { ok: false };
@@ -4142,6 +4162,11 @@ app.whenReady().then(() => {
       { label: 'New Grid Terminal', accelerator: 'CmdOrCtrl+T', click: () => {
         const win = BrowserWindow.getFocusedWindow();
         if (win) win.webContents.send('new-terminal');
+      }},
+      { label: 'Fill Grid with Terminals', accelerator: 'CmdOrCtrl+Shift+T', click: () => {
+        const ws = wsFromFocused();
+        const n = fillGridTerminals(ws);
+        console.log(`[tin] fill-grid-terminals: ${n} 端末を追加`);
       }},
       { label: 'Close Terminal', accelerator: 'CmdOrCtrl+W', click: () => {
         const win = BrowserWindow.getFocusedWindow();

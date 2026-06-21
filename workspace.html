@@ -3313,6 +3313,13 @@ function render() {
     addTabBtn.textContent = '+';
     addTabBtn.addEventListener('click', () => ipcRenderer.invoke('add-grid-terminal'));
     ctrlHost.appendChild(addTabBtn);
+    // 空きスロットを全部ターミナルで埋めるボタン (内蔵端末は任意幅に fit するので狭い列でも収まる)
+    const fillTermBtn = document.createElement('div');
+    fillTermBtn.className = 'groupy-tab-add';
+    fillTermBtn.title = '空きスロットを全部ターミナルで埋める';
+    fillTermBtn.textContent = '⊞';
+    fillTermBtn.addEventListener('click', () => ipcRenderer.invoke('fill-grid-terminals'));
+    ctrlHost.appendChild(fillTermBtn);
     // 🎨 AI 色判定ボタン (haiku が端末の用途を判定して色分け / 再押下で解除)
     const aiColorBtn = document.createElement('div');
     aiColorBtn.className = 'groupy-tab-add';
