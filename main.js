@@ -185,12 +185,34 @@ function toggleMaximize(win) {
     if (r) { try { win.setBounds(r); } catch {} }
     try { win.webContents.send('win-maximized', false); } catch {}
   } else {
-    win._fakeMaxRestore = win.getBounds();
+    win._fakeMaxRestore = win.getNormalBounds();
     const d = screen.getDisplayMatching(win.getBounds());
     win._fakeMax = true;
     try { win.setBounds(d.workArea); } catch {}
     try { win.webContents.send('win-maximized', true); } catch {}
   }
+}
+
+// 擬似最大化中の窓をカーソル直下で復元する (Windows 標準の「最大化タイトルバーを
+// ドラッグすると復元して掴む」挙動の再現)。カーソルの横位置比率を保ったまま復元サイズへ
+// 戻し、タイトルバーがカーソル直下に来るよう配置してからネイティブドラッグへ繋ぐ。
+function restoreUnderCursor(win) {
+  const r = win._fakeMaxRestore;
+  const cur = win.getBounds(); // 現在 = workArea 擬似最大化サイズ
+  win._fakeMax = false;
+  try { win.webContents.send('win-maximized', false); } catch {}
+  if (!r) return;
+  let nx = cur.x, ny = cur.y;
+  try {
+    const c = screen.getCursorScreenPoint();
+    const relX = Math.min(1, Math.max(0, (c.x - cur.x) / Math.max(1, cur.width)));
+    nx = Math.round(c.x - relX * r.width);
+    ny = Math.round(c.y - Math.min(18, TITLEBAR_H / 2)); // タイトルバーがカーソル直下に
+    const d = screen.getDisplayMatching(cur).workArea;
+    nx = Math.min(Math.max(nx, d.x), d.x + d.width - r.width);
+    ny = Math.min(Math.max(ny, d.y), d.y + d.height - r.height);
+  } catch {}
+  try { win.setBounds({ x: nx, y: ny, width: r.width, height: r.height }); } catch {}
 }
 
 // Windows: hidden titlebar のためネイティブの最小化/最大化/閉じるが無い。
@@ -205,17 +227,33 @@ ipcMain.handle('window-control', (event, { action }) => {
   }
 });
 
+// win に対応する workspace を返す (ネイティブ操作後の整列で使用)。
+function wsForWin(win) {
+  for (const [, ws] of workspaces) if (ws.win === win) return ws;
+  return null;
+}
+
 // Windows: ネイティブ・ウィンドウドラッグ。transparent ウィンドウで -webkit-app-region:drag が
 // 効かないため、従来は pointermove を IPC で受けて毎フレーム setPosition していたが、IPC 往復の
 // レイテンシでカクつき、DPI 座標ズレで「元に戻る」不具合があった。代わりに OS の標準モーダル移動
 // ループ(WM_NCLBUTTONDOWN)へ委譲し、他アプリ同様の滑らかな移動 + Aero スナップを得る。
-// SendMessage は移動完了まで戻らないため、戻った直後に発火する 'moved' で snapped 窓を整列する。
+// SendMessage は移動完了まで戻らないため、戻った直後に snapped 窓を新位置へ整列する。
+// (ドラッグ中は JS がブロックされライブ追従できないので、終了時の整列で代替する。
+//  'moved' イベントにも依存せず、ここで明示的に retile して取りこぼしを無くす。)
 ipcMain.on('win-native-drag', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win || isWinMaximized(win)) return;
+  if (!win) return;
   if (axHelper && axHelper.startWindowDrag) {
     const h = ownHwnd(win);
-    if (h) axHelper.startWindowDrag(h);
+    if (!h) return;
+    // 擬似最大化中はまず復元してから掴む (Windows 標準挙動)。
+    if (IS_WIN && win._fakeMax) restoreUnderCursor(win);
+    axHelper.startWindowDrag(h);   // モーダル移動ループ終了までブロック
+    const ws = wsForWin(win);
+    if (ws) {
+      const mode = appSettings.dragEndMode || 'position';
+      if (mode !== 'off') retileAll(ws, false, mode === 'position').catch(() => {});
+    }
   }
 });
 
@@ -226,7 +264,12 @@ ipcMain.on('win-native-resize', (event, { edge }) => {
   if (!win || isWinMaximized(win)) return;
   if (axHelper && axHelper.startWindowResize) {
     const h = ownHwnd(win);
-    if (h) axHelper.startWindowResize(h, edge);
+    if (h) {
+      axHelper.startWindowResize(h, edge);   // モーダルリサイズループ終了までブロック
+      // スロットサイズが変わるので full retile で snapped 窓を新サイズへ追従させる。
+      const ws = wsForWin(win);
+      if (ws) retileAll(ws).catch(() => {});
+    }
   }
 });
 
@@ -2795,9 +2838,11 @@ function createWorkspace(name, savedState) {
     win.on('maximize', () => {
       if (win._fakeMax || win.isDestroyed()) return;
       const d = screen.getDisplayMatching(win.getBounds());
-      win.unmaximize();                       // OS が pre-maximize 位置へ復元
-      win._fakeMaxRestore = win.getBounds();  // それを復元先として保存
-      win._fakeMax = true;
+      // 復元先は Electron が追跡する normal bounds を使う。unmaximize() 直後の getBounds() は
+      // OS の SW_RESTORE がまだ反映されず最大化サイズを返すことがあるため getNormalBounds() が確実。
+      win._fakeMaxRestore = win.getNormalBounds();
+      win._fakeMax = true;       // 先に立てて以降の中間状態を擬似最大化として扱う
+      win.unmaximize();          // native 最大化状態を解除
       try { win.setBounds(d.workArea); } catch {}
       try { win.webContents.send('win-maximized', true); } catch {}
     });
