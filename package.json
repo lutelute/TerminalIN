@@ -1,6 +1,6 @@
 {
   "name": "tin",
-  "version": "1.13.1",
+  "version": "1.14.0",
   "description": "Terminal workspace manager for macOS & Windows",
   "main": "main.js",
   "scripts": {
@@ -28,11 +28,22 @@
   "author": "shigenoburyuto",
   "license": "MIT",
   "type": "commonjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lutelute/TerminalIN.git"
+  },
   "build": {
     "appId": "com.shigenoburyuto.tin",
     "productName": "TiN",
     "afterPack": "scripts/clean-xattr.js",
     "npmRebuild": false,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "lutelute",
+        "repo": "TerminalIN"
+      }
+    ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [
@@ -66,8 +77,20 @@
     },
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64", "arm64"] },
-        { "target": "zip", "arch": ["x64", "arm64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "icon": "icon_1024.png"
     },
@@ -89,9 +112,26 @@
       "grid-overlay.html",
       "package.json",
       "build/Release/ax_helper.node",
+      "lib/**",
       "node_modules/@xterm/**",
       "node_modules/node-pty/**",
       "node_modules/koffi/**",
+      "node_modules/electron-updater/**",
+      "node_modules/builder-util-runtime/**",
+      "node_modules/fs-extra/**",
+      "node_modules/graceful-fs/**",
+      "node_modules/jsonfile/**",
+      "node_modules/universalify/**",
+      "node_modules/js-yaml/**",
+      "node_modules/argparse/**",
+      "node_modules/sax/**",
+      "node_modules/semver/**",
+      "node_modules/lazy-val/**",
+      "node_modules/lodash.escaperegexp/**",
+      "node_modules/lodash.isequal/**",
+      "node_modules/tiny-typed-emitter/**",
+      "node_modules/debug/**",
+      "node_modules/ms/**",
       "!atelierx-plugin/**",
       "!docs/**",
       "!logs/**",
@@ -111,6 +151,7 @@
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "electron-updater": "^6.8.9",
     "koffi": "2.12.0",
     "node-addon-api": "^8.7.0",
     "node-pty": "^1.1.0"

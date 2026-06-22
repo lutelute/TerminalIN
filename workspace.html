@@ -1325,9 +1325,13 @@ if (IS_WIN) {
   });
 }
 
-// ── Windows: 手動ウィンドウドラッグ ──
-// transparent:true のウィンドウでは -webkit-app-region: drag が効かないため、
-// タイトルバーの pointer イベントでカーソル位置を main に送り setPosition で動かす。
+// ── Windows: ネイティブ・ウィンドウドラッグ ──
+// transparent:true のウィンドウでは -webkit-app-region: drag が効かない。従来は pointermove を
+// IPC で毎フレーム main に送り setPosition していたが、IPC 往復のレイテンシでカクつき・DPI 座標
+// ズレで「元位置に戻る」不具合があった。代わりに、しきい値(3px)超えで一度だけ 'win-native-drag'
+// を送り、OS の標準モーダル移動ループ(WM_NCLBUTTONDOWN)へ委譲する。他アプリ同様の滑らかさ +
+// Aero スナップが効き、戻り不具合も解消する。クリック(=移動なし)では発火しないので
+// ダブルクリック最大化・タブクリックも温存される。
 if (IS_WIN) {
   window.addEventListener('DOMContentLoaded', setupWinDrag);
   if (document.readyState !== 'loading') setupWinDrag();
@@ -1342,35 +1346,24 @@ function setupWinDrag() {
     '#titlebar-controls, .grid-opt, #title, #title-input, ' +
     '.groupy-tab, .groupy-tab-add, [contenteditable]'
   ));
-  // クリックとドラッグを移動量で区別する: pointerdown では即開始せず、
-  // しきい値(3px)を超えて初めてドラッグ開始。これによりタブ等のクリックを
-  // 飲み込まない (preventDefault しない) + 空き領域のドラッグだけ窓移動になる。
-  let pending = null;   // { id, startX, startY }
-  let dragging = false;
+  // pointerdown では即開始せず、しきい値を超えて初めて OS へ委譲する。これにより
+  // 単純クリック・ダブルクリックは飲み込まれず、空き領域のドラッグだけ窓移動になる。
+  let pending = null;   // { startX, startY }
   tb.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || isInteractive(e.target)) return;
-    pending = { id: e.pointerId, startX: e.screenX, startY: e.screenY };
+    pending = { startX: e.screenX, startY: e.screenY };
   });
   tb.addEventListener('pointermove', (e) => {
-    if (pending && !dragging) {
-      if (Math.abs(e.screenX - pending.startX) > 3 || Math.abs(e.screenY - pending.startY) > 3) {
-        dragging = true;
-        try { tb.setPointerCapture(pending.id); } catch {}
-        ipcRenderer.send('win-move-start', { x: pending.startX, y: pending.startY });
-      }
+    if (!pending) return;
+    if (Math.abs(e.screenX - pending.startX) > 3 || Math.abs(e.screenY - pending.startY) > 3) {
+      pending = null;
+      // OS のモーダル移動ループに委譲 (この後のマウス追従は OS が担当)。
+      ipcRenderer.send('win-native-drag');
     }
-    if (dragging) ipcRenderer.send('win-move', { x: e.screenX, y: e.screenY });
   });
-  const end = (e) => {
-    if (dragging) {
-      dragging = false;
-      try { tb.releasePointerCapture(e.pointerId); } catch {}
-      ipcRenderer.send('win-move-end');
-    }
-    pending = null;
-  };
-  tb.addEventListener('pointerup', end);
-  tb.addEventListener('pointercancel', end);
+  const clearPending = () => { pending = null; };
+  tb.addEventListener('pointerup', clearPending);
+  tb.addEventListener('pointercancel', clearPending);
   // ダブルクリックで最大化/復元 (Windows のタイトルバー慣習)
   tb.addEventListener('dblclick', (e) => {
     if (isInteractive(e.target)) return;
@@ -1378,28 +1371,14 @@ function setupWinDrag() {
   });
   setupWinResize();
 }
-// Windows 手動リサイズ: 縁ハンドルの pointer ドラッグで window をリサイズ
+// Windows ネイティブ・リサイズ: 縁ハンドルの pointerdown で OS のモーダルリサイズへ委譲。
 function setupWinResize() {
-  let resizing = null;
   for (const h of document.querySelectorAll('.win-resize')) {
     h.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
-      resizing = h.dataset.edge;
-      try { h.setPointerCapture(e.pointerId); } catch {}
-      ipcRenderer.send('win-resize-start', { edge: resizing, x: e.screenX, y: e.screenY });
       e.preventDefault(); e.stopPropagation();
+      ipcRenderer.send('win-native-resize', { edge: h.dataset.edge });
     });
-    h.addEventListener('pointermove', (e) => {
-      if (resizing) ipcRenderer.send('win-resize', { x: e.screenX, y: e.screenY });
-    });
-    const end = (e) => {
-      if (!resizing) return;
-      resizing = null;
-      try { h.releasePointerCapture(e.pointerId); } catch {}
-      ipcRenderer.send('win-resize-end');
-    };
-    h.addEventListener('pointerup', end);
-    h.addEventListener('pointercancel', end);
   }
 }
 
@@ -1919,6 +1898,42 @@ function showToast(msg, kind = 'info') {
     setTimeout(() => t.remove(), 250);
   }, 2200);
 }
+
+// ── 自動アップデート通知 (Windows) ──
+// main の lib/updater.js から 'update-status' を受け、ダウンロード中はさりげなく、
+// ダウンロード完了時は「今すぐ再起動して更新」ボタン付きのバナーを出す。
+(function setupUpdateUI() {
+  let banner = null;
+  const showBanner = (version) => {
+    if (banner) banner.remove();
+    banner = document.createElement('div');
+    banner.style.cssText = `
+      position:fixed; bottom:18px; right:18px; z-index:10002;
+      background:rgba(28,28,30,0.96); color:#fff; padding:10px 12px; border-radius:10px;
+      font-size:12px; box-shadow:0 10px 30px rgba(0,0,0,0.4); display:flex; gap:10px; align-items:center;
+      border:1px solid rgba(255,255,255,0.12);`;
+    const label = document.createElement('span');
+    label.textContent = version ? `更新 v${version} を準備完了` : '更新を準備完了';
+    const now = document.createElement('button');
+    now.textContent = '今すぐ再起動';
+    now.style.cssText = 'background:#2563eb;color:#fff;border:0;border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;';
+    now.onclick = () => { try { ipcRenderer.invoke('update-install-now'); } catch {} };
+    const later = document.createElement('button');
+    later.textContent = '終了時に';
+    later.style.cssText = 'background:transparent;color:#aaa;border:0;padding:5px 6px;font-size:12px;cursor:pointer;';
+    later.onclick = () => { if (banner) { banner.remove(); banner = null; } };
+    banner.append(label, now, later);
+    document.body.appendChild(banner);
+  };
+  if (typeof ipcRenderer !== 'undefined') {
+    ipcRenderer.on('update-status', (_e, s) => {
+      if (!s) return;
+      if (s.state === 'available') showToast(`更新 v${s.version || ''} をダウンロード中…`);
+      else if (s.state === 'downloaded') showBanner(s.version);
+      else if (s.state === 'error') console.warn('[tin] update error:', s.message);
+    });
+  }
+})();
 
 // renderer 側で空きスロットを推測する (楽観的更新用)
 function nextFreeSlotLocal(targetSlot) {

@@ -59,6 +59,10 @@ if (process.platform === 'win32') {
   }
 }
 
+// Windows 自動アップデート (packaged + win でのみ作動。dev/mac は no-op)
+let initAutoUpdate = () => {};
+try { ({ initAutoUpdate } = require('./lib/updater')); } catch (e) { console.warn('[tin] updater module load failed:', e && e.message); }
+
 // ── PTY シェル設定 (クロスプラットフォーム) ──
 // Windows では SHELL/$HOME が無いため PowerShell / USERPROFILE を既定にする。
 const IS_WIN = process.platform === 'win32';
@@ -157,6 +161,38 @@ ipcMain.handle('show-message', (_event, { message }) => {
   dialog.showMessageBox({ type: 'info', message, buttons: ['OK'] });
 });
 
+// 自ウィンドウ(Electron 本体)の HWND を数値で得る (Windows のみ)。
+// HWND はカーネルハンドルで 2^53 未満に十分収まるため Number で安全に扱える。
+function ownHwnd(win) {
+  try {
+    const buf = win.getNativeWindowHandle();
+    if (!buf || !buf.length) return 0;
+    return buf.length >= 8 ? Number(buf.readBigUInt64LE(0)) : buf.readUInt32LE(0);
+  } catch { return 0; }
+}
+
+// Windows の「最大化」: frameless+transparent ウィンドウを素の win.maximize() で最大化すると
+// 不可視リサイズ縁(約8px)ぶん画面外へはみ出し、タスクバーを覆ったり端が切れる/リサイズが
+// うまく効かない。これを避けるため、対象ディスプレイの workArea にピタリと合わせる擬似最大化に
+// する。状態は win._fakeMax / win._fakeMaxRestore で自前管理し、renderer には 'win-maximized' で通知。
+function isWinMaximized(win) { return IS_WIN ? !!win._fakeMax : win.isMaximized(); }
+function toggleMaximize(win) {
+  if (!win || win.isDestroyed()) return;
+  if (!IS_WIN) { win.isMaximized() ? win.unmaximize() : win.maximize(); return; }
+  if (win._fakeMax) {
+    win._fakeMax = false;
+    const r = win._fakeMaxRestore;
+    if (r) { try { win.setBounds(r); } catch {} }
+    try { win.webContents.send('win-maximized', false); } catch {}
+  } else {
+    win._fakeMaxRestore = win.getBounds();
+    const d = screen.getDisplayMatching(win.getBounds());
+    win._fakeMax = true;
+    try { win.setBounds(d.workArea); } catch {}
+    try { win.webContents.send('win-maximized', true); } catch {}
+  }
+}
+
 // Windows: hidden titlebar のためネイティブの最小化/最大化/閉じるが無い。
 // レンダラーのカスタムボタンから呼ばれる。
 ipcMain.handle('window-control', (event, { action }) => {
@@ -164,53 +200,35 @@ ipcMain.handle('window-control', (event, { action }) => {
   if (!win) return;
   switch (action) {
     case 'minimize': win.minimize(); break;
-    case 'maximize': win.isMaximized() ? win.unmaximize() : win.maximize(); break;
+    case 'maximize': toggleMaximize(win); break;
     case 'close': win.close(); break;
   }
 });
 
-// Windows: 手動ウィンドウドラッグ。transparent ウィンドウで app-region drag が
-// 効かないため、レンダラーから送られるカーソル screen 座標(DIP)で setPosition する。
-// setPosition は 'move' を発火するので snapped 追従もそのまま動く。
-let _winDrag = null;
-ipcMain.on('win-move-start', (event, { x, y }) => {
+// Windows: ネイティブ・ウィンドウドラッグ。transparent ウィンドウで -webkit-app-region:drag が
+// 効かないため、従来は pointermove を IPC で受けて毎フレーム setPosition していたが、IPC 往復の
+// レイテンシでカクつき、DPI 座標ズレで「元に戻る」不具合があった。代わりに OS の標準モーダル移動
+// ループ(WM_NCLBUTTONDOWN)へ委譲し、他アプリ同様の滑らかな移動 + Aero スナップを得る。
+// SendMessage は移動完了まで戻らないため、戻った直後に発火する 'moved' で snapped 窓を整列する。
+ipcMain.on('win-native-drag', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win || win.isMaximized()) return;
-  const [wx, wy] = win.getPosition();
-  _winDrag = { win, offX: x - wx, offY: y - wy };
+  if (!win || isWinMaximized(win)) return;
+  if (axHelper && axHelper.startWindowDrag) {
+    const h = ownHwnd(win);
+    if (h) axHelper.startWindowDrag(h);
+  }
 });
-ipcMain.on('win-move', (event, { x, y }) => {
-  if (!_winDrag) return;
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win || win !== _winDrag.win) return;
-  try { win.setPosition(Math.round(x - _winDrag.offX), Math.round(y - _winDrag.offY)); } catch {}
-});
-ipcMain.on('win-move-end', () => { _winDrag = null; });
 
-// Windows: 手動リサイズ (frameless+transparent はリサイズ境界が無いため)。
-// レンダラーの縁ハンドルから edge とカーソル screen 座標(DIP)を受け取り setBounds。
-let _winResize = null;
-ipcMain.on('win-resize-start', (event, { edge, x, y }) => {
+// Windows: ネイティブ・リサイズ (frameless+transparent はリサイズ境界が無いため)。
+// edge ('n'|'s'|'e'|'w'|'ne'|'nw'|'se'|'sw') を OS のヒットテストへマップして委譲する。
+ipcMain.on('win-native-resize', (event, { edge }) => {
   const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win || win.isMaximized()) return;
-  _winResize = { win, edge, b: win.getBounds(), sx: x, sy: y };
+  if (!win || isWinMaximized(win)) return;
+  if (axHelper && axHelper.startWindowResize) {
+    const h = ownHwnd(win);
+    if (h) axHelper.startWindowResize(h, edge);
+  }
 });
-ipcMain.on('win-resize', (event, { x, y }) => {
-  if (!_winResize) return;
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win || win !== _winResize.win) return;
-  const { edge, b, sx, sy } = _winResize;
-  const dx = x - sx, dy = y - sy;
-  const minW = win.getMinimumSize()[0] || 200;
-  const minH = win.getMinimumSize()[1] || 200;
-  let { x: nx, y: ny, width: nw, height: nh } = b;
-  if (edge.includes('e')) nw = Math.max(minW, b.width + dx);
-  if (edge.includes('s')) nh = Math.max(minH, b.height + dy);
-  if (edge.includes('w')) { nw = Math.max(minW, b.width - dx); nx = b.x + (b.width - nw); }
-  if (edge.includes('n')) { nh = Math.max(minH, b.height - dy); ny = b.y + (b.height - nh); }
-  try { win.setBounds({ x: nx, y: ny, width: nw, height: nh }); } catch {}
-});
-ipcMain.on('win-resize-end', () => { _winResize = null; });
 
 // yabai で windowNumbers を next/prev Space に移動。
 // 成功した wn のリストを返す。
@@ -2719,10 +2737,15 @@ function createWorkspace(name, savedState) {
   const onWinMove = () => {
     _lastDragEventAt = Date.now();
     // 1. embedded BrowserWindow は setBounds() で即座に同期 (ブロックしない)
+    //    bounds が前回と同一ならスキップ — 冗長な再配置による透明ウィンドウのちらつきを防ぐ。
     for (const [slot, gw] of ws.gridWindows) {
       if (gw.win && !gw.win.isDestroyed()) {
         const b = getSlotBounds(ws, slot);
-        if (b) gw.win.setBounds(b);
+        if (!b) continue;
+        const p = gw._lastBounds;
+        if (p && p.x === b.x && p.y === b.y && p.width === b.width && p.height === b.height) continue;
+        gw._lastBounds = b;
+        gw.win.setBounds(b);
       }
     }
     // 2. 外部ウィンドウはフラグを立てるだけ — AX は 50ms タイマーで非同期実行
@@ -2763,11 +2786,21 @@ function createWorkspace(name, savedState) {
   win.on('move', onWinMove);
   win.on('resize', onWinMove);
   win.on('will-move', () => { _dragging = true; _lastDragEventAt = Date.now(); });
-  // Windows: 最大化状態をレンダラーに通知 (リサイズハンドルの表示制御)
+  // Windows: 最大化を workArea 擬似最大化へ一本化する。
+  // ネイティブドラッグで Aero スナップが効くと、上端ドラッグ/Win+↑ で OS が native 最大化し、
+  // frameless+transparent では不可視縁(約8px)ぶん画面外へはみ出す(タスクバーを覆う/端が切れる/
+  // リサイズが効かない)。native 最大化を検知したら即座に解除し、対象ディスプレイの workArea へ
+  // 合わせる擬似最大化(toggleMaximize と同じ状態)に変換して挙動を統一する。
   if (IS_WIN) {
-    const sendMax = () => { if (!win.isDestroyed()) win.webContents.send('win-maximized', win.isMaximized()); };
-    win.on('maximize', sendMax);
-    win.on('unmaximize', sendMax);
+    win.on('maximize', () => {
+      if (win._fakeMax || win.isDestroyed()) return;
+      const d = screen.getDisplayMatching(win.getBounds());
+      win.unmaximize();                       // OS が pre-maximize 位置へ復元
+      win._fakeMaxRestore = win.getBounds();  // それを復元先として保存
+      win._fakeMax = true;
+      try { win.setBounds(d.workArea); } catch {}
+      try { win.webContents.send('win-maximized', true); } catch {}
+    });
   }
   win.on('moved', () => {
     _dragging = false;
@@ -4343,6 +4376,14 @@ app.whenReady().then(() => {
   } else {
     createWorkspace();
   }
+
+  // Windows 自動アップデート開始 (status はフォーカス窓 → 無ければ先頭 workspace 窓へ送る)
+  initAutoUpdate(() => {
+    const f = BrowserWindow.getFocusedWindow();
+    if (f && !f.isDestroyed()) return f;
+    for (const [, ws] of workspaces) if (ws.win && !ws.win.isDestroyed()) return ws.win;
+    return null;
+  });
 });
 
 // 同期版: before-quit 用 (async 使えない)

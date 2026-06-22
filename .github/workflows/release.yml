@@ -1,12 +1,16 @@
 name: release
 
-# タグ v* を push すると Windows ビルド(x64/arm64)を作り GitHub Release(draft)へ添付する。
-# Windows のウィンドウ操作バックエンドは koffi(FFI, ビルド不要・prebuilt 同梱)で、
-# node-pty も prebuilds(N-API)を同梱するため、Windows ではネイティブのコンパイルは一切不要。
-# (binding.gyp の ax_helper は OS=='mac' 条件付きで Windows では何もビルドしない)
-# macOS 版は手元ビルド(npm run dist)で同 Release へ追加する。
+# タグ v* を push すると Windows ビルド(x64/arm64)を 1 回の electron-builder 実行で作り、
+# GitHub Release(draft)へ添付 + 自動アップデート用メタデータ(latest.yml / *.blockmap)を生成・publish する。
+# 両 arch を単一実行で出すことで latest.yml が両インストーラを列挙し、electron-updater(v6)が
+# 実行中マシンの arch に合うものを自動選択できる(arch ごとに別実行すると latest.yml が衝突する)。
 #
-# workflow_dispatch(tag 空)で起動するとビルド検証のみ(Release へは上げない)。
+# Windows のウィンドウ操作バックエンドは koffi(FFI, ビルド不要・prebuilt 同梱)で、
+# node-pty も prebuilds(N-API)を同梱するため Windows ではネイティブのコンパイルは一切不要。
+# macOS 版は手元ビルド(npm run dist)で同 Release(draft)へ追加してから publish する。
+#
+# 自動更新は「公開済み(draft でない)」Release のみ検知するため、draft を手動 publish した時点で
+# 既存ユーザーへ配信される。workflow_dispatch(tag 空)で起動した場合はビルド検証のみ(publish しない)。
 
 on:
   push:
@@ -14,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (例 v1.8.0)。空ならビルド検証のみで Release へは上げない'
+        description: 'Release tag (例 v1.14.0)。空ならビルド検証のみで Release へは上げない'
         required: false
         default: ''
 
@@ -24,10 +28,6 @@ permissions:
 jobs:
   win:
     runs-on: windows-2022
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x64, arm64]
     steps:
       - uses: actions/checkout@v4
 
@@ -39,41 +39,37 @@ jobs:
       - name: Install deps (no native build)
         run: npm install --ignore-scripts
 
-      # npmRebuild:false なので electron-builder は native を再ビルドせず、
-      # 同梱の koffi prebuilt と node-pty prebuilds をそのままパッケージする。
-      - name: Package with electron-builder
+      # publish するか判定: タグ push か、dispatch で tag 指定があれば publish(=draft release へアップロード)。
+      - name: Decide publish mode
+        id: mode
         shell: bash
-        run: npx electron-builder --win --${{ matrix.arch }} --publish never
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* || -n "${{ github.event.inputs.tag }}" ]]; then
+            echo "publish=always" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=never" >> "$GITHUB_OUTPUT"
+          fi
+
+      # npmRebuild:false なので electron-builder は native を再ビルドせず、同梱 prebuilt をそのまま使う。
+      # arch を指定せず --win のみ → package.json の win.target(x64+arm64)を 1 実行でまとめてビルドし、
+      # 単一の latest.yml(両 arch を列挙)を生成する。publish=always のとき GH_TOKEN で Release へアップロード。
+      - name: Package & publish with electron-builder
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --publish ${{ steps.mode.outputs.publish }}
 
       - name: List dist
         shell: bash
         run: ls -la dist/ || true
 
+      # 検証用にビルド成果物(更新メタdata含む)を常に artifact 化しておく。
       - uses: actions/upload-artifact@v4
         with:
-          name: win-${{ matrix.arch }}
+          name: win-dist
           if-no-files-found: error
           path: |
             dist/*.exe
             dist/*.zip
-
-  release:
-    needs: [win]
-    # タグ push、または dispatch で tag を明示したときだけ Release を作る。
-    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != ''
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: List artifacts
-        run: find artifacts -type f | sort
-
-      - name: Create / update draft release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          draft: true
-          fail_on_unmatched_files: true
-          files: artifacts/**/*
+            dist/*.blockmap
+            dist/latest*.yml

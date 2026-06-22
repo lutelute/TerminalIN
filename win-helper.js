@@ -78,6 +78,9 @@ const GetWindow = user32.func('uintptr_t GetWindow(uintptr_t hWnd, uint32 uCmd)'
 const GetWindowLongW = user32.func('int32 GetWindowLongW(uintptr_t hWnd, int nIndex)');
 const AttachThreadInput = user32.func('bool AttachThreadInput(uint32 idAttach, uint32 idAttachTo, bool fAttach)');
 const SetWindowLongW = user32.func('int32 SetWindowLongW(uintptr_t hWnd, int nIndex, int32 dwNewLong)');
+// ネイティブ・ドラッグ/リサイズ用 (WM_NCLBUTTONDOWN を投げ OS のモーダル移動ループに委譲)
+const ReleaseCapture = user32.func('bool ReleaseCapture()');
+const SendMessageW = user32.func('intptr_t SendMessageW(uintptr_t hWnd, uint32 Msg, uintptr_t wParam, intptr_t lParam)');
 
 // ── kernel32 ──
 const GetCurrentThreadId = kernel32.func('uint32 GetCurrentThreadId()');
@@ -132,6 +135,10 @@ const SW_RESTORE = 9;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 const DWMWA_CLOAKED = 14;
 const MIN_SIZE = 50;
+// ネイティブ移動/リサイズ (WM_NCLBUTTONDOWN の hit-test コード)
+const WM_NCLBUTTONDOWN = 0x00A1;
+const HTCAPTION = 2;
+const HT_EDGE = { n: 12, s: 15, e: 11, w: 10, ne: 14, nw: 13, se: 17, sw: 16 };
 
 // DPI スケール (Electron 側から注入)。物理px = DIP * scale。
 let dpiScale = 1;
@@ -337,6 +344,34 @@ function isAXTrusted() {
   return true;
 }
 
+// ── ネイティブ・ウィンドウ移動/リサイズ ──
+// frameless+transparent な自ウィンドウを、IPC で毎フレーム setPosition する方式
+// (レイテンシでカクつく/座標ズレで戻る) に代えて、OS の標準モーダル移動ループへ委譲する。
+// ReleaseCapture() で現在のマウスキャプチャを解放し、WM_NCLBUTTONDOWN を送ると
+// DefWindowProc がマウスアップまで自前で追従する。他アプリと同一の滑らかさ + Aero スナップが効く。
+// ※ 自ウィンドウ(= Electron 本体スレッドが所有する HWND)に対してのみ呼ぶこと。
+//    SendMessage はモーダルループ終了まで戻らない(= JS イベントループが一時ブロックされる)。
+function startWindowDrag(hWnd) {
+  hWnd = Number(hWnd);
+  if (!hWnd || !IsWindow(hWnd)) return false;
+  try {
+    ReleaseCapture();
+    SendMessageW(hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+    return true;
+  } catch { return false; }
+}
+
+function startWindowResize(hWnd, edge) {
+  hWnd = Number(hWnd);
+  const hit = HT_EDGE[edge];
+  if (!hWnd || !hit || !IsWindow(hWnd)) return false;
+  try {
+    ReleaseCapture();
+    SendMessageW(hWnd, WM_NCLBUTTONDOWN, hit, 0);
+    return true;
+  } catch { return false; }
+}
+
 // ── 仮想デスクトップ (mac の Space 相当) — VirtualDesktopAccessor.dll があれば有効 ──
 // vda 未ロード時は全て no-op(空配列/0/false)。main.js の if(axHelper.xxx) ガードと
 // spacesCapable() による UI 出し分けで「未対応なら静かに無効」を担保する。
@@ -392,6 +427,8 @@ module.exports = {
   getFrontmostWindowNumber,
   getWindowNumbersByPid,
   isAXTrusted,
+  startWindowDrag,
+  startWindowResize,
   moveToSpace,
   moveWindowsToActiveSpace,
   moveWindowsToSpaceId,
