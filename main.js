@@ -104,6 +104,46 @@ function ptySpawn(opts = {}) {
   });
 }
 
+// ── pty デーモン (端末永続化): 端末を TiN 本体から切り離し、TiN が落ちても生存させる ──
+// 接続できれば daemon 経由、できなければ従来の in-process pty にフォールバック (壊さない)。
+const { PtyClient } = require('./lib/pty-client');
+let ptyClient = null;
+const daemonSessions = new Map(); // sessionId -> gw (daemon からの 'data'/'exit' を gw.win へ振り分け)
+// ELECTRON_RUN_AS_NODE のデーモンは asar を読めないため、asarUnpack で展開された実体パスへ変換する。
+// ptyd.js も node-pty も asarUnpack 済み (package.json) なので、両方ともこの変換を通す必要がある。
+function unpackedPath(p) {
+  const marker = 'app.asar' + path.sep;
+  return (p && p.includes(marker)) ? p.replace(marker, 'app.asar.unpacked' + path.sep) : p;
+}
+async function initPtyDaemon() {
+  try {
+    const c = new PtyClient({
+      execPath: process.execPath,
+      ptydPath: unpackedPath(path.join(__dirname, 'lib', 'ptyd.js')),
+      nodePtyPath: unpackedPath(require.resolve('node-pty')),
+    });
+    c.on('data', (sid, data) => {
+      const gw = daemonSessions.get(sid);
+      if (gw && gw.win && !gw.win.isDestroyed()) gw.win.webContents.send('terminal-data', { id: gw.ptyId, data });
+    });
+    c.on('exit', (sid) => {
+      const gw = daemonSessions.get(sid);
+      if (gw && gw.win && !gw.win.isDestroyed()) gw.win.webContents.send('terminal-exit', { id: gw.ptyId });
+    });
+    c.on('noSession', (m) => {
+      // 永続セッションが消えていた (daemon 再起動後など) → その場で新規セッションを作って穴を埋める。
+      const gw = daemonSessions.get(m.id);
+      if (gw && gw.win && !gw.win.isDestroyed()) c.create({ id: m.id, cwd: gw.cwd, cols: 80, rows: 24, shell: getPtyShell() });
+    });
+    await c.connect();
+    ptyClient = c;
+    console.log('[tin] pty daemon connected — terminal persistence ON');
+  } catch (e) {
+    ptyClient = null;
+    console.warn('[tin] pty daemon unavailable — using in-process ptys (no persistence):', e && e.message);
+  }
+}
+
 // ── yabai 統合: Space 移動 ──
 // yabai の window id = CGWindowID のため直接使用可能。
 // SIP 部分無効 + `sudo yabai --load-sa` が必要。
@@ -159,6 +199,39 @@ ipcMain.handle('get-yabai-sa-status', async () => {
 
 ipcMain.handle('show-message', (_event, { message }) => {
   dialog.showMessageBox({ type: 'info', message, buttons: ['OK'] });
+});
+
+// ユーザーが簡単に不具合報告できるよう、環境情報を自動添付した GitHub の新規 issue ページを
+// 既定ブラウザで開く (認証不要・ユーザーが内容を確認して投稿)。renderer のヘルプ「🐛 問題を報告」から呼ぶ。
+ipcMain.handle('report-issue', () => {
+  try {
+    const os = require('os');
+    const body = [
+      '## 内容（不具合 / 要望）',
+      '',
+      '（できるだけ具体的に書いてください。スクショ歓迎）',
+      '',
+      '## 再現手順',
+      '1. ',
+      '2. ',
+      '',
+      '## 期待する動作',
+      '',
+      '',
+      '---',
+      '<!-- 以下は自動入力された環境情報です。消さないでください -->',
+      `- TiN: v${app.getVersion()}`,
+      `- OS: ${process.platform} ${os.release()} (${process.arch})`,
+      `- Electron: ${process.versions.electron} / Chromium: ${process.versions.chrome}`,
+    ].join('\n');
+    const url = 'https://github.com/lutelute/TerminalIN/issues/new'
+      + '?title=' + encodeURIComponent('[報告] ')
+      + '&body=' + encodeURIComponent(body);
+    shell.openExternal(url);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
 });
 
 // 自ウィンドウ(Electron 本体)の HWND を数値で得る (Windows のみ)。
@@ -233,44 +306,64 @@ function wsForWin(win) {
   return null;
 }
 
-// Windows: ネイティブ・ウィンドウドラッグ。transparent ウィンドウで -webkit-app-region:drag が
-// 効かないため、従来は pointermove を IPC で受けて毎フレーム setPosition していたが、IPC 往復の
-// レイテンシでカクつき、DPI 座標ズレで「元に戻る」不具合があった。代わりに OS の標準モーダル移動
-// ループ(WM_NCLBUTTONDOWN)へ委譲し、他アプリ同様の滑らかな移動 + Aero スナップを得る。
-// SendMessage は移動完了まで戻らないため、戻った直後に snapped 窓を新位置へ整列する。
-// (ドラッグ中は JS がブロックされライブ追従できないので、終了時の整列で代替する。
-//  'moved' イベントにも依存せず、ここで明示的に retile して取りこぼしを無くす。)
-ipcMain.on('win-native-drag', (event) => {
+// Windows: 手動ウィンドウドラッグ。transparent ウィンドウは OS のモーダル移動ループ
+// (WM_NCLBUTTONDOWN/HTCAPTION) が効かない — Chromium が透明窓の非クライアント移動を飲み込む
+// ため (-webkit-app-region:drag が透明窓で効かないのと同根)。実機計測でも SendMessage は即座に
+// 戻り窓が一切動かないことを確認。よって renderer の pointer 追従で win.setBounds する方式に統一。
+// 座標は screen DIP で扱う (renderer の e.screenX/Y と Electron の getBounds/setBounds はどちらも
+// DIP なので変換不要 = 旧実装の「DPI ズレで戻る」も解消)。ドラッグ中は TiN 窓のみ動かし、snapped
+// 窓は drag 終了時にまとめて整列する (フレーム毎の全窓移動がカクつきの主因だったため)。
+let _winDrag = null; // { win, ox, oy, cx, cy, w, h }
+ipcMain.on('win-drag-start', (event, { screenX, screenY }) => {
   const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win) return;
-  if (axHelper && axHelper.startWindowDrag) {
-    const h = ownHwnd(win);
-    if (!h) return;
-    // 擬似最大化中はまず復元してから掴む (Windows 標準挙動)。
-    if (IS_WIN && win._fakeMax) restoreUnderCursor(win);
-    axHelper.startWindowDrag(h);   // モーダル移動ループ終了までブロック
-    const ws = wsForWin(win);
-    if (ws) {
-      const mode = appSettings.dragEndMode || 'position';
-      if (mode !== 'off') retileAll(ws, false, mode === 'position').catch(() => {});
-    }
+  if (!win || win.isDestroyed()) return;
+  if (IS_WIN && win._fakeMax) restoreUnderCursor(win); // 擬似最大化はまず復元してから掴む
+  const b = win.getBounds();
+  _winDrag = { win, ox: b.x, oy: b.y, cx: screenX, cy: screenY, w: b.width, h: b.height };
+});
+ipcMain.on('win-drag-move', (event, { screenX, screenY }) => {
+  const s = _winDrag;
+  if (!s || s.win.isDestroyed()) return;
+  const nx = Math.round(s.ox + (screenX - s.cx));
+  const ny = Math.round(s.oy + (screenY - s.cy));
+  try { s.win.setBounds({ x: nx, y: ny, width: s.w, height: s.h }); } catch {}
+});
+ipcMain.on('win-drag-end', (event) => {
+  const s = _winDrag; _winDrag = null;
+  if (!s || s.win.isDestroyed()) return;
+  const ws = wsForWin(s.win);
+  if (ws) {
+    ws._winManip = false; // 取りこぼし保険 (set-win-manip(false) が失われてもここで解除)
+    const mode = appSettings.dragEndMode || 'position';
+    if (mode !== 'off') retileAll(ws, false, mode === 'position').catch(() => {});
   }
 });
 
-// Windows: ネイティブ・リサイズ (frameless+transparent はリサイズ境界が無いため)。
-// edge ('n'|'s'|'e'|'w'|'ne'|'nw'|'se'|'sw') を OS のヒットテストへマップして委譲する。
-ipcMain.on('win-native-resize', (event, { edge }) => {
+// Windows: 手動リサイズ。ネイティブ NC リサイズも透明窓では上の移動と同様に効かないため、
+// 縁ハンドルの edge ('n'|'s'|'e'|'w'|'ne'|'nw'|'se'|'sw') に応じて bounds を更新する。
+let _winResize = null; // { win, edge, b, cx, cy }
+ipcMain.on('win-resize-start', (event, { edge, screenX, screenY }) => {
   const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win || isWinMaximized(win)) return;
-  if (axHelper && axHelper.startWindowResize) {
-    const h = ownHwnd(win);
-    if (h) {
-      axHelper.startWindowResize(h, edge);   // モーダルリサイズループ終了までブロック
-      // スロットサイズが変わるので full retile で snapped 窓を新サイズへ追従させる。
-      const ws = wsForWin(win);
-      if (ws) retileAll(ws).catch(() => {});
-    }
-  }
+  if (!win || win.isDestroyed() || isWinMaximized(win)) return;
+  _winResize = { win, edge: String(edge || ''), b: win.getBounds(), cx: screenX, cy: screenY };
+});
+ipcMain.on('win-resize-move', (event, { screenX, screenY }) => {
+  const s = _winResize;
+  if (!s || s.win.isDestroyed()) return;
+  const dx = screenX - s.cx, dy = screenY - s.cy;
+  const MIN_W = 360, MIN_H = 200;
+  let { x, y, width, height } = s.b;
+  if (s.edge.includes('e')) width = Math.max(MIN_W, s.b.width + dx);
+  if (s.edge.includes('s')) height = Math.max(MIN_H, s.b.height + dy);
+  if (s.edge.includes('w')) { const nw = Math.max(MIN_W, s.b.width - dx); x = s.b.x + (s.b.width - nw); width = nw; }
+  if (s.edge.includes('n')) { const nh = Math.max(MIN_H, s.b.height - dy); y = s.b.y + (s.b.height - nh); height = nh; }
+  try { s.win.setBounds({ x, y, width, height }); } catch {}
+});
+ipcMain.on('win-resize-end', (event) => {
+  const s = _winResize; _winResize = null;
+  if (!s || s.win.isDestroyed()) return;
+  const ws = wsForWin(s.win);
+  if (ws) { ws._winManip = false; retileAll(ws).catch(() => {}); }
 });
 
 // yabai で windowNumbers を next/prev Space に移動。
@@ -547,6 +640,11 @@ async function writeWorkspacesJson() {
       if (snapped.some(s => s.windowNumber === p.windowNumber || s.slot === p.slot)) continue;
       snapped.push(p);
     }
+    // 永続化: daemon が保持する grid 端末 (slot + sessionId + cwd)。再起動時に再アタッチして復元する。
+    const gridTerminals = [];
+    for (const [gslot, gw] of ws.gridWindows) {
+      if (gw.daemon && gw.sessionId) gridTerminals.push({ slot: gslot, sessionId: gw.sessionId, cwd: gw.cwd || '' });
+    }
     payload.workspaces.push({
       name: ws.name,
       sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
@@ -554,6 +652,7 @@ async function writeWorkspacesJson() {
       grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios, slotLayout: ws.slotLayout },
       colorIndex: ws.colorIndex,
       snappedExternals: snapped,
+      gridTerminals,
       spaceId: ws._tinSpaceId || 0,
       memo: ws.memo || '',
     });
@@ -1390,7 +1489,8 @@ function compactSlots(ws) {
 }
 
 // ── Create an embedded grid terminal (BrowserWindow + xterm.js) ──
-function createGridTerminal(ws, slot) {
+// opts.sessionId / opts.attach: 永続化セッションへ再アタッチして復元する場合に指定。
+function createGridTerminal(ws, slot, opts = {}) {
   const b = getSlotBounds(ws, slot);
   if (!b) return null;
 
@@ -1399,36 +1499,45 @@ function createGridTerminal(ws, slot) {
     frame: false,
     acceptFirstMouse: true,
     skipTaskbar: true,
+    show: false,                 // 内容が描けてから表示 → 生成時の白フラッシュ(点滅)を防ぐ
+    backgroundColor: '#1a1a2e',  // grid-terminal.html の背景と一致させ、初回フレームを白でなく濃紺にする
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
       sandbox: false,
     },
   });
+  // ready-to-show でちらつき無く表示 (slot 位置は生成時の bounds で確定済み)
+  gridWin.once('ready-to-show', () => { if (!gridWin.isDestroyed()) gridWin.show(); });
   // Hide from macOS native Window menu listing (must be set via property, not constructor)
   gridWin.excludedFromShownWindowsMenu = true;
 
   const ptyId = nextPtyId++;
-  const p = ptySpawn({ cols: 80, rows: 24 });
+  const useDaemon = !!ptyClient;
+  const sessionId = opts.sessionId || ('s' + ptyId + '-' + Math.random().toString(36).slice(2, 8));
+  const cwd = opts.cwd || getHomeDir();
+  const gw = { win: gridWin, pty: null, ptyId, sessionId, daemon: useDaemon, slot, tailBuf: '', lastDataAt: 0, tty: '', cwd };
 
-  const gw = { win: gridWin, pty: p, ptyId, slot, tailBuf: '', lastDataAt: 0, tty: '' };
-  // 状態判定用: 出力ストリームの末尾を保持(claude の busy/perm パターン検出)。
-  // tty は claude の ps 集合・hooks 状態ファイルとの突合キー (macOS のみ)
-  if (!IS_WIN) {
-    execAsync(`ps -o tty= -p ${p.pid}`, { timeout: 2000 })
-      .then(({ stdout }) => { gw.tty = stdout.trim(); })
-      .catch(() => {});
+  if (useDaemon) {
+    // 端末は daemon が保持 (TiN が落ちても生存)。出力は ptyClient の 'data'/'exit' →
+    // daemonSessions 経由で gw.win へ振り分けられる。
+    daemonSessions.set(sessionId, gw);
+  } else {
+    // フォールバック: daemon 未接続時は従来どおり in-process pty (永続化なし)。
+    const p = ptySpawn({ cols: 80, rows: 24, cwd });
+    gw.pty = p;
+    // 状態判定用 tty (macOS のみ)。
+    if (!IS_WIN) {
+      execAsync(`ps -o tty= -p ${p.pid}`, { timeout: 2000 })
+        .then(({ stdout }) => { gw.tty = stdout.trim(); }).catch(() => {});
+    }
+    p.onData(data => {
+      gw.tailBuf = data.length >= 2000 ? data.slice(-2000) : (gw.tailBuf + data).slice(-2000);
+      gw.lastDataAt = Date.now();
+      if (!gridWin.isDestroyed()) gridWin.webContents.send('terminal-data', { id: ptyId, data });
+    });
+    p.onExit(() => { if (!gridWin.isDestroyed()) gridWin.webContents.send('terminal-exit', { id: ptyId }); });
   }
-
-  p.onData(data => {
-    // 大量出力時は連結せず data 末尾のみ保持(文字列連結コストの安全弁)
-    gw.tailBuf = data.length >= 2000 ? data.slice(-2000) : (gw.tailBuf + data).slice(-2000);
-    gw.lastDataAt = Date.now();
-    if (!gridWin.isDestroyed()) gridWin.webContents.send('terminal-data', { id: ptyId, data });
-  });
-  p.onExit(() => {
-    if (!gridWin.isDestroyed()) gridWin.webContents.send('terminal-exit', { id: ptyId });
-  });
 
   ws.gridWindows.set(slot, gw);
 
@@ -1437,10 +1546,17 @@ function createGridTerminal(ws, slot) {
   gridWin.loadFile('grid-terminal.html');
   gridWin.webContents.on('did-finish-load', () => {
     gridWin.webContents.send('init-terminal', { id: ptyId });
+    if (useDaemon && ptyClient) {
+      // renderer 準備後に接続 — attach 時の buffer 再生 (スクロールバック復元) を取りこぼさない。
+      if (opts.attach) ptyClient.attach(sessionId);
+      else ptyClient.create({ id: sessionId, cwd, cols: 80, rows: 24, shell: getPtyShell() });
+    }
   });
 
   gridWin.on('closed', () => {
-    try { p.kill(); } catch {}
+    // tmux 方式: 窓を閉じても daemon セッションは kill しない (永続化)。明示削除のみ kill。
+    if (gw.daemon) { daemonSessions.delete(sessionId); if (ptyClient) ptyClient.detach(sessionId); }
+    else { try { gw.pty && gw.pty.kill(); } catch {} }
     // slot は flip/compact で変わるため、現在の gw.slot で消す (他人のエントリ誤削除ガード付き)
     if (ws.gridWindows.get(gw.slot) === gw) ws.gridWindows.delete(gw.slot);
   });
@@ -1452,7 +1568,11 @@ function createGridTerminal(ws, slot) {
 ipcMain.on('grid-terminal-input', (event, { id, data }) => {
   for (const [, ws] of workspaces) {
     for (const [, gw] of ws.gridWindows) {
-      if (gw.ptyId === id) { gw.pty.write(data); return; }
+      if (gw.ptyId === id) {
+        if (gw.daemon) { if (ptyClient) ptyClient.input(gw.sessionId, data); }
+        else if (gw.pty) gw.pty.write(data);
+        return;
+      }
     }
   }
 });
@@ -1460,7 +1580,11 @@ ipcMain.on('grid-terminal-input', (event, { id, data }) => {
 ipcMain.on('grid-terminal-resize', (event, { id, cols, rows }) => {
   for (const [, ws] of workspaces) {
     for (const [, gw] of ws.gridWindows) {
-      if (gw.ptyId === id) { try { gw.pty.resize(cols, rows); } catch {} return; }
+      if (gw.ptyId === id) {
+        if (gw.daemon) { if (ptyClient) ptyClient.resize(gw.sessionId, cols, rows); }
+        else if (gw.pty) { try { gw.pty.resize(cols, rows); } catch {} }
+        return;
+      }
     }
   }
 });
@@ -1505,6 +1629,7 @@ ipcMain.handle('add-grid-terminal', (event) => {
   const slot = nextFreeSlot(ws);
   if (slot < 0) return { ok: false, reason: 'grid-full' };
   createGridTerminal(ws, slot);
+  scheduleSaveWorkspaces(); // 端末セッション(sessionId)を即永続化 → クラッシュ後も再アタッチ可能に
   return { ok: true, slot };
 });
 
@@ -1520,6 +1645,7 @@ function fillGridTerminals(ws) {
     count++;
     slot = nextFreeSlot(ws);
   }
+  if (count) scheduleSaveWorkspaces(); // 端末セッションを即永続化
   return count;
 }
 ipcMain.handle('fill-grid-terminals', (event) => {
@@ -1533,9 +1659,12 @@ ipcMain.handle('remove-grid-terminal', (event, { slot }) => {
   if (!ws) return { ok: false };
   const gw = ws.gridWindows.get(slot);
   if (gw) {
+    // 明示削除: daemon セッションも終了させる (tmux 方式では × のみ kill)。
+    if (gw.daemon && gw.sessionId) { daemonSessions.delete(gw.sessionId); if (ptyClient) ptyClient.kill(gw.sessionId); }
     if (gw.win && !gw.win.isDestroyed()) gw.win.close();
   }
   retileAll(ws);
+  scheduleSaveWorkspaces(); // 端末削除を永続化
   return { ok: true };
 });
 
@@ -2701,6 +2830,9 @@ function createWorkspace(name, savedState) {
   if (savedState && Array.isArray(savedState.snappedExternals) && savedState.snappedExternals.length > 0) {
     ws._pendingRestore = savedState.snappedExternals;
   }
+  if (savedState && Array.isArray(savedState.gridTerminals) && savedState.gridTerminals.length > 0) {
+    ws._pendingGridTerminals = savedState.gridTerminals;
+  }
 
 
   win.loadFile('workspace.html');
@@ -2719,6 +2851,13 @@ function createWorkspace(name, savedState) {
     }
     // 復元は restoreAllPending() で一括実行 (個別ではなく全 workspace まとめて)
     if (ws._pendingRestore) scheduleRestoreAll();
+    // 永続化された grid 端末を daemon から再アタッチして復元 (スクロールバックも戻る)。
+    if (ws._pendingGridTerminals) {
+      const list = ws._pendingGridTerminals; delete ws._pendingGridTerminals;
+      for (const t of list) {
+        if (t && typeof t.slot === 'number') createGridTerminal(ws, t.slot, { sessionId: t.sessionId, cwd: t.cwd, attach: true });
+      }
+    }
     // did-finish-load でロード完了 → clickthrough 判定を有効化
     _ctReady = true;
     // 新規ウィンドウは setInterval の初回発火まで最大 pollIntervalMs 待つため
@@ -3184,6 +3323,12 @@ function createWorkspace(name, savedState) {
         ws._ctGuardTimer = setTimeout(_ctGuardLoop, 100);
         return;
       }
+      // ネイティブ移動/リサイズ中はクリックスルーを強制 OFF (pointer 入力が途切れないように)。
+      if (ws._winManip) {
+        _setCT(false);
+        ws._ctGuardTimer = setTimeout(_ctGuardLoop, 50);
+        return;
+      }
       const cursor = screen.getCursorScreenPoint();
       const b = ws.win.getBounds();
       const inWindow = cursor.x >= b.x && cursor.x <= b.x + b.width
@@ -3315,6 +3460,15 @@ ipcMain.on('set-on-divider', (event, on) => {
   if (!ws) return;
   ws._onDivider = !!on;
   if (on && ws.win && !ws.win.isDestroyed()) ws.win.setIgnoreMouseEvents(false); // 50ms 遅延を橋渡し
+});
+// Windows: ネイティブ移動/リサイズ中はクリックスルー判定を止め、TiN 窓が必ず mouse を受け取るようにする。
+// (移動中にカーソルが grid 領域へ入る/リサイズ縁が grid に重なると、ガードが setIgnoreMouseEvents(true)
+//  にしてポインタ入力が途切れる = ドラッグ/リサイズが「切れる」問題の修正。divider ドラッグと同手法。)
+ipcMain.on('set-win-manip', (event, on) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return;
+  ws._winManip = !!on;
+  if (on && ws.win && !ws.win.isDestroyed()) ws.win.setIgnoreMouseEvents(false);
 });
 ipcMain.on('set-edit-mode', (event, active) => {
   const ws = findWorkspace(event.sender);
@@ -4160,7 +4314,7 @@ function startFrontmostPoll() {
   }, 1000); // 1000ms: mousedown で即時更新するので視覚的な遅れなし
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Windows: Win32 は物理ピクセル、Electron screen API は DIP を返すため
   // win-helper に DPI スケールを注入して SetWindowPos 時に変換する。
   if (IS_WIN && axHelper && axHelper.setDpiScale) {
@@ -4411,6 +4565,9 @@ app.whenReady().then(() => {
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 
+  // 端末永続化デーモンへ接続 (restore より前に。grid 端末の再アタッチに必要)。
+  await initPtyDaemon();
+
   // 永続化された workspace 状態があれば復元、なければデフォルトを作成
   const persisted = loadPersistedWorkspaces();
   if (persisted && persisted.workspaces.length > 0) {
@@ -4451,6 +4608,11 @@ function writeWorkspacesJsonSync() {
       if (snapped.some(s => s.windowNumber === p.windowNumber || s.slot === p.slot)) continue;
       snapped.push(p);
     }
+    // 永続化: daemon が保持する grid 端末 (slot + sessionId + cwd)。再起動時に再アタッチして復元する。
+    const gridTerminals = [];
+    for (const [gslot, gw] of ws.gridWindows) {
+      if (gw.daemon && gw.sessionId) gridTerminals.push({ slot: gslot, sessionId: gw.sessionId, cwd: gw.cwd || '' });
+    }
     payload.workspaces.push({
       name: ws.name,
       sidebar: { x: b.x, y: b.y, width: b.width, height: b.height },
@@ -4458,6 +4620,7 @@ function writeWorkspacesJsonSync() {
       grid: { cols: ws.gridCols, rows: ws.gridRows, colRatios: ws.colRatios, rowRatios: ws.rowRatios, slotLayout: ws.slotLayout },
       colorIndex: ws.colorIndex,
       snappedExternals: snapped,
+      gridTerminals,
       spaceId: ws._tinSpaceId || 0,
       memo: ws.memo || '',
     });

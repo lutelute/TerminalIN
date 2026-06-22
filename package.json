@@ -1,6 +1,6 @@
 {
   "name": "tin",
-  "version": "1.14.0",
+  "version": "1.14.3",
   "description": "Terminal workspace manager for macOS & Windows",
   "main": "main.js",
   "scripts": {
@@ -139,6 +139,7 @@
     ],
     "asarUnpack": [
       "build/Release/ax_helper.node",
+      "lib/ptyd.js",
       "node_modules/node-pty/**",
       "node_modules/koffi/**"
     ]
