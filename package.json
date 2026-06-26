@@ -1,6 +1,6 @@
 {
   "name": "tin",
-  "version": "1.14.3",
+  "version": "1.14.4",
   "description": "Terminal workspace manager for macOS & Windows",
   "main": "main.js",
   "scripts": {
