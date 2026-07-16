@@ -1250,28 +1250,66 @@
   }
 
 </style>
+<link rel="stylesheet" href="workspace-theme.css" />
 </head>
-<body>
+<body data-theme="dark">
 
 <!-- ドロワー外クリック用オーバーレイ -->
 <div id="drawer-overlay" onclick="toggleDrawer(false)"></div>
 
 <!-- ドロワーパネル (サイドバーリスト) -->
 <div id="drawer-panel">
+  <div class="drawer-header">
+    <div>
+      <span class="drawer-kicker">Workspace inspector</span>
+      <strong id="drawer-workspace-name">TiN</strong>
+    </div>
+    <button class="chrome-btn" title="Drawerを閉じる" aria-label="Drawerを閉じる" onclick="toggleDrawer(false)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m6 6 12 12M18 6 6 18" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+  <div class="drawer-summary" id="drawer-summary">
+    <span class="running"><i></i><b id="drawer-running-count">0</b> running</span>
+    <span class="attention"><i></i><b id="drawer-attention-count">0</b> attention</span>
+    <span><i></i><b id="drawer-slot-count">0/0</b> slots</span>
+  </div>
   <div id="drawer-content"></div>
+</div>
+
+<!-- 横断操作は常設ボタンから分離し、Cmd/Ctrl+K に集約 -->
+<div id="tin-command-backdrop" aria-hidden="true">
+  <div class="command-panel" role="dialog" aria-modal="true" aria-label="TiN commands">
+    <div class="command-search-wrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4" stroke-linecap="round"/></svg>
+      <input id="tin-command-search" type="text" placeholder="Search windows, workspaces, and actions…" autocomplete="off" spellcheck="false">
+      <span class="command-esc">ESC</span>
+    </div>
+    <div id="tin-command-list"></div>
+    <div class="command-footer"><span>↑↓ Navigate</span><span>↵ Run</span><span>Esc Close</span></div>
+  </div>
 </div>
 
 <div id="sidebar">
   <div id="titlebar">
     <!-- 1行構成: ☰ タイトル | タブ(スクロール) | コントロール(右端固定) ⊞ -->
-    <div class="drawer-btn" id="drawer-toggle-btn" title="Drawer — ウィンドウリストパネルを開閉" onclick="toggleDrawer()">☰</div>
+    <div class="drawer-btn" id="drawer-toggle-btn" title="Workspace inspector" onclick="toggleDrawer()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h6v6H4zm10 0h6v6h-6zM4 14h6v6H4zm10 0h6v6h-6z"/></svg>
+    </div>
     <span id="title">TiN</span>
     <input id="title-input" type="text" />
     <div id="titlebar-grid"></div>
     <div id="titlebar-controls"></div>
-    <div class="drawer-btn" id="help-btn" title="ヘルプ / ショートカット / 問題を報告" onclick="showHotkeyHelp()">?</div>
-    <div class="drawer-btn" id="settings-btn" title="設定" onclick="openPreferences()">⚙</div>
-    <div id="view-mode-btn" class="drawer-btn" title="View — グリッド分割 / フルスクリーンタブ を切り替え" onclick="toggleViewMode()">⊞</div>
+    <button class="chrome-btn" id="command-btn" title="Commands (Cmd/Ctrl+K)" onclick="openCommandPalette()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4" stroke-linecap="round"/></svg><kbd>⌘K</kbd>
+    </button>
+    <div class="drawer-btn" id="theme-toggle-btn" title="白 / 黒テーマを切り替え" onclick="toggleTheme()"></div>
+    <div class="drawer-btn" id="help-btn" title="ヘルプ / ショートカット / 問題を報告" onclick="showHotkeyHelp()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.4 2.4 0 1 1 3.2 2.27c-.7.3-1 .73-1 1.48V14m0 3h.01" stroke-linecap="round"/></svg>
+    </div>
+    <div class="drawer-btn" id="settings-btn" title="設定" onclick="openPreferences()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.45"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A8 8 0 0 0 15 6l-.3-2.6h-4L10.4 6a8 8 0 0 0-1.6 1L6.5 6 4.4 9.5l2 1.5a7 7 0 0 0 0 2l-2 1.5L6.5 18l2.3-1a8 8 0 0 0 1.6 1l.3 2.6h4L15 18a8 8 0 0 0 1.6-1l2.3 1 2.1-3.5-2-1.5a7 7 0 0 0 0-1Z" stroke-linejoin="round"/></svg>
+    </div>
+    <div id="view-mode-btn" class="drawer-btn" title="View — グリッド分割 / フルスクリーンタブ を切り替え" onclick="toggleViewMode()"></div>
     <div id="collapse-btn" title="Collapse sidebar (Cmd+B)" style="display:none">‹</div>
     <!-- Windows 用ウィンドウコントロール (body.is-win のときのみ表示) -->
     <div id="win-controls">
@@ -1309,6 +1347,62 @@ const { ipcRenderer } = require('electron');
 const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 
+// ── Crystalline icon + appearance system ──
+const ICONS = {
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4" stroke-linecap="round"/>',
+  sun: '<circle cx="12" cy="12" r="3.5"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" stroke-linecap="round"/>',
+  moon: '<path d="M19.2 15.2A7.8 7.8 0 0 1 8.8 4.8a7.9 7.9 0 1 0 10.4 10.4Z" stroke-linejoin="round"/>',
+  grid: '<path d="M4 4h6v6H4zm10 0h6v6h-6zM4 14h6v6H4zm10 0h6v6h-6z"/>',
+  tabs: '<path d="M3 6h18v13H3zM7 6V3h6v3" stroke-linejoin="round"/>',
+  terminal: '<path d="m5 7 5 5-5 5m8 0h6" stroke-linecap="round" stroke-linejoin="round"/>',
+  fill: '<path d="M4 5h7v6H4zm9 0h7v6h-7zM4 13h7v6H4zm9 0h7v6h-7z"/><path d="m6 7 2 1.5L6 10m9 5 2 1.5-2 1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  refresh: '<path d="M19 8a8 8 0 1 0 1 7m-1-7V3m0 5h-5" stroke-linecap="round" stroke-linejoin="round"/>',
+  edit: '<path d="m4 16-.5 4.5L8 20l11-11-4-4L4 16Zm9-9 4 4" stroke-linejoin="round"/>',
+  flipH: '<path d="M12 3v18M8 7 3 12l5 5m8-10 5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/>',
+  flipV: '<path d="M3 12h18M7 8l5-5 5 5M7 16l5 5 5-5" stroke-linecap="round" stroke-linejoin="round"/>',
+  space: '<path d="M5 12h14m-5-5 5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/>',
+  sparkle: '<path d="m12 3 1.2 4.2L17 9l-3.8 1.8L12 15l-1.2-4.2L7 9l3.8-1.8L12 3Zm6 11 .7 2.3L21 17l-2.3.7L18 20l-.7-2.3L15 17l2.3-.7L18 14Z" stroke-linejoin="round"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A8 8 0 0 0 15 6l-.3-2.6h-4L10.4 6a8 8 0 0 0-1.6 1L6.5 6 4.4 9.5l2 1.5a7 7 0 0 0 0 2l-2 1.5L6.5 18l2.3-1a8 8 0 0 0 1.6 1l.3 2.6h4L15 18a8 8 0 0 0 1.6-1l2.3 1 2.1-3.5-2-1.5a7 7 0 0 0 0-1Z" stroke-linejoin="round"/>',
+  window: '<path d="M3 5h18v14H3zM3 9h18"/><circle cx="6" cy="7" r=".6" fill="currentColor" stroke="none"/><circle cx="8.5" cy="7" r=".6" fill="currentColor" stroke="none"/>',
+  drawer: '<path d="M4 4h16v16H4zm6 0v16"/>',
+  close: '<path d="m6 6 12 12M18 6 6 18" stroke-linecap="round"/>',
+  plus: '<path d="M12 5v14M5 12h14" stroke-linecap="round"/>',
+};
+function iconSvg(name, extra = '') {
+  return `<svg ${extra} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" aria-hidden="true">${ICONS[name] || ICONS.window}</svg>`;
+}
+
+let currentTheme = 'dark';
+function terminalTheme(theme = currentTheme) {
+  return theme === 'light'
+    ? { background: '#ffffff', foreground: '#435263', cursor: '#087fa4', selectionBackground: 'rgba(8,127,164,.18)' }
+    : { background: '#090d13', foreground: '#a7b3c2', cursor: '#75dcff', selectionBackground: 'rgba(117,220,255,.2)' };
+}
+function updateThemeButton() {
+  const btn = document.getElementById('theme-toggle-btn');
+  if (!btn) return;
+  const target = currentTheme === 'dark' ? 'light' : 'dark';
+  btn.innerHTML = iconSvg(target === 'light' ? 'sun' : 'moon');
+  btn.title = target === 'light' ? '白テーマへ切り替え' : '黒テーマへ切り替え';
+  btn.setAttribute('aria-label', btn.title);
+}
+function applyTheme(theme) {
+  currentTheme = theme === 'light' ? 'light' : 'dark';
+  document.body.dataset.theme = currentTheme;
+  updateThemeButton();
+  if (typeof embeddedTerms !== 'undefined') {
+    for (const session of embeddedTerms) session.term.options.theme = terminalTheme();
+  }
+}
+async function toggleTheme() {
+  const next = currentTheme === 'dark' ? 'light' : 'dark';
+  applyTheme(next);
+  try { await ipcRenderer.invoke('set-theme', next); } catch {}
+}
+ipcRenderer.on('theme-changed', (_event, theme) => applyTheme(theme));
+updateThemeButton();
+ipcRenderer.invoke('get-settings').then(settings => applyTheme(settings.theme)).catch(() => applyTheme('dark'));
+
 const content = document.getElementById('content');
 const drawerContent = document.getElementById('drawer-content');
 const statusEl = document.getElementById('status');
@@ -1318,6 +1412,10 @@ const titleInput = document.getElementById('title-input');
 // ── Windows: カスタムウィンドウコントロール (hidden titlebar のためネイティブ無し) ──
 const IS_WIN = (typeof process !== 'undefined' && process.platform === 'win32');
 if (IS_WIN) document.body.classList.add('is-win');
+if (IS_WIN) {
+  const commandKbd = document.querySelector('#command-btn kbd');
+  if (commandKbd) commandKbd.textContent = 'Ctrl K';
+}
 let _winManip = false; // ネイティブ移動/リサイズ中: クリックスルーを強制 OFF にしてポインタ入力の途切れを防ぐ
 function winCtl(action) {
   ipcRenderer.invoke('window-control', { action }).catch(() => {});
@@ -1434,12 +1532,150 @@ function toggleDrawer(forceState) {
   notifyOverlay(open);
 }
 
+// ── Command palette: global actions and snapped windows in one searchable plane ──
+let _commandItems = [];
+let _commandSelected = 0;
+let _commandSpaces = [];
+let _commandCanMoveSpaces = process.platform !== 'win32';
+function commandDefinitions() {
+  const items = [
+    { icon: 'terminal', label: 'Create embedded terminal', meta: 'TERMINAL', run: () => ipcRenderer.invoke('add-grid-terminal') },
+    { icon: 'fill', label: 'Fill empty slots with terminals', meta: 'LAYOUT', run: () => ipcRenderer.invoke('fill-grid-terminals') },
+    { icon: 'refresh', label: 'Retile all snapped windows', meta: 'LAYOUT', run: () => ipcRenderer.invoke('retile-now') },
+    { icon: 'flipH', label: 'Flip grid horizontally', meta: 'LAYOUT', run: () => ipcRenderer.invoke('flip-grid', { axis: 'h' }) },
+    { icon: 'flipV', label: 'Flip grid vertically', meta: 'LAYOUT', run: () => ipcRenderer.invoke('flip-grid', { axis: 'v' }) },
+    { icon: currentViewMode === 'grid' ? 'tabs' : 'grid', label: currentViewMode === 'grid' ? 'Switch to tab view' : 'Switch to grid view', meta: 'VIEW', run: toggleViewMode },
+    { icon: 'drawer', label: 'Open workspace inspector', meta: 'VIEW', run: () => toggleDrawer(true) },
+    { icon: currentTheme === 'dark' ? 'sun' : 'moon', label: currentTheme === 'dark' ? 'Use white theme' : 'Use black theme', meta: 'APPEARANCE', run: toggleTheme },
+    { icon: 'settings', label: 'Open preferences', meta: 'SETTINGS', run: openPreferences },
+  ];
+  if (_commandCanMoveSpaces) {
+    items.push(
+      { icon: 'space', label: 'Move workspace to next Space', meta: 'SPACE', run: () => ipcRenderer.invoke('push-to-space', { direction: 1 }) },
+      { icon: 'space', label: 'Move workspace to previous Space', meta: 'SPACE', run: () => ipcRenderer.invoke('push-to-space', { direction: -1 }) },
+    );
+  }
+  for (const [slot, data] of Object.entries(gridSlots)) {
+    items.push({
+      icon: 'terminal', label: data.title || `Terminal ${Number(slot) + 1}`, meta: `SLOT ${Number(slot) + 1}`,
+      run: () => {
+        const tab = document.querySelector(`.groupy-tab[data-kind="pty"][data-slot="${slot}"]`);
+        if (tab) switchToTab(tab);
+      },
+    });
+  }
+  for (const [wn, info] of snappedExternals) {
+    items.push({
+      icon: 'window', label: info.title || info.app || 'Window', meta: `SLOT ${Number(info.slot || 0) + 1}`,
+      run: () => {
+        frontmostWindowNumber = Number(wn);
+        activePtySlot = null;
+        render();
+        ipcRenderer.invoke('raise-snapped', { windowNumber: Number(wn) });
+      },
+    });
+  }
+  for (const space of _commandSpaces) {
+    items.push({
+      icon: 'space', label: `Move workspace to ${space.label || `Desktop ${space.index}`}`,
+      meta: space.isCurrent ? 'CURRENT SPACE' : 'SPACE',
+      run: () => space.isCurrent ? undefined : ipcRenderer.invoke('push-to-space-to', { targetSpaceId: space.id, targetIndex: space.index }),
+    });
+  }
+  return items;
+}
+function renderCommandPalette(query = '') {
+  const host = document.getElementById('tin-command-list');
+  if (!host) return;
+  const q = query.trim().toLocaleLowerCase();
+  _commandItems = commandDefinitions().filter(item => !q || `${item.label} ${item.meta}`.toLocaleLowerCase().includes(q));
+  _commandSelected = Math.min(_commandSelected, Math.max(0, _commandItems.length - 1));
+  if (_commandItems.length === 0) {
+    host.innerHTML = '<div class="command-empty">No matching commands</div>';
+    return;
+  }
+  host.innerHTML = _commandItems.map((item, index) =>
+    `<div class="command-item${index === _commandSelected ? ' selected' : ''}" data-command-index="${index}">`
+      + `<span class="command-icon">${iconSvg(item.icon)}</span>`
+      + `<span>${escHtml(item.label)}</span><span class="command-meta">${escHtml(item.meta)}</span></div>`
+  ).join('');
+  host.querySelectorAll('.command-item').forEach(row => {
+    row.addEventListener('mouseenter', () => {
+      _commandSelected = Number(row.dataset.commandIndex);
+      host.querySelectorAll('.command-item').forEach((el, i) => el.classList.toggle('selected', i === _commandSelected));
+    });
+    row.addEventListener('click', () => runSelectedCommand(Number(row.dataset.commandIndex)));
+  });
+}
+function runSelectedCommand(index = _commandSelected) {
+  const item = _commandItems[index];
+  if (!item) return;
+  closeCommandPalette();
+  Promise.resolve(item.run()).catch(() => showToast('Command failed', 'error'));
+}
+function openCommandPalette() {
+  const backdrop = document.getElementById('tin-command-backdrop');
+  const input = document.getElementById('tin-command-search');
+  if (!backdrop || !input) return;
+  _commandSelected = 0;
+  input.value = '';
+  renderCommandPalette();
+  backdrop.classList.add('open');
+  backdrop.setAttribute('aria-hidden', 'false');
+  notifyOverlay(true);
+  requestAnimationFrame(() => input.focus());
+  ipcRenderer.invoke('get-spaces').then(spaces => {
+    _commandSpaces = Array.isArray(spaces) ? spaces : [];
+    if (backdrop.classList.contains('open')) renderCommandPalette(input.value);
+  }).catch(() => { _commandSpaces = []; });
+  if (process.platform === 'win32') {
+    ipcRenderer.invoke('space-capability').then(capability => {
+      _commandCanMoveSpaces = !!capability;
+      if (backdrop.classList.contains('open')) renderCommandPalette(input.value);
+    }).catch(() => { _commandCanMoveSpaces = false; });
+  }
+}
+function closeCommandPalette() {
+  const backdrop = document.getElementById('tin-command-backdrop');
+  if (!backdrop || !backdrop.classList.contains('open')) return;
+  backdrop.classList.remove('open');
+  backdrop.setAttribute('aria-hidden', 'true');
+  notifyOverlay(document.body.classList.contains('drawer-open'));
+}
+function setupCommandPalette() {
+  const backdrop = document.getElementById('tin-command-backdrop');
+  const input = document.getElementById('tin-command-search');
+  if (!backdrop || !input) return;
+  backdrop.addEventListener('mousedown', event => { if (event.target === backdrop) closeCommandPalette(); });
+  input.addEventListener('input', () => { _commandSelected = 0; renderCommandPalette(input.value); });
+  input.addEventListener('keydown', event => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const delta = event.key === 'ArrowDown' ? 1 : -1;
+      _commandSelected = (_commandSelected + delta + _commandItems.length) % Math.max(1, _commandItems.length);
+      renderCommandPalette(input.value);
+      document.querySelector('.command-item.selected')?.scrollIntoView({ block: 'nearest' });
+    } else if (event.key === 'Enter') {
+      event.preventDefault(); runSelectedCommand();
+    } else if (event.key === 'Escape') {
+      event.preventDefault(); closeCommandPalette();
+    }
+  });
+}
+setupCommandPalette();
+
 // ── グリッド / Tab モード切り替え ──
 let currentViewMode = 'grid';
+function updateViewModeButton() {
+  const btn = document.getElementById('view-mode-btn');
+  if (!btn) return;
+  btn.innerHTML = iconSvg(currentViewMode === 'grid' ? 'grid' : 'tabs');
+  btn.classList.toggle('active-mode', currentViewMode === 'tab');
+  btn.setAttribute('aria-label', currentViewMode === 'grid' ? 'グリッド表示中。タブ表示へ切り替え' : 'タブ表示中。グリッド表示へ切り替え');
+}
 function toggleViewMode() {
   currentViewMode = currentViewMode === 'grid' ? 'tab' : 'grid';
-  const btn = document.getElementById('view-mode-btn');
-  if (btn) btn.textContent = currentViewMode === 'tab' ? '⊡' : '⊞';
+  updateViewModeButton();
   ipcRenderer.invoke('set-view-mode', { mode: currentViewMode });
   render();
 }
@@ -1448,12 +1684,12 @@ function toggleViewMode() {
 function activateTab(slot) {
   if (currentViewMode !== 'tab') {
     currentViewMode = 'tab';
-    const btn = document.getElementById('view-mode-btn');
-    if (btn) btn.textContent = '⊡';
+    updateViewModeButton();
   }
   ipcRenderer.invoke('set-active-tab', { slot });
   render();
 }
+updateViewModeButton();
 
 let wsId = null;
 let wsName = 'TiN';
@@ -1491,6 +1727,8 @@ function commitRename() {
   const newName = titleInput.value.trim() || wsName;
   wsName = newName;
   titleEl.textContent = wsName;
+  const drawerName = document.getElementById('drawer-workspace-name');
+  if (drawerName) drawerName.textContent = wsName;
   titleEl.style.display = '';
   titleInput.style.display = 'none';
   ipcRenderer.send('rename-workspace', { name: wsName });
@@ -1507,6 +1745,8 @@ ipcRenderer.on('workspace-info', (_e, info) => {
   wsName = info.name;
   wsColor = info.color || null;
   titleEl.textContent = wsName;
+  const drawerName = document.getElementById('drawer-workspace-name');
+  if (drawerName) drawerName.textContent = wsName;
   if (wsColor) {
     document.getElementById('titlebar').style.borderBottomColor = wsColor.accent;
   }
@@ -1665,10 +1905,18 @@ async function openPreferences() {
   backdrop.id = 'tin-prefs-backdrop';
   backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;z-index:9999;';
   const panel = document.createElement('div');
+  panel.className = 'tin-modal-panel prefs-panel';
   panel.style.cssText = 'background:#fafafa;padding:20px 24px;border-radius:10px;min-width:320px;max-height:90vh;overflow-y:auto;' +
     'box-shadow:0 10px 30px rgba(0,0,0,0.3);font-size:13px;color:#222;';
   panel.innerHTML = `
     <div style="font-weight:600;font-size:15px;margin-bottom:14px;">Preferences</div>
+    <div style="border-top:1px solid rgba(0,0,0,0.08);margin:0 -4px 14px;padding-top:12px;">
+      <div class="pref-section-label">Appearance</div>
+      <div class="appearance-options" id="pref-appearance">
+        <button type="button" class="appearance-option" data-theme="dark">${iconSvg('moon')}<span>Black</span></button>
+        <button type="button" class="appearance-option" data-theme="light">${iconSvg('sun')}<span>White</span></button>
+      </div>
+    </div>
     <label style="display:block;margin-bottom:10px;">Poll 間隔
       <select id="pref-poll" style="margin-left:8px;">
         <option value="1500">1.5s (高速)</option>
@@ -1738,6 +1986,16 @@ async function openPreferences() {
   panel.querySelector('#pref-autolaunch').checked = !!settings.autoLaunch;
   panel.querySelector('#pref-sticky').checked = !!settings.stickyWindows;
   panel.querySelector('#pref-orch-api').checked = !!settings.orchApi;
+  let selectedTheme = settings.theme === 'light' ? 'light' : 'dark';
+  const syncAppearance = () => panel.querySelectorAll('.appearance-option').forEach(button => {
+    button.classList.toggle('selected', button.dataset.theme === selectedTheme);
+    button.setAttribute('aria-pressed', String(button.dataset.theme === selectedTheme));
+  });
+  panel.querySelectorAll('.appearance-option').forEach(button => button.addEventListener('click', () => {
+    selectedTheme = button.dataset.theme;
+    syncAppearance();
+  }));
+  syncAppearance();
   if (settings.orchApi) {
     const s = panel.querySelector('#pref-orch-status');
     s.style.display = 'block';
@@ -1773,6 +2031,7 @@ async function openPreferences() {
       hotkeys[key] = panel.querySelector(`#pref-hk-${key}`)?.dataset.acc || '';
     }
     await ipcRenderer.invoke('save-settings', {
+      theme: selectedTheme,
       pollIntervalMs: Number(panel.querySelector('#pref-poll').value),
       dragEndMode: panel.querySelector('#pref-drag').value,
       defaultGridCols: c,
@@ -1810,7 +2069,7 @@ async function addEmbedded(title) {
   const { id } = await ipcRenderer.invoke('create-terminal', {});
   const term = new Terminal({
     fontSize: 12, fontFamily: "'SF Mono', 'Fira Code', monospace",
-    theme: { background: '#1a1a2e', foreground: '#e0e0e0', cursor: '#80b0ff', selectionBackground: 'rgba(100,140,255,0.3)' },
+    theme: terminalTheme(),
     cursorBlink: true, scrollback: 3000,
   });
   const fitAddon = new FitAddon();
@@ -2654,7 +2913,7 @@ ipcRenderer.on('claude-status-nudge', () => refreshStatusColors(true));
 // AI 色判定を実行 (haiku が端末の用途を判定して色割当)。もう一度押すと解除。
 async function runAiColorize(btn) {
   if (Object.keys(aiColors).length > 0) { aiColors = {}; render(); return; }
-  if (btn) btn.textContent = '⏳';
+  if (btn) { btn.innerHTML = iconSvg('refresh'); btn.classList.add('busy'); }
   try {
     const r = await ipcRenderer.invoke('ai-colorize');
     if (r && r.ok) { aiColors = r.colors || {}; render(); }
@@ -2662,7 +2921,7 @@ async function runAiColorize(btn) {
   } catch (e) {
     if (statusEl) statusEl.textContent = 'AI色エラー: ' + e.message;
   } finally {
-    if (btn) btn.textContent = '🎨';
+    if (btn) { btn.innerHTML = iconSvg('sparkle'); btn.classList.remove('busy'); }
   }
 }
 
@@ -3154,6 +3413,14 @@ function render() {
   const _stCounts = {};
   for (const wn in statusStates) _stCounts[statusStates[wn]] = (_stCounts[statusStates[wn]] || 0) + 1;
   for (const slot in statusPtyStates) _stCounts[statusPtyStates[slot].state] = (_stCounts[statusPtyStates[slot].state] || 0) + 1;
+  const runningCount = _stCounts.busy || 0;
+  const attentionCount = (_stCounts.perm || 0) + (_stCounts.input || 0);
+  const runningEl = document.getElementById('drawer-running-count');
+  const attentionEl = document.getElementById('drawer-attention-count');
+  const slotsEl = document.getElementById('drawer-slot-count');
+  if (runningEl) runningEl.textContent = String(runningCount);
+  if (attentionEl) attentionEl.textContent = String(attentionCount);
+  if (slotsEl) slotsEl.textContent = `${gridCount}/${gridCols * gridRows}`;
   const _legend = ['perm', 'input', 'busy']
     .filter(st => _stCounts[st])
     .map(st => `<span style="color:${STATE_META[st].color};white-space:nowrap"><span style="font-size:8px">●</span> ${STATE_META[st].label}×${_stCounts[st]}</span>`)
@@ -3185,47 +3452,47 @@ function render() {
   // Edit Grid ボタン
   const editBtn = document.createElement('button');
   editBtn.className = 'grid-opt';
-  editBtn.textContent = '\u270f\ufe0f';
+  editBtn.innerHTML = iconSvg('edit');
   editBtn.title = 'Ratio — グリッドの幅・高さ比率をドラッグで調整';
   editBtn.addEventListener('click', () => ipcRenderer.send('enter-grid-edit'));
   selector.appendChild(editBtn);
   // Retile ボタン (snapped ウィンドウを slot に揃え直す)
   const retileBtn = document.createElement('button');
   retileBtn.className = 'grid-opt';
-  retileBtn.textContent = '\u21bb';
+  retileBtn.innerHTML = iconSvg('refresh');
   retileBtn.title = 'Retile — スナップ済みウィンドウを現在のデスクトップに集合してグリッドに整列';
   retileBtn.addEventListener('click', () => ipcRenderer.invoke('retile-now'));
   selector.appendChild(retileBtn);
   // Flip ボタン (グリッドの並びを一斉反転)
   const flipHBtn = document.createElement('button');
-  flipHBtn.className = 'grid-opt';
-  flipHBtn.textContent = '⇄';
+  flipHBtn.className = 'grid-opt secondary-tool';
+  flipHBtn.innerHTML = iconSvg('flipH');
   flipHBtn.title = 'Flip ⇄ — グリッドの並びを左右反転（列幅の比率もミラー）';
   flipHBtn.addEventListener('click', () => ipcRenderer.invoke('flip-grid', { axis: 'h' }));
   selector.appendChild(flipHBtn);
   const flipVBtn = document.createElement('button');
-  flipVBtn.className = 'grid-opt';
-  flipVBtn.textContent = '⇅';
+  flipVBtn.className = 'grid-opt secondary-tool';
+  flipVBtn.innerHTML = iconSvg('flipV');
   flipVBtn.title = 'Flip ⇅ — グリッドの並びを上下反転（行高の比率もミラー）';
   flipVBtn.addEventListener('click', () => ipcRenderer.invoke('flip-grid', { axis: 'v' }));
   selector.appendChild(flipVBtn);
   const prevSpaceBtn = document.createElement('button');
-  prevSpaceBtn.className = 'grid-opt';
-  prevSpaceBtn.textContent = '\u25c4';
+  prevSpaceBtn.className = 'grid-opt secondary-tool';
+  prevSpaceBtn.innerHTML = iconSvg('space', 'style="transform:rotate(180deg)"');
   prevSpaceBtn.title = 'Space ◄ — TiN + スナップ済みウィンドウをまとめて前のデスクトップへ';
   prevSpaceBtn.addEventListener('click', () => ipcRenderer.invoke('push-to-space', { direction: -1 }));
   selector.appendChild(prevSpaceBtn);
   const nextSpaceBtn = document.createElement('button');
-  nextSpaceBtn.className = 'grid-opt';
-  nextSpaceBtn.textContent = '\u25ba';
+  nextSpaceBtn.className = 'grid-opt secondary-tool';
+  nextSpaceBtn.innerHTML = iconSvg('space');
   nextSpaceBtn.title = 'Space ► — TiN + スナップ済みウィンドウをまとめて次のデスクトップへ';
   nextSpaceBtn.addEventListener('click', () => ipcRenderer.invoke('push-to-space', { direction: +1 }));
   selector.appendChild(nextSpaceBtn);
 
   // ── Space ピッカーボタン (↗) ──
   const spacePickerBtn = document.createElement('button');
-  spacePickerBtn.className = 'grid-opt';
-  spacePickerBtn.textContent = '↗';
+  spacePickerBtn.className = 'grid-opt secondary-tool';
+  spacePickerBtn.innerHTML = iconSvg('space', 'style="transform:rotate(-45deg)"');
   spacePickerBtn.title = 'Space ↗ — デスクトップを選んでまとめて移動';
   let _spacePickerPopup = null;
   function closeSpacePicker() {
@@ -3281,8 +3548,8 @@ function render() {
 
   // ── yabai SA 状態インジケーター ──
   const saBtn = document.createElement('button');
-  saBtn.className = 'grid-opt';
-  saBtn.textContent = '⚙';
+  saBtn.className = 'grid-opt secondary-tool';
+  saBtn.innerHTML = iconSvg('settings');
   saBtn.title = 'yabai SA 状態確認中...';
   saBtn.style.opacity = '0.3';
   // yabai は macOS 専用。Windows では SA インジケーターを出さない。
@@ -3358,7 +3625,7 @@ function render() {
       tab.dataset.wn = wn;
       tab.dataset.slot = info.slot ?? 0;
       tab.className = 'groupy-tab' + (isActive ? ' active' : '');
-      applyStateStyle(tab, wn, info.slot ?? 0, info.title, 5, 0.14);  // 濃さ=深刻度
+      applyStateStyle(tab, wn, info.slot ?? 0, info.title, 3, 0.14);  // 状態は3px edge signalで表現
       const isFinder = isFinderApp(info.app||'');
       const isTerm = isTerminalApp(info.app||'');
       const iconClass = isFinder ? 'finder' : isTerm ? 'term' : 'app';
@@ -3399,7 +3666,7 @@ function render() {
     const addTabBtn = document.createElement('div');
     addTabBtn.className = 'groupy-tab-add';
     addTabBtn.title = '内蔵ターミナルを 1 つ追加';
-    addTabBtn.textContent = '+';
+    addTabBtn.innerHTML = iconSvg('plus');
     addTabBtn.addEventListener('click', () => ipcRenderer.invoke('add-grid-terminal'));
     ctrlHost.appendChild(addTabBtn);
     // 空きスロットを全部 内蔵ターミナルで埋めるボタン (内蔵端末は任意幅に fit するので狭い列でも収まる)。
@@ -3407,16 +3674,14 @@ function render() {
     const fillTermBtn = document.createElement('div');
     fillTermBtn.className = 'groupy-tab-add';
     fillTermBtn.title = '空きスロットを全部 内蔵ターミナルで埋める';
-    fillTermBtn.textContent = '>_';
-    fillTermBtn.style.fontFamily = "'SF Mono','Consolas',monospace";
-    fillTermBtn.style.fontSize = '11px';
+    fillTermBtn.innerHTML = iconSvg('fill');
     fillTermBtn.addEventListener('click', () => ipcRenderer.invoke('fill-grid-terminals'));
     ctrlHost.appendChild(fillTermBtn);
-    // 🎨 AI 色判定ボタン (haiku が端末の用途を判定して色分け / 再押下で解除)
+    // AI 色判定ボタン (haiku が端末の用途を判定して色分け / 再押下で解除)
     const aiColorBtn = document.createElement('div');
     aiColorBtn.className = 'groupy-tab-add';
     aiColorBtn.title = 'AI が端末の用途を判定して色分け (もう一度押すと解除)';
-    aiColorBtn.textContent = '🎨';
+    aiColorBtn.innerHTML = iconSvg('sparkle');
     aiColorBtn.addEventListener('click', () => runAiColorize(aiColorBtn));
     ctrlHost.appendChild(aiColorBtn);
     ctrlHost.appendChild(selector);
@@ -3532,7 +3797,7 @@ function render() {
     card.className = 'ext-item slot-card';
     card.dataset.slot = slotId;
     if (entry) {
-      applyStateStyle(card, entry.wn, slotId, entry.info && entry.info.title, 5, 0.09);  // 濃さ=深刻度
+      applyStateStyle(card, entry.wn, slotId, entry.info && entry.info.title, 3, 0.09);  // 状態は3px edge signalで表現
     }
 
     const slotBadge = document.createElement('span');
@@ -3899,9 +4164,10 @@ function render() {
         d.classList.add('cell-occupied');
         const cc = colorFor(ovEntry.wn, c.id, ovEntry.info && ovEntry.info.title);
         const ci = stateIntensityFor(ovEntry.wn, c.id);
-        d.style.border = `4px solid ${ci === null ? cc : hexA(cc, 0.35 + 0.65 * ci)}`;  // 濃さ=深刻度
-        d.style.borderRadius = '6px';
-        d.style.boxShadow = `0 0 14px ${cc}, inset 0 0 20px ${cc}55`;
+        const edge = ci === null ? cc : hexA(cc, 0.45 + 0.55 * ci);
+        d.style.border = `3px solid ${edge}`;  // Snap 面は高コントラスト、発光は控えめ
+        d.style.borderRadius = '3px';
+        d.style.boxShadow = `0 0 0 1px ${hexA(cc, 0.2)}, 0 0 14px ${hexA(cc, 0.16)}`;
       }
       gpEl.appendChild(d);
     }
@@ -4228,10 +4494,19 @@ window.addEventListener('blur', () => document.body.classList.add('window-inacti
 // ── キーボードショートカット（TiN フォーカス時） ──
 const AVAIL_TABS = ['term', 'finder', 'apps', 'tin'];
 document.addEventListener('keydown', (e) => {
+  const cmd = e.metaKey || e.ctrlKey;
+  if (cmd && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    document.getElementById('tin-command-backdrop')?.classList.contains('open')
+      ? closeCommandPalette() : openCommandPalette();
+    return;
+  }
+  if (e.key === 'Escape' && document.getElementById('tin-command-backdrop')?.classList.contains('open')) {
+    e.preventDefault(); closeCommandPalette(); return;
+  }
   // モーダル/入力欄が開いているときは無視
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
   if (e.target.isContentEditable) return;
-  const cmd = e.metaKey || e.ctrlKey;
 
   // Cmd+[ / Cmd+] — Available タブを前後に切り替え
   if (cmd && e.key === ']') {
@@ -4269,17 +4544,19 @@ function showHotkeyHelp() {
   backdrop.id = 'tin-hotkey-help';
   backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:9999;';
   const panel = document.createElement('div');
+  panel.className = 'tin-modal-panel help-panel';
   panel.style.cssText = 'background:#fafafa;padding:20px 24px;border-radius:10px;min-width:340px;max-height:90vh;overflow-y:auto;box-shadow:0 10px 30px rgba(0,0,0,0.3);font-size:13px;color:#222;';
   // 表示キーはプラットフォーム依存 (Windows は Ctrl+Alt / Ctrl、mac は ⌘⌥ / ⌘)。
   const K = IS_WIN
-    ? { snap:'Ctrl+Alt+S', unsnap:'Ctrl+Alt+W', focus:'Ctrl+Alt+T', next:'Ctrl+]', prev:'Ctrl+[', sel:'Ctrl+1〜4', help:'?  /  Ctrl+/' }
-    : { snap:'⌘⌥S', unsnap:'⌘⌥W', focus:'⌘⌥T', next:'⌘]', prev:'⌘[', sel:'⌘1〜4', help:'?  /  ⌘/' };
+    ? { snap:'Ctrl+Alt+S', unsnap:'Ctrl+Alt+W', focus:'Ctrl+Alt+T', command:'Ctrl+K', next:'Ctrl+]', prev:'Ctrl+[', sel:'Ctrl+1〜4', help:'?  /  Ctrl+/' }
+    : { snap:'⌘⌥S', unsnap:'⌘⌥W', focus:'⌘⌥T', command:'⌘K', next:'⌘]', prev:'⌘[', sel:'⌘1〜4', help:'?  /  ⌘/' };
   const rows = [
     ['グローバル（どこでも効く）', null],
     [K.snap, 'フロントウィンドウをスナップ'],
     [K.unsnap, 'フロントウィンドウをアンスナップ'],
     [K.focus, 'TiN にフォーカス'],
     ['TiN フォーカス中', null],
+    [K.command, 'コマンドパレットを開く'],
     [K.next, '次のタブ（ターミナル→Finder→Apps→TiN）'],
     [K.prev, '前のタブ'],
     [K.sel, 'タブを直接選択'],
