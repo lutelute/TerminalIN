@@ -111,6 +111,7 @@
       "workspace-theme.css",
       "grid-terminal.html",
       "grid-overlay.html",
+      "snap-info.html",
       "package.json",
       "build/Release/ax_helper.node",
       "lib/**",

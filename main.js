@@ -1901,8 +1901,10 @@ ipcMain.handle('raise-snapped', async (event, { windowNumber }) => {
 });
 
 // ── IPC: 内蔵 PTY グリッド窓を前面化 (ホイール/タブ切り替え用) ──
-ipcMain.handle('focus-grid-terminal', (event, { slot }) => {
-  const ws = findWorkspace(event.sender) || [...workspaces.values()][0];
+// wsId 指定は workspace に属さない sender (フローティング Snap Info) 用。
+ipcMain.handle('focus-grid-terminal', (event, { slot, wsId }) => {
+  const ws = (wsId != null && workspaces.get(wsId))
+    || findWorkspace(event.sender) || [...workspaces.values()][0];
   if (!ws) return { ok: false };
   const gw = ws.gridWindows.get(slot);
   if (gw && gw.win && !gw.win.isDestroyed()) {
@@ -1945,6 +1947,59 @@ ipcMain.handle('get-snapped-externals', (event) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return {};
   return Object.fromEntries([...ws.snappedExternals.entries()].map(([k, v]) => [k, v.slot]));
+});
+
+// ── フローティング Snap Info パネル ──
+// 設定画面の「Snap Info をフローティング表示」から開く always-on-top の小窓。
+// データは snap-info.html 側が 'snap-info-data' を定期 invoke する poll 方式。
+// push 方式にしないのは、snap/unsnap の全送信箇所 (hydrate-snapped ×8) に
+// 配信コードを足す必要がなく、窓を閉じれば負荷ゼロになるため。
+let snapInfoWin = null;
+ipcMain.handle('open-snap-info', () => {
+  if (snapInfoWin && !snapInfoWin.isDestroyed()) {
+    snapInfoWin.show();
+    snapInfoWin.focus();
+    return { ok: true, existing: true };
+  }
+  snapInfoWin = new BrowserWindow({
+    width: 300,
+    height: 420,
+    minWidth: 240,
+    minHeight: 180,
+    frame: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    backgroundColor: appSettings.theme === 'light' ? '#f5f7fa' : '#0b0f16',
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+      sandbox: false,
+    },
+  });
+  snapInfoWin.excludedFromShownWindowsMenu = true;
+  snapInfoWin.loadFile('snap-info.html');
+  snapInfoWin.on('closed', () => { snapInfoWin = null; });
+  return { ok: true };
+});
+ipcMain.handle('snap-info-set-pin', (_event, { pinned }) => {
+  if (snapInfoWin && !snapInfoWin.isDestroyed()) snapInfoWin.setAlwaysOnTop(!!pinned);
+  return { ok: true };
+});
+ipcMain.handle('snap-info-data', () => {
+  const list = [];
+  for (const [id, ws] of workspaces) {
+    if (!ws.win || ws.win.isDestroyed()) continue;
+    const slots = [];
+    for (const [wn, info] of ws.snappedExternals) {
+      slots.push({ slot: info.slot, kind: 'external', app: info.app || '', title: info.title || '', windowNumber: wn });
+    }
+    for (const [slot, gw] of ws.gridWindows) {
+      slots.push({ slot, kind: 'terminal', app: 'Terminal', title: gw.cwd || '', windowNumber: null });
+    }
+    slots.sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99));
+    list.push({ id, name: ws.name, color: ws.color || null, cols: ws.gridCols, rows: ws.gridRows, slots });
+  }
+  return { theme: appSettings.theme, workspaces: list };
 });
 
 // Available リストから他の TiN workspace の sidebar をクリックしたとき、
