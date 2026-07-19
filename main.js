@@ -4565,7 +4565,7 @@ function writeWorkspacesJsonSync() {
 
 // ── REST API (localhost only) — Raycast 拡張・外部ツール連携用 ──────────────
 // port は info.json に書き出し。
-const REST_PORT = 37123;
+const REST_PORT = Number(process.env.TIN_REST_PORT) || 37123;  // env は隔離テスト用 (ポート衝突回避)
 let _restServer = null;
 
 function parseBody(req) {
@@ -4578,13 +4578,34 @@ function parseBody(req) {
 }
 
 function restReply(res, status, obj) {
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+  // CORS ヘッダは付けない: 想定クライアントは curl / Raycast / AtelierX 等のネイティブのみで、
+  // ブラウザページからの読み出しを許可する理由がない (旧 `*` は攻撃ページへの応答開示だった)
+  res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(obj));
+}
+
+// ── ローカル以外・ブラウザ経由のアクセスを遮断 ──
+// bind は 127.0.0.1 だが、ブラウザは DNS rebinding (攻撃ドメインを 127.0.0.1 に向ける) で
+// 任意の Web ページから叩けてしまう (CORS は応答の読取だけを制御し、送信自体は止めない)。
+// /api/v1/launch は任意コマンド実行なのでここは実質 RCE 面。
+// - Host が 127.0.0.1 / localhost / [::1] 以外 → 拒否 (rebinding はここで落ちる)
+// - Origin 付き (=ブラウザ発) で localhost 系以外 → 拒否 ('null' Origin も拒否)
+// ネイティブクライアントは Origin を送らないため影響なし。
+function isAllowedRestRequest(req) {
+  const host = String(req.headers.host || '').toLowerCase();
+  if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)) return false;
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(origin);
 }
 
 function startRestServer() {
   if (_restServer) return;
   _restServer = http.createServer(async (req, res) => {
+    if (!isAllowedRestRequest(req)) {
+      console.warn(`[tin] REST reject: host=${req.headers.host || ''} origin=${req.headers.origin || ''}`);
+      return restReply(res, 403, { ok: false, error: 'forbidden origin/host' });
+    }
     if (req.method === 'OPTIONS') { restReply(res, 204, {}); return; }
     const url = new URL(req.url, `http://localhost:${REST_PORT}`);
     const route = `${req.method} ${url.pathname}`;
