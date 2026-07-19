@@ -108,6 +108,7 @@
       "auto-snap.js",
       "win-helper.js",
       "workspace.html",
+      "workspace-theme.css",
       "grid-terminal.html",
       "grid-overlay.html",
       "package.json",

@@ -490,6 +490,7 @@ const TERMINAL_APPS = new Set([
   'WindowsTerminal', 'cmd', 'powershell', 'pwsh', 'conhost', 'OpenConsole', 'mintty',
 ]);
 const DEFAULT_SETTINGS = {
+  theme: 'dark',             // 'dark' | 'light'
   pollIntervalMs: 3000,
   dragEndMode: 'position',  // 'position' | 'full' | 'off'
   defaultGridCols: 2,
@@ -2177,11 +2178,27 @@ ipcMain.on('set-active-tab-hotkey', (ws, slot) => {
 
 // Settings IPC
 ipcMain.handle('get-settings', () => ({ ...appSettings }));
+function setAppTheme(requestedTheme) {
+  const theme = requestedTheme === 'light' ? 'light' : 'dark';
+  appSettings.theme = theme;
+  saveSettings();
+  for (const [, ws] of workspaces) {
+    if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('theme-changed', theme);
+  }
+  return theme;
+}
+ipcMain.handle('set-theme', (_event, requestedTheme) => ({ ok: true, theme: setAppTheme(requestedTheme) }));
 ipcMain.handle('save-settings', (_event, newSettings) => {
   const prev = { ...appSettings };
   appSettings = { ...DEFAULT_SETTINGS, ...(newSettings || {}),
     hotkeys: { ...DEFAULT_HOTKEYS, ...(newSettings?.hotkeys || {}) } };
+  appSettings.theme = appSettings.theme === 'light' ? 'light' : 'dark';
   saveSettings();
+  if (appSettings.theme !== prev.theme) {
+    for (const [, ws] of workspaces) {
+      if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('theme-changed', appSettings.theme);
+    }
+  }
   // 即座に反映: auto-launch
   if (appSettings.autoLaunch !== prev.autoLaunch) {
     try {
@@ -4532,6 +4549,10 @@ app.whenReady().then(async () => {
         const win = BrowserWindow.getFocusedWindow();
         if (win) win.webContents.send('toggle-compact');
       }},
+      { label: 'Appearance', submenu: [
+        { label: 'Black', type: 'radio', checked: appSettings.theme !== 'light', click: () => setAppTheme('dark') },
+        { label: 'White', type: 'radio', checked: appSettings.theme === 'light', click: () => setAppTheme('light') },
+      ]},
       { type: 'separator' },
       { role: 'toggleDevTools' },
       { role: 'togglefullscreen' },

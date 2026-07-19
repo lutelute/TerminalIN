@@ -1,0 +1,1440 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>TiN — Interface proposal</title>
+  <style>
+    :root {
+      --ink: #05070c;
+      --void: #080b12;
+      --well: #0d111a;
+      --well-2: #111722;
+      --line: rgba(189, 218, 255, .12);
+      --line-strong: rgba(189, 218, 255, .22);
+      --text: #f1f5fb;
+      --muted: #8993a4;
+      --dim: #555f70;
+      --cyan: #75dcff;
+      --cyan-soft: rgba(117, 220, 255, .12);
+      --violet: #988cff;
+      --green: #7ce1ae;
+      --amber: #f2c66d;
+      --red: #ff818e;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+      --mono: "SFMono-Regular", "SF Mono", "Cascadia Code", "Roboto Mono", ui-monospace, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 52% 18%, rgba(40, 75, 125, .14), transparent 32rem),
+        linear-gradient(rgba(255, 255, 255, .018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, .018) 1px, transparent 1px),
+        var(--ink);
+      background-size: auto, 72px 72px, 72px 72px, auto;
+      font-family: var(--sans);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button, input { font: inherit; }
+    button { color: inherit; }
+    a { color: inherit; }
+    svg { display: block; }
+
+    .page {
+      width: min(1540px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 68px 0 110px;
+    }
+
+    .page-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .theme-picker {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 3px;
+      background: rgba(13, 17, 26, .72);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+    }
+
+    .theme-picker-label {
+      padding: 0 9px 0 7px;
+      color: var(--dim);
+      font: 650 8px/1 var(--mono);
+      letter-spacing: .12em;
+    }
+
+    .theme-choice {
+      height: 25px;
+      min-width: 66px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 0 9px;
+      color: var(--muted);
+      background: transparent;
+      border: 0;
+      border-radius: 2px;
+      cursor: pointer;
+      font: 650 8px/1 var(--mono);
+      letter-spacing: .06em;
+    }
+
+    .theme-choice i {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #080b12;
+      border: 1px solid rgba(255, 255, 255, .24);
+    }
+
+    .theme-choice[data-theme-choice="light"] i {
+      background: #f7f8fa;
+      border-color: rgba(15, 28, 43, .2);
+    }
+
+    .theme-choice:hover { color: var(--text); }
+    .theme-choice.active {
+      color: var(--text);
+      background: rgba(255, 255, 255, .075);
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, .04) inset;
+    }
+
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--cyan);
+      font: 700 11px/1 var(--mono);
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 32px;
+      height: 1px;
+      background: var(--cyan);
+      box-shadow: 0 0 12px rgba(117, 220, 255, .65);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(300px, .75fr);
+      align-items: end;
+      gap: 64px;
+      margin: 28px 0 46px;
+    }
+
+    h1 {
+      max-width: 900px;
+      margin: 0;
+      font-size: clamp(40px, 5.2vw, 76px);
+      line-height: .98;
+      font-weight: 570;
+      letter-spacing: -.055em;
+    }
+
+    h1 span { color: #7f8999; }
+
+    .hero-copy {
+      max-width: 500px;
+      margin: 0 0 3px;
+      color: #a0a9b8;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+
+    .hero-copy strong { color: var(--text); font-weight: 600; }
+
+    .prototype-shell {
+      position: relative;
+      border: 1px solid rgba(169, 206, 255, .16);
+      background: rgba(8, 11, 18, .86);
+      box-shadow:
+        0 36px 110px rgba(0, 0, 0, .58),
+        0 0 0 1px rgba(255, 255, 255, .02) inset,
+        0 0 80px rgba(55, 128, 205, .07);
+      overflow: hidden;
+    }
+
+    .prototype-shell::before {
+      content: "LIVE PROTOTYPE";
+      position: absolute;
+      top: -28px;
+      right: 0;
+      color: var(--dim);
+      font: 600 9px/1 var(--mono);
+      letter-spacing: .16em;
+    }
+
+    .app {
+      min-height: 760px;
+      background: #070a10;
+      user-select: none;
+    }
+
+    .titlebar {
+      height: 44px;
+      display: grid;
+      grid-template-columns: minmax(230px, auto) minmax(200px, 1fr) auto;
+      align-items: center;
+      gap: 18px;
+      padding: 0 12px;
+      background: rgba(12, 16, 24, .94);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .window-lead,
+    .window-meta,
+    .top-actions,
+    .tab-strip,
+    .tab-tools,
+    .activity-left,
+    .activity-right,
+    .tile-head,
+    .tile-app,
+    .inspect-head,
+    .rail-mark,
+    .rail-action {
+      display: flex;
+      align-items: center;
+    }
+
+    .window-lead { gap: 14px; }
+
+    .traffic { display: flex; gap: 7px; }
+    .traffic i { width: 10px; height: 10px; border-radius: 50%; background: #39404d; }
+    .traffic i:first-child { background: #ff665e; }
+    .traffic i:nth-child(2) { background: #efbd4c; }
+    .traffic i:last-child { background: #61c454; }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-size: 12px;
+      font-weight: 680;
+      letter-spacing: -.01em;
+    }
+
+    .brand-mark {
+      position: relative;
+      width: 18px;
+      height: 18px;
+      border: 1px solid rgba(117, 220, 255, .65);
+      box-shadow: 0 0 14px rgba(117, 220, 255, .12) inset;
+    }
+
+    .brand-mark::before,
+    .brand-mark::after {
+      content: "";
+      position: absolute;
+      background: var(--cyan);
+      box-shadow: 0 0 8px rgba(117, 220, 255, .7);
+    }
+
+    .brand-mark::before { width: 8px; height: 1px; left: 4px; top: 6px; transform: rotate(45deg); }
+    .brand-mark::after { width: 8px; height: 1px; left: 4px; bottom: 5px; transform: rotate(-45deg); }
+
+    .window-meta {
+      justify-self: center;
+      gap: 10px;
+      min-width: 0;
+      color: var(--muted);
+      font: 500 11px/1 var(--mono);
+    }
+
+    .workspace-name { color: #dbe5f3; white-space: nowrap; }
+    .slash { color: #3e4857; }
+    .sync-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
+
+    .top-actions { justify-content: flex-end; gap: 5px; }
+
+    .command-trigger {
+      height: 27px;
+      min-width: 176px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 9px;
+      color: #7f8999;
+      background: #0b0f16;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 10px;
+      text-align: left;
+    }
+
+    .command-trigger:hover { border-color: rgba(117, 220, 255, .34); color: #c6d1df; }
+    .command-trigger svg { width: 13px; height: 13px; }
+    .command-trigger kbd {
+      margin-left: auto;
+      color: #5f6979;
+      font: 600 9px/1 var(--mono);
+    }
+
+    .icon-button {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 3px;
+      color: #697485;
+      cursor: pointer;
+    }
+
+    .icon-button svg { width: 14px; height: 14px; }
+    .icon-button:hover,
+    .icon-button.active { color: #dfe9f6; background: #121823; border-color: var(--line); }
+
+    .subbar {
+      height: 38px;
+      display: flex;
+      align-items: stretch;
+      justify-content: space-between;
+      padding-left: 54px;
+      background: #0b0f16;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .tab-strip { min-width: 0; overflow: hidden; }
+
+    .app-tab {
+      position: relative;
+      height: 100%;
+      min-width: 128px;
+      max-width: 190px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 14px;
+      color: #697485;
+      background: transparent;
+      border: 0;
+      border-right: 1px solid rgba(189, 218, 255, .07);
+      cursor: pointer;
+      font-size: 10px;
+      text-align: left;
+    }
+
+    .app-tab::after {
+      content: "";
+      position: absolute;
+      right: 0;
+      bottom: -1px;
+      left: 0;
+      height: 1px;
+      background: transparent;
+    }
+
+    .app-tab:hover { color: #bac5d4; background: rgba(255, 255, 255, .018); }
+    .app-tab.active { color: #e8f1fb; background: #0e131c; }
+    .app-tab.active::after { background: var(--cyan); box-shadow: 0 -3px 10px rgba(117, 220, 255, .4); }
+    .app-tab svg { width: 13px; height: 13px; flex: 0 0 auto; }
+    .app-tab span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .app-tab .state-pin { width: 4px; height: 4px; margin-left: auto; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .app-tab.attention .state-pin { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+
+    .tab-tools {
+      flex: 0 0 auto;
+      gap: 3px;
+      padding: 0 10px;
+      border-left: 1px solid var(--line);
+    }
+
+    .layout-readout {
+      height: 24px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-right: 2px;
+      padding: 0 9px;
+      color: var(--cyan);
+      background: rgba(117, 220, 255, .06);
+      border: 1px solid rgba(117, 220, 255, .18);
+      border-radius: 3px;
+      font: 600 9px/1 var(--mono);
+      letter-spacing: .04em;
+    }
+
+    .app-body {
+      height: 644px;
+      display: grid;
+      grid-template-columns: 54px 1fr;
+    }
+
+    .workspace-rail {
+      position: relative;
+      z-index: 4;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 7px;
+      padding: 12px 0 10px;
+      background: #090d13;
+      border-right: 1px solid var(--line);
+    }
+
+    .rail-mark,
+    .rail-action {
+      position: relative;
+      justify-content: center;
+      width: 30px;
+      height: 30px;
+      color: #647082;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 3px;
+      cursor: pointer;
+      font: 650 9px/1 var(--mono);
+    }
+
+    .rail-mark:hover,
+    .rail-action:hover { color: #d9e4f2; background: #111722; border-color: var(--line); }
+    .rail-mark.active { color: var(--cyan); background: var(--cyan-soft); border-color: rgba(117, 220, 255, .2); }
+    .rail-mark.active::before {
+      content: "";
+      position: absolute;
+      left: -13px;
+      width: 2px;
+      height: 16px;
+      background: var(--cyan);
+      box-shadow: 0 0 9px var(--cyan);
+    }
+
+    .rail-mark svg,
+    .rail-action svg { width: 14px; height: 14px; }
+    .rail-rule { width: 22px; height: 1px; margin: 4px 0; background: var(--line); }
+    .rail-spacer { flex: 1; }
+
+    .canvas {
+      position: relative;
+      min-width: 0;
+      overflow: hidden;
+      background:
+        linear-gradient(rgba(130, 175, 230, .027) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(130, 175, 230, .027) 1px, transparent 1px),
+        #06090e;
+      background-size: 24px 24px;
+    }
+
+    .canvas::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: radial-gradient(circle at 50% 52%, rgba(76, 137, 213, .07), transparent 43%);
+    }
+
+    .grid {
+      position: absolute;
+      inset: 8px;
+      display: grid;
+      grid-template-columns: 1.2fr .8fr .8fr;
+      grid-template-rows: 1fr 1fr;
+      gap: 8px;
+      transition: right .25s ease;
+    }
+
+    .canvas.inspector-open .grid { right: 300px; }
+
+    .tile {
+      position: relative;
+      min-width: 0;
+      overflow: hidden;
+      color: #a8b3c2;
+      background: #0d121a;
+      border: 1px solid rgba(189, 218, 255, .17);
+      border-radius: 3px;
+      cursor: pointer;
+      transition: border-color .16s ease, transform .16s ease, box-shadow .16s ease;
+    }
+
+    .tile::before {
+      content: "";
+      position: absolute;
+      z-index: 2;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 3px;
+      background: var(--tile-accent, #354052);
+      opacity: .48;
+    }
+
+    .tile:hover { border-color: rgba(189, 218, 255, .34); }
+    .tile.selected {
+      border-color: rgba(117, 220, 255, .78);
+      box-shadow: 0 0 0 1px rgba(117, 220, 255, .09), 0 0 32px rgba(117, 220, 255, .08);
+    }
+    .tile.selected::before { opacity: 1; box-shadow: 0 0 12px var(--tile-accent); }
+    .tile.hero-tile { grid-row: 1 / span 2; }
+
+    .tile-head {
+      height: 29px;
+      justify-content: space-between;
+      padding: 0 9px;
+      background: #121824;
+      border-bottom: 1px solid rgba(189, 218, 255, .14);
+    }
+
+    .tile-app { min-width: 0; gap: 7px; }
+    .tile-app svg { width: 12px; height: 12px; color: var(--tile-accent); }
+    .tile-name { overflow: hidden; color: #aeb9c8; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+    .slot-id { color: #637084; font: 600 8px/1 var(--mono); letter-spacing: .08em; }
+
+    .terminal {
+      height: calc(100% - 29px);
+      padding: 14px 15px;
+      background:
+        radial-gradient(circle at 10% 100%, rgba(117, 220, 255, .035), transparent 35%),
+        #090d13;
+      color: #7d899a;
+      font: 500 10px/1.68 var(--mono);
+    }
+
+    .terminal .prompt { color: var(--cyan); }
+    .terminal .path { color: var(--violet); }
+    .terminal .ok { color: var(--green); }
+    .terminal .warn { color: var(--amber); }
+    .terminal .faint { color: #3f4958; }
+    .terminal .bright { color: #cdd8e6; }
+
+    .task-line {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 11px 0 9px;
+      color: #aebac9;
+    }
+
+    .task-line i {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 9px var(--cyan);
+      animation: breathe 1.7s ease-in-out infinite;
+    }
+
+    @keyframes breathe { 50% { opacity: .35; } }
+
+    .progress {
+      height: 2px;
+      margin: 8px 0 13px;
+      background: #161d28;
+    }
+
+    .progress span {
+      display: block;
+      width: 68%;
+      height: 100%;
+      background: var(--cyan);
+      box-shadow: 0 0 9px rgba(117, 220, 255, .65);
+    }
+
+    .code-surface {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      height: calc(100% - 29px);
+      background: #0a0e14;
+      font: 500 8.7px/1.64 var(--mono);
+    }
+
+    .code-files {
+      padding: 10px 7px;
+      color: #556071;
+      border-right: 1px solid rgba(189, 218, 255, .07);
+    }
+
+    .code-files div { margin-bottom: 7px; }
+    .code-files .on { color: #bac6d5; }
+    .code {
+      overflow: hidden;
+      padding: 11px 12px;
+      color: #7e8999;
+      white-space: pre;
+    }
+    .ln { display: inline-block; width: 20px; color: #333d4b; }
+    .kw { color: #b69cff; }
+    .fn { color: #78d9ff; }
+    .str { color: #92d4a9; }
+
+    .finder-surface {
+      height: calc(100% - 29px);
+      padding: 12px;
+      background: #0b0f16;
+    }
+
+    .finder-path {
+      margin-bottom: 13px;
+      color: #566173;
+      font: 500 8px/1 var(--mono);
+    }
+
+    .file-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 7px; }
+    .file {
+      min-width: 0;
+      color: #687486;
+      font-size: 7.8px;
+      text-align: center;
+    }
+    .file-shape {
+      position: relative;
+      width: 24px;
+      height: 19px;
+      margin: 0 auto 5px;
+      background: #202a38;
+      border: 1px solid #344255;
+      border-radius: 2px;
+    }
+    .file-shape.folder { background: rgba(117, 220, 255, .12); border-color: rgba(117, 220, 255, .3); }
+    .file-shape.folder::before {
+      content: "";
+      position: absolute;
+      top: -4px;
+      left: 2px;
+      width: 10px;
+      height: 4px;
+      background: rgba(117, 220, 255, .2);
+      border: 1px solid rgba(117, 220, 255, .3);
+      border-bottom: 0;
+    }
+
+    .empty-tile {
+      display: grid;
+      place-items: center;
+      background: rgba(14, 20, 29, .7);
+      border-color: rgba(189, 218, 255, .22);
+      border-style: dashed;
+    }
+    .empty-inner { color: #475263; text-align: center; font: 500 8px/1.5 var(--mono); }
+    .empty-inner svg { width: 18px; height: 18px; margin: 0 auto 8px; color: #5d6878; }
+
+    .inspector {
+      position: absolute;
+      z-index: 6;
+      top: 8px;
+      right: 8px;
+      bottom: 8px;
+      width: 285px;
+      padding: 0 14px 14px;
+      overflow: auto;
+      background: rgba(12, 17, 25, .96);
+      border: 1px solid var(--line-strong);
+      box-shadow: -20px 0 50px rgba(0, 0, 0, .36);
+      transform: translateX(calc(100% + 12px));
+      opacity: 0;
+      transition: transform .24s ease, opacity .18s ease;
+    }
+    .canvas.inspector-open .inspector { transform: translateX(0); opacity: 1; }
+
+    .inspect-head {
+      position: sticky;
+      top: 0;
+      height: 48px;
+      justify-content: space-between;
+      margin-bottom: 5px;
+      background: rgba(12, 17, 25, .96);
+      border-bottom: 1px solid var(--line);
+    }
+    .inspect-kicker { color: var(--cyan); font: 650 8px/1 var(--mono); letter-spacing: .13em; }
+    .inspect-title { margin-top: 5px; color: #dde7f4; font-size: 12px; font-weight: 600; }
+
+    .inspect-block { padding: 15px 0; border-bottom: 1px solid var(--line); }
+    .inspect-label { margin-bottom: 10px; color: #566173; font: 650 8px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+    .inspect-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      margin: 8px 0;
+      color: #778396;
+      font-size: 9px;
+    }
+    .inspect-row b { color: #c4cfdd; font: 550 9px/1 var(--mono); }
+
+    .state-track { display: grid; gap: 9px; }
+    .state-item { display: grid; grid-template-columns: 7px 1fr auto; align-items: center; gap: 9px; color: #8e9aac; font-size: 9px; }
+    .state-item i { width: 4px; height: 4px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px var(--green); }
+    .state-item time { color: #4f5a6a; font: 500 8px/1 var(--mono); }
+
+    .split-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .action-button {
+      min-height: 30px;
+      color: #aeb9c8;
+      background: #101620;
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 9px;
+    }
+    .action-button:hover { color: #eef5ff; border-color: rgba(117, 220, 255, .32); }
+    .action-button.danger { color: #b87a82; }
+
+    .memo-box {
+      width: 100%;
+      min-height: 68px;
+      padding: 9px;
+      resize: none;
+      color: #9eabba;
+      background: #090d13;
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      outline: 0;
+      font-size: 9px;
+      line-height: 1.55;
+    }
+    .memo-box:focus { border-color: rgba(117, 220, 255, .32); }
+
+    .activity-bar {
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 11px 0 66px;
+      background: #0a0e14;
+      border-top: 1px solid var(--line);
+      color: #5d6878;
+      font: 500 8px/1 var(--mono);
+    }
+
+    .activity-left,
+    .activity-right { gap: 16px; }
+    .activity-item { display: flex; align-items: center; gap: 6px; }
+    .activity-item i { width: 4px; height: 4px; border-radius: 50%; background: #465264; }
+    .activity-item.live { color: #8b98aa; }
+    .activity-item.live i { background: var(--cyan); box-shadow: 0 0 7px var(--cyan); }
+
+    .view-switch {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .view-switch button {
+      height: 22px;
+      padding: 0 9px;
+      color: #596576;
+      background: transparent;
+      border: 0;
+      border-left: 1px solid var(--line);
+      cursor: pointer;
+      font: 600 8px/1 var(--mono);
+    }
+    .view-switch button:first-child { border-left: 0; }
+    .view-switch button.active { color: var(--cyan); background: var(--cyan-soft); }
+
+    .annotation-grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 1px;
+      margin-top: 88px;
+      background: var(--line);
+      border: 1px solid var(--line);
+    }
+
+    .annotation {
+      min-height: 240px;
+      padding: 28px;
+      background: rgba(8, 11, 18, .96);
+    }
+    .annotation:nth-child(1) { grid-column: span 4; }
+    .annotation:nth-child(2) { grid-column: span 4; }
+    .annotation:nth-child(3) { grid-column: span 4; }
+    .annotation-index { color: var(--cyan); font: 650 9px/1 var(--mono); letter-spacing: .12em; }
+    .annotation h2 { margin: 28px 0 14px; font-size: 18px; font-weight: 590; letter-spacing: -.025em; }
+    .annotation p { margin: 0; color: #828d9e; font-size: 12px; line-height: 1.75; }
+
+    .audit {
+      display: grid;
+      grid-template-columns: 310px 1fr;
+      gap: 80px;
+      margin-top: 110px;
+      padding-top: 22px;
+      border-top: 1px solid var(--line);
+    }
+
+    .section-num { color: var(--cyan); font: 650 9px/1 var(--mono); letter-spacing: .12em; }
+    .audit h2,
+    .tokens h2 { margin: 15px 0 0; font-size: 30px; font-weight: 570; letter-spacing: -.04em; }
+    .audit-lead { margin-top: 20px; color: #758193; font-size: 12px; line-height: 1.75; }
+
+    .findings { display: grid; grid-template-columns: 1fr 1fr; gap: 0 48px; }
+    .finding { padding: 20px 0 24px; border-top: 1px solid var(--line); }
+    .finding:nth-child(-n+2) { border-top: 0; padding-top: 0; }
+    .finding h3 { margin: 0 0 9px; color: #dce6f2; font-size: 12px; font-weight: 610; }
+    .finding p { margin: 0; color: #778294; font-size: 11px; line-height: 1.7; }
+
+    .mapping {
+      margin-top: 96px;
+      border-top: 1px solid var(--line);
+    }
+    .mapping-row {
+      display: grid;
+      grid-template-columns: 180px 1fr 1fr;
+      min-height: 74px;
+      border-bottom: 1px solid var(--line);
+    }
+    .mapping-row > div { padding: 20px 18px; border-left: 1px solid var(--line); }
+    .mapping-row > div:first-child { padding-left: 0; border-left: 0; }
+    .mapping-head { color: #566173; font: 650 8px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+    .mapping-cell { color: #8793a5; font-size: 11px; line-height: 1.55; }
+    .mapping-cell strong { display: block; margin-bottom: 4px; color: #d9e3f0; font-weight: 590; }
+
+    .tokens {
+      display: grid;
+      grid-template-columns: 310px 1fr;
+      gap: 80px;
+      margin-top: 110px;
+      padding-top: 22px;
+      border-top: 1px solid var(--line);
+    }
+    .token-stack { display: grid; gap: 24px; }
+    .token-group { display: grid; grid-template-columns: 120px 1fr; align-items: start; gap: 24px; }
+    .token-label { padding-top: 3px; color: #596576; font: 650 8px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+    .swatches { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+    .swatch { min-height: 84px; padding: 52px 9px 9px; background: var(--swatch); border: 1px solid rgba(255, 255, 255, .08); color: rgba(255, 255, 255, .72); font: 550 8px/1 var(--mono); }
+    .type-spec { padding: 16px 0; border-top: 1px solid var(--line); color: #8894a6; font-size: 11px; }
+    .type-spec strong { display: inline-block; min-width: 130px; color: #dce6f2; font-weight: 580; }
+
+    .footer-note {
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      margin-top: 100px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+      color: #4f5a69;
+      font: 500 9px/1.6 var(--mono);
+    }
+
+    .command-palette {
+      position: fixed;
+      z-index: 20;
+      inset: 0;
+      display: none;
+      place-items: start center;
+      padding-top: 15vh;
+      background: rgba(2, 4, 8, .62);
+      backdrop-filter: blur(8px);
+    }
+    .command-palette.open { display: grid; }
+    .command-card {
+      width: min(560px, calc(100% - 32px));
+      background: #0d121b;
+      border: 1px solid rgba(189, 218, 255, .2);
+      box-shadow: 0 30px 90px rgba(0, 0, 0, .7);
+    }
+    .command-search {
+      width: 100%;
+      height: 48px;
+      padding: 0 16px;
+      color: #e1eaf5;
+      background: transparent;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      outline: 0;
+      font-size: 13px;
+    }
+    .command-list { padding: 7px; }
+    .command-item { display: flex; align-items: center; justify-content: space-between; min-height: 38px; padding: 0 10px; color: #8793a5; font-size: 11px; }
+    .command-item:first-child { color: #e5eef8; background: var(--cyan-soft); }
+    .command-item kbd { color: #546071; font: 500 8px/1 var(--mono); }
+
+    /* ── Light theme ──
+       Light is tuned independently rather than produced with a filter/inversion. */
+    body[data-theme="light"] {
+      --ink: #f1f3f5;
+      --void: #f7f8fa;
+      --well: #ffffff;
+      --well-2: #edf1f4;
+      --line: rgba(22, 39, 57, .12);
+      --line-strong: rgba(22, 39, 57, .22);
+      --text: #111923;
+      --muted: #647183;
+      --dim: #8a95a3;
+      --cyan: #087fa4;
+      --cyan-soft: rgba(8, 127, 164, .095);
+      --violet: #6657bd;
+      --green: #138259;
+      --amber: #a76a08;
+      --red: #c34b59;
+      color-scheme: light;
+      background:
+        radial-gradient(circle at 52% 18%, rgba(52, 124, 168, .08), transparent 32rem),
+        linear-gradient(rgba(18, 34, 50, .03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(18, 34, 50, .03) 1px, transparent 1px),
+        var(--ink);
+      background-size: auto, 72px 72px, 72px 72px, auto;
+    }
+
+    body[data-theme="light"] .theme-picker {
+      background: rgba(255, 255, 255, .76);
+      box-shadow: 0 1px 3px rgba(21, 36, 52, .04);
+    }
+    body[data-theme="light"] .theme-choice.active {
+      background: #e7ecef;
+      box-shadow: 0 0 0 1px rgba(18, 34, 50, .045) inset;
+    }
+    body[data-theme="light"] h1 span { color: #7d8998; }
+    body[data-theme="light"] .hero-copy { color: #647183; }
+    body[data-theme="light"] .eyebrow::before,
+    body[data-theme="light"] .brand-mark::before,
+    body[data-theme="light"] .brand-mark::after { box-shadow: none; }
+
+    body[data-theme="light"] .prototype-shell {
+      border-color: rgba(21, 39, 58, .17);
+      background: rgba(255, 255, 255, .9);
+      box-shadow:
+        0 36px 100px rgba(35, 50, 66, .14),
+        0 0 0 1px rgba(255, 255, 255, .6) inset,
+        0 0 70px rgba(31, 119, 160, .035);
+    }
+
+    body[data-theme="light"] .app { background: #edf1f4; }
+    body[data-theme="light"] .titlebar { background: rgba(250, 251, 252, .96); }
+    body[data-theme="light"] .brand { color: #17212c; }
+    body[data-theme="light"] .brand-mark { border-color: rgba(8, 127, 164, .55); box-shadow: none; }
+    body[data-theme="light"] .window-meta { color: #7a8796; }
+    body[data-theme="light"] .workspace-name { color: #283646; }
+    body[data-theme="light"] .slash { color: #b3bbc4; }
+    body[data-theme="light"] .sync-dot,
+    body[data-theme="light"] .app-tab .state-pin,
+    body[data-theme="light"] .state-item i,
+    body[data-theme="light"] .activity-item.live i { box-shadow: none; }
+
+    body[data-theme="light"] .command-trigger {
+      color: #798695;
+      background: #f5f7f8;
+    }
+    body[data-theme="light"] .command-trigger:hover { color: #253344; }
+    body[data-theme="light"] .command-trigger kbd { color: #98a2ad; }
+    body[data-theme="light"] .icon-button { color: #7a8795; }
+    body[data-theme="light"] .icon-button:hover,
+    body[data-theme="light"] .icon-button.active { color: #172431; background: #e9eef1; }
+    body[data-theme="light"] .subbar { background: #f4f6f7; }
+    body[data-theme="light"] .app-tab { color: #778391; }
+    body[data-theme="light"] .app-tab:hover { color: #263442; background: rgba(15, 31, 48, .025); }
+    body[data-theme="light"] .app-tab.active { color: #111d29; background: #ffffff; }
+    body[data-theme="light"] .app-tab.active::after { box-shadow: none; }
+    body[data-theme="light"] .layout-readout { color: var(--cyan); }
+
+    body[data-theme="light"] .workspace-rail { background: #f6f8f9; }
+    body[data-theme="light"] .rail-mark,
+    body[data-theme="light"] .rail-action { color: #7b8795; }
+    body[data-theme="light"] .rail-mark:hover,
+    body[data-theme="light"] .rail-action:hover { color: #14202c; background: #e9eef1; }
+    body[data-theme="light"] .rail-mark.active { color: var(--cyan); background: var(--cyan-soft); }
+    body[data-theme="light"] .rail-mark.active::before { box-shadow: none; }
+
+    body[data-theme="light"] .canvas {
+      background:
+        linear-gradient(rgba(24, 50, 72, .038) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(24, 50, 72, .038) 1px, transparent 1px),
+        #e8ecef;
+      background-size: 24px 24px;
+    }
+    body[data-theme="light"] .canvas::before { background: radial-gradient(circle at 50% 52%, rgba(31, 124, 166, .045), transparent 43%); }
+    body[data-theme="light"] .tile {
+      color: #536171;
+      background: #ffffff;
+      border-color: rgba(21, 40, 59, .24);
+      box-shadow: 0 1px 2px rgba(29, 48, 66, .045);
+    }
+    body[data-theme="light"] .tile:hover { border-color: rgba(21, 40, 59, .4); }
+    body[data-theme="light"] .tile.selected {
+      border-color: rgba(8, 127, 164, .86);
+      box-shadow: 0 0 0 1px rgba(8, 127, 164, .065), 0 10px 28px rgba(40, 66, 88, .1);
+    }
+    body[data-theme="light"] .tile.selected::before { box-shadow: none; }
+    body[data-theme="light"] .tile-head { background: #edf1f3; border-bottom-color: rgba(21, 40, 59, .16); }
+    body[data-theme="light"] .tile-name { color: #334253; }
+    body[data-theme="light"] .slot-id { color: #758291; }
+
+    body[data-theme="light"] .terminal {
+      background:
+        radial-gradient(circle at 10% 100%, rgba(8, 127, 164, .035), transparent 35%),
+        #ffffff;
+      color: #586575;
+    }
+    body[data-theme="light"] .terminal .bright { color: #152231; }
+    body[data-theme="light"] .terminal .faint { color: #9aa4af; }
+    body[data-theme="light"] .task-line { color: #334253; }
+    body[data-theme="light"] .task-line i { box-shadow: none; }
+    body[data-theme="light"] .progress { background: #dce3e7; }
+    body[data-theme="light"] .progress span { box-shadow: none; }
+    body[data-theme="light"] .code-surface { background: #ffffff; }
+    body[data-theme="light"] .code-files { color: #939da8; }
+    body[data-theme="light"] .code-files .on { color: #344354; }
+    body[data-theme="light"] .code { color: #687586; }
+    body[data-theme="light"] .ln { color: #b5bdc5; }
+    body[data-theme="light"] .finder-surface { background: #ffffff; }
+    body[data-theme="light"] .finder-path { color: #8b96a2; }
+    body[data-theme="light"] .file { color: #687586; }
+    body[data-theme="light"] .file-shape { background: #dde3e8; border-color: #c4cdd5; }
+    body[data-theme="light"] .empty-tile { background: rgba(244, 247, 249, .82); border-color: rgba(21, 40, 59, .28); box-shadow: none; }
+    body[data-theme="light"] .empty-inner { color: #697686; }
+
+    body[data-theme="light"] .inspector {
+      background: rgba(250, 251, 252, .97);
+      box-shadow: -20px 0 50px rgba(37, 53, 69, .11);
+    }
+    body[data-theme="light"] .inspect-head { background: rgba(250, 251, 252, .97); }
+    body[data-theme="light"] .inspect-title { color: #1e2b39; }
+    body[data-theme="light"] .inspect-label { color: #8995a2; }
+    body[data-theme="light"] .inspect-row { color: #778492; }
+    body[data-theme="light"] .inspect-row b { color: #263544; }
+    body[data-theme="light"] .state-item { color: #526172; }
+    body[data-theme="light"] .state-item time { color: #97a1ac; }
+    body[data-theme="light"] .action-button { color: #4e5d6c; background: #f2f5f6; }
+    body[data-theme="light"] .action-button:hover { color: #0f1d2a; }
+    body[data-theme="light"] .memo-box { color: #526171; background: #ffffff; }
+    body[data-theme="light"] .activity-bar { color: #84909d; background: #f7f9fa; }
+    body[data-theme="light"] .activity-item.live { color: #536172; }
+    body[data-theme="light"] .view-switch button { color: #7c8895; }
+    body[data-theme="light"] .view-switch button.active { color: var(--cyan); }
+
+    body[data-theme="light"] .annotation-grid { background: var(--line); }
+    body[data-theme="light"] .annotation { background: rgba(250, 251, 252, .96); }
+    body[data-theme="light"] .annotation h2,
+    body[data-theme="light"] .finding h3,
+    body[data-theme="light"] .mapping-cell strong,
+    body[data-theme="light"] .type-spec strong { color: #1e2b38; }
+    body[data-theme="light"] .annotation p,
+    body[data-theme="light"] .audit-lead,
+    body[data-theme="light"] .finding p,
+    body[data-theme="light"] .mapping-cell,
+    body[data-theme="light"] .type-spec { color: #667383; }
+    body[data-theme="light"] .swatch { border-color: rgba(18, 35, 52, .1); }
+    body[data-theme="light"] .footer-note { color: #8a96a3; }
+
+    body[data-theme="light"] .command-palette { background: rgba(225, 231, 236, .72); }
+    body[data-theme="light"] .command-card { background: #ffffff; border-color: var(--line-strong); box-shadow: 0 30px 90px rgba(38, 55, 72, .2); }
+    body[data-theme="light"] .command-search { color: #172432; }
+    body[data-theme="light"] .command-item { color: #657282; }
+    body[data-theme="light"] .command-item:first-child { color: #172432; }
+
+    @media (max-width: 1080px) {
+      .page { width: min(100% - 28px, 960px); padding-top: 42px; }
+      .hero { grid-template-columns: 1fr; gap: 24px; }
+      .app { min-width: 900px; }
+      .prototype-shell { overflow-x: auto; }
+      .annotation:nth-child(n) { grid-column: span 12; }
+      .annotation { min-height: 0; }
+      .audit, .tokens { grid-template-columns: 1fr; gap: 48px; }
+    }
+
+    @media (max-width: 720px) {
+      .page { width: min(100% - 20px, 680px); }
+      .hero { margin-top: 22px; }
+      .annotation-grid { margin-top: 56px; }
+      .findings { grid-template-columns: 1fr; }
+      .finding:nth-child(2) { padding-top: 20px; border-top: 1px solid var(--line); }
+      .mapping-row { grid-template-columns: 1fr; }
+      .mapping-row > div { padding-left: 0; border-left: 0; border-top: 1px solid rgba(189, 218, 255, .06); }
+      .mapping-row > div:first-child { border-top: 0; }
+      .token-group { grid-template-columns: 1fr; gap: 12px; }
+      .swatches { grid-template-columns: repeat(2, 1fr); }
+      .footer-note { flex-direction: column; }
+      .page-top { align-items: flex-start; }
+      .theme-picker-label { display: none; }
+      .theme-choice { min-width: 48px; }
+    }
+  </style>
+</head>
+<body data-theme="dark">
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m16 16 4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><path d="M4 4h6v6H4zm10 0h6v6h-6zM4 14h6v6H4zm10 0h6v6h-6z" fill="none" stroke="currentColor" stroke-width="1.5"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m5 7 5 5-5 5m8 0h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m9 6-6 6 6 6m6-12 6 6-6 6m-2-15-2 18" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3z" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linejoin="round"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-layout" viewBox="0 0 24 24"><path d="M3 4h18v16H3zM12 4v16M12 12h9" fill="none" stroke="currentColor" stroke-width="1.45"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19 8a8 8 0 1 0 1 7m-1-7V3m0 5h-5" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-inspect" viewBox="0 0 24 24"><path d="M5 4h14v16H5zm5 0v16" fill="none" stroke="currentColor" stroke-width="1.5"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2" fill="currentColor"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><circle cx="19" cy="12" r="1.2" fill="currentColor"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A8 8 0 0 0 15 6l-.3-2.6h-4L10.4 6a8 8 0 0 0-1.6 1L6.5 6 4.4 9.5l2 1.5a7 7 0 0 0 0 2l-2 1.5L6.5 18l2.3-1a8 8 0 0 0 1.6 1l.3 2.6h4L15 18a8 8 0 0 0 1.6-1l2.3 1 2.1-3.5-2-1.5a7 7 0 0 0 0-1Z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></symbol>
+  </svg>
+
+  <main class="page">
+    <div class="page-top">
+      <div class="eyebrow">TiN interface study / Concept 01</div>
+      <div class="theme-picker" aria-label="Theme selection">
+        <span class="theme-picker-label">APPEARANCE</span>
+        <button class="theme-choice active" data-theme-choice="dark"><i></i>BLACK</button>
+        <button class="theme-choice" data-theme-choice="light"><i></i>WHITE</button>
+      </div>
+    </div>
+    <section class="hero">
+      <h1>Grid is the interface.<br><span>Everything else recedes.</span></h1>
+      <p class="hero-copy">
+        TiN の価値は会話ではなく、<strong>複数の作業空間を一目で把握し、瞬時に動かすこと</strong>。
+        汎用AIツールのカード／ピル中心の見た目を捨て、空間・状態・操作の3層だけで構成します。
+      </p>
+    </section>
+
+    <section class="prototype-shell" aria-label="TiN redesign prototype">
+      <div class="app">
+        <header class="titlebar">
+          <div class="window-lead">
+            <div class="traffic"><i></i><i></i><i></i></div>
+            <div class="brand"><span class="brand-mark"></span><span>TiN</span></div>
+          </div>
+          <div class="window-meta">
+            <span class="workspace-name">TerminalIN / launch</span><span class="slash">/</span><span>6 slots</span><i class="sync-dot"></i>
+          </div>
+          <div class="top-actions">
+            <button class="command-trigger" id="commandTrigger"><svg><use href="#i-search"/></svg><span>Jump or run a command</span><kbd>⌘ K</kbd></button>
+            <button class="icon-button" aria-label="More"><svg><use href="#i-more"/></svg></button>
+          </div>
+        </header>
+
+        <nav class="subbar" aria-label="Open windows">
+          <div class="tab-strip">
+            <button class="app-tab active"><svg><use href="#i-grid"/></svg><span>Spatial grid</span></button>
+            <button class="app-tab"><svg><use href="#i-terminal"/></svg><span>release / build</span><i class="state-pin"></i></button>
+            <button class="app-tab attention"><svg><use href="#i-terminal"/></svg><span>feature / updater</span><i class="state-pin"></i></button>
+            <button class="app-tab"><svg><use href="#i-folder"/></svg><span>TerminalIN</span></button>
+          </div>
+          <div class="tab-tools">
+            <div class="layout-readout"><svg width="13" height="13"><use href="#i-layout"/></svg>3 × 2</div>
+            <button class="icon-button" aria-label="Retile"><svg><use href="#i-refresh"/></svg></button>
+            <button class="icon-button active" id="inspectorTrigger" aria-label="Inspector"><svg><use href="#i-inspect"/></svg></button>
+            <button class="icon-button" aria-label="Add"><svg><use href="#i-plus"/></svg></button>
+          </div>
+        </nav>
+
+        <div class="app-body">
+          <aside class="workspace-rail" aria-label="Workspaces">
+            <button class="rail-mark active">01</button>
+            <button class="rail-mark">02</button>
+            <button class="rail-mark">LAB</button>
+            <div class="rail-rule"></div>
+            <button class="rail-action" aria-label="Add workspace"><svg><use href="#i-plus"/></svg></button>
+            <div class="rail-spacer"></div>
+            <button class="rail-action" aria-label="Settings"><svg><use href="#i-settings"/></svg></button>
+          </aside>
+
+          <section class="canvas inspector-open" id="canvas">
+            <div class="grid" id="spatialGrid">
+              <article class="tile hero-tile selected" data-name="release / build" style="--tile-accent:var(--cyan)">
+                <div class="tile-head">
+                  <div class="tile-app"><svg><use href="#i-terminal"/></svg><span class="tile-name">release / build — zsh</span></div>
+                  <span class="slot-id">SLOT 01</span>
+                </div>
+                <div class="terminal">
+                  <div><span class="prompt">➜</span> <span class="path">~/dev/TerminalIN</span> <span class="bright">npm run dist</span></div>
+                  <div class="faint">&nbsp;</div>
+                  <div><span class="faint">›</span> tin@1.13.1 predist</div>
+                  <div><span class="faint">›</span> node scripts/build-native.js</div>
+                  <div class="task-line"><i></i><span>Packaging arm64 application</span></div>
+                  <div class="progress"><span></span></div>
+                  <div><span class="ok">✓</span> native addon &nbsp; <span class="faint">0.8s</span></div>
+                  <div><span class="ok">✓</span> workspace bundle &nbsp; <span class="faint">1.4s</span></div>
+                  <div><span class="warn">◌</span> electron-builder &nbsp; <span class="faint">running</span></div>
+                  <div class="faint">&nbsp;</div>
+                  <div class="faint">dist/TiN-1.13.1-arm64-mac.zip</div>
+                  <div class="faint">• copying resources</div>
+                  <div class="faint">• signing local build</div>
+                </div>
+              </article>
+
+              <article class="tile" data-name="main.js — Code" style="--tile-accent:var(--violet)">
+                <div class="tile-head">
+                  <div class="tile-app"><svg><use href="#i-code"/></svg><span class="tile-name">main.js — Code</span></div>
+                  <span class="slot-id">SLOT 02</span>
+                </div>
+                <div class="code-surface">
+                  <div class="code-files"><div class="on">main.js</div><div>workspace.html</div><div>updater.js</div><div>package.json</div></div>
+                  <div class="code"><span class="ln">48</span><span class="kw">const</span> layout = <span class="fn">resolveGrid</span>({
+<span class="ln">49</span>  cols: <span class="str">3</span>, rows: <span class="str">2</span>,
+<span class="ln">50</span>  gap: <span class="str">8</span>
+<span class="ln">51</span>});
+<span class="ln">52</span>
+<span class="ln">53</span><span class="kw">await</span> <span class="fn">retileAll</span>(layout);</div>
+                </div>
+              </article>
+
+              <article class="tile" data-name="TerminalIN — Finder" style="--tile-accent:#6aa8ff">
+                <div class="tile-head">
+                  <div class="tile-app"><svg><use href="#i-folder"/></svg><span class="tile-name">TerminalIN — Finder</span></div>
+                  <span class="slot-id">SLOT 03</span>
+                </div>
+                <div class="finder-surface">
+                  <div class="finder-path">~/Documents/GitHub/TerminalIN</div>
+                  <div class="file-grid">
+                    <div class="file"><div class="file-shape folder"></div>assets</div>
+                    <div class="file"><div class="file-shape folder"></div>docs</div>
+                    <div class="file"><div class="file-shape folder"></div>scripts</div>
+                    <div class="file"><div class="file-shape"></div>main.js</div>
+                    <div class="file"><div class="file-shape"></div>README</div>
+                    <div class="file"><div class="file-shape"></div>package</div>
+                  </div>
+                </div>
+              </article>
+
+              <article class="tile" data-name="feature / updater" style="--tile-accent:var(--amber)">
+                <div class="tile-head">
+                  <div class="tile-app"><svg><use href="#i-terminal"/></svg><span class="tile-name">feature / updater — zsh</span></div>
+                  <span class="slot-id">SLOT 04</span>
+                </div>
+                <div class="terminal">
+                  <div><span class="prompt">➜</span> <span class="path">~/dev/TerminalIN</span></div>
+                  <div class="task-line"><i style="background:var(--amber);box-shadow:0 0 9px var(--amber)"></i><span>Approval required</span></div>
+                  <div class="faint">Allow command: gh release create?</div>
+                  <div class="faint">Waiting for input · 02:14</div>
+                </div>
+              </article>
+
+              <article class="tile empty-tile" data-name="Empty slot" style="--tile-accent:#465264">
+                <div class="empty-inner"><svg><use href="#i-plus"/></svg>DROP WINDOW<br>OR PRESS ⌘⇧S</div>
+              </article>
+            </div>
+
+            <aside class="inspector" id="inspector">
+              <div class="inspect-head">
+                <div><div class="inspect-kicker">SELECTED / SLOT 01</div><div class="inspect-title" id="inspectTitle">release / build</div></div>
+                <button class="icon-button" id="inspectorClose" aria-label="Close inspector"><svg><use href="#i-close"/></svg></button>
+              </div>
+              <div class="inspect-block">
+                <div class="inspect-label">Window</div>
+                <div class="inspect-row"><span>Application</span><b>Terminal</b></div>
+                <div class="inspect-row"><span>Position</span><b>1 / 6</b></div>
+                <div class="inspect-row"><span>Geometry</span><b>40% × 100%</b></div>
+                <div class="inspect-row"><span>Process</span><b>node · 32942</b></div>
+              </div>
+              <div class="inspect-block">
+                <div class="inspect-label">Activity</div>
+                <div class="state-track">
+                  <div class="state-item"><i></i><span>electron-builder</span><time>now</time></div>
+                  <div class="state-item"><i style="background:#536071;box-shadow:none"></i><span>Native addon</span><time>14s</time></div>
+                  <div class="state-item"><i style="background:#536071;box-shadow:none"></i><span>Bundle created</span><time>18s</time></div>
+                </div>
+              </div>
+              <div class="inspect-block">
+                <div class="inspect-label">Workspace note</div>
+                <textarea class="memo-box" aria-label="Workspace memo">Release checklist
+• Verify updater artifact
+• Smoke test clean install</textarea>
+              </div>
+              <div class="inspect-block">
+                <div class="inspect-label">Actions</div>
+                <div class="split-actions">
+                  <button class="action-button">Focus</button>
+                  <button class="action-button">Move</button>
+                  <button class="action-button">Swap</button>
+                  <button class="action-button danger">Release</button>
+                </div>
+              </div>
+            </aside>
+          </section>
+        </div>
+
+        <footer class="activity-bar">
+          <div class="activity-left">
+            <span class="activity-item live"><i></i>1 running</span>
+            <span class="activity-item"><i style="background:var(--amber)"></i>1 attention</span>
+            <span class="activity-item"><i></i>3 quiet</span>
+          </div>
+          <div class="activity-right">
+            <span>Space 2</span><span>5 / 6 occupied</span>
+            <div class="view-switch"><button class="active" data-mode="grid">GRID</button><button data-mode="tabs">TABS</button></div>
+          </div>
+        </footer>
+      </div>
+    </section>
+
+    <section class="annotation-grid" aria-label="Design principles">
+      <article class="annotation">
+        <span class="annotation-index">01 / SPACE</span>
+        <h2>グリッドを隠さない</h2>
+        <p>TiN 固有の価値は空間配置です。ウィンドウ一覧をカードとして積むのではなく、配置そのものをナビゲーションにします。選択、移動、交換が同じ座標系で理解できます。</p>
+      </article>
+      <article class="annotation">
+        <span class="annotation-index">02 / SIGNAL</span>
+        <h2>状態を面ではなく光で示す</h2>
+        <p>「実行中」「許可待ち」を色付きピルで埋め尽くさず、セル左端の2pxラインと小さな発光点に限定。静かな画面のまま、要対応だけが自然に浮かびます。</p>
+      </article>
+      <article class="annotation">
+        <span class="annotation-index">03 / ACTION</span>
+        <h2>操作は文脈に寄せる</h2>
+        <p>常時並ぶ記号ボタンを減らし、レイアウト操作は上段、選択対象の操作はInspector、横断操作は⌘Kに分離。覚える場所は3つだけです。</p>
+      </article>
+    </section>
+
+    <section class="audit">
+      <div>
+        <span class="section-num">02 / CURRENT AUDIT</span>
+        <h2>現状の評価</h2>
+        <p class="audit-lead">機能の厚みは十分です。問題は、増えた機能がほぼ同じ視覚強度で横並びになり、TiN の独自性より「AI補助機能の集合」が先に見えることです。</p>
+      </div>
+      <div class="findings">
+        <article class="finding"><h3>階層がフラット</h3><p>9〜11pxの文字、淡い背景、同程度の角丸が連続し、ワークスペース・タブ・状態・操作の優先順位が読み取りづらい状態です。</p></article>
+        <article class="finding"><h3>記号体系が散らばる</h3><p>☰ / ⊞ / ✏️ / ↺ / ⇄ / ⇅ / ◀ / ▶ / ↗ / 🎨 / ⚙ が混在。意味を学習しないと操作できず、製品としての固有言語も形成されません。</p></article>
+        <article class="finding"><h3>色の役割が重複</h3><p>青・紫・緑・橙・黄が、アプリ種別、状態、選択、AI機能、フォーカスにまたがって使用され、色だけでは意味が確定しません。</p></article>
+        <article class="finding"><h3>Drawer の責務が広すぎる</h3><p>Grid、Available、Memo、AI、Console が一つの縦長面に集まり、チャット型AIツールに近い「左ペインを読む」体験へ寄っています。</p></article>
+        <article class="finding"><h3>操作密度が常に最大</h3><p>使用頻度の低い編集・反転・Space移動まで常時露出。日常操作と管理操作の区別がなく、初見時の認知負荷が高くなっています。</p></article>
+        <article class="finding"><h3>ブランド方針と実UIが離れている</h3><p>既存の “Crystalline Void” は暗い空間、精密なグリッド、制御された発光を掲げていますが、実UIは明るい汎用SaaSの文法です。</p></article>
+      </div>
+    </section>
+
+    <section class="mapping" aria-label="Current to proposed component mapping">
+      <div class="mapping-row mapping-head"><div>Area</div><div>Current</div><div>Proposed</div></div>
+      <div class="mapping-row"><div class="mapping-cell"><strong>Workspace</strong></div><div class="mapping-cell">Drawer 内の一覧とタイトル</div><div class="mapping-cell"><strong>52px rail</strong>番号／短縮名だけを常設。詳細名はホバーと⌘Kで表示。</div></div>
+      <div class="mapping-row"><div class="mapping-cell"><strong>Window navigation</strong></div><div class="mapping-cell">上部タブ＋Drawer内カード＋grid dots</div><div class="mapping-cell"><strong>Spatial gridを主、タブを副</strong>選択状態は両者で同期し、重複リストを廃止。</div></div>
+      <div class="mapping-row"><div class="mapping-cell"><strong>Status</strong></div><div class="mapping-cell">色付きpill、badge、focused背景</div><div class="mapping-cell"><strong>2px edge + 4px signal</strong>色は running / attention / error の3意味だけに限定。</div></div>
+      <div class="mapping-row"><div class="mapping-cell"><strong>Tools</strong></div><div class="mapping-cell">ヘッダーに記号ボタンを横並び</div><div class="mapping-cell"><strong>Layout / Context / Global</strong>3階層へ分離。低頻度操作は⌘Kへ。</div></div>
+      <div class="mapping-row"><div class="mapping-cell"><strong>Memo + AI</strong></div><div class="mapping-cell">Drawer 内に常設ツールバーと入力欄</div><div class="mapping-cell"><strong>Inspector内のworkspace note</strong>AI操作は選択テキストのコンテキストメニューへ移動。</div></div>
+    </section>
+
+    <section class="tokens">
+      <div><span class="section-num">03 / SYSTEM</span><h2>Design tokens</h2></div>
+      <div class="token-stack">
+        <div class="token-group">
+          <div class="token-label">Palette</div>
+          <div class="swatches">
+            <div class="swatch" style="--swatch:#05070c">VOID<br>#05070C</div>
+            <div class="swatch" style="--swatch:#0d111a">WELL<br>#0D111A</div>
+            <div class="swatch" style="--swatch:#75dcff;color:#061017">SIGNAL<br>#75DCFF</div>
+            <div class="swatch" style="--swatch:#7ce1ae;color:#06100b">RUN<br>#7CE1AE</div>
+            <div class="swatch" style="--swatch:#f2c66d;color:#151006">ATTN<br>#F2C66D</div>
+          </div>
+        </div>
+        <div class="token-group">
+          <div class="token-label">Type</div>
+          <div>
+            <div class="type-spec"><strong>UI / SF Pro</strong> 11–13px · Medium · sentence case</div>
+            <div class="type-spec"><strong>DATA / SF Mono</strong> 8–10px · 600 · tabular numbers</div>
+            <div class="type-spec"><strong>DISPLAY / SF Pro</strong> 30–76px · 570 · tight tracking</div>
+          </div>
+        </div>
+        <div class="token-group">
+          <div class="token-label">Geometry</div>
+          <div>
+            <div class="type-spec"><strong>Radius</strong> 3px default · 4px input · circle only for status</div>
+            <div class="type-spec"><strong>Grid</strong> 8px macro gap · 24px canvas grid · 1px dividers</div>
+            <div class="type-spec"><strong>Motion</strong> 160–240ms · opacity / transform only</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer-note"><span>TiN / TERMINALIN — UI DIRECTION PROPOSAL</span><span>Standalone HTML · no external assets · interactive prototype</span></footer>
+  </main>
+
+  <div class="command-palette" id="commandPalette" role="dialog" aria-modal="true" aria-label="Command palette">
+    <div class="command-card">
+      <input class="command-search" id="commandSearch" placeholder="Search windows, workspaces, and actions…">
+      <div class="command-list">
+        <div class="command-item"><span>Focus · release / build</span><kbd>↵</kbd></div>
+        <div class="command-item"><span>Retile all windows</span><kbd>⌘ R</kbd></div>
+        <div class="command-item"><span>Move workspace to Space 3</span><kbd>⌃ 3</kbd></div>
+        <div class="command-item"><span>Create embedded terminal</span><kbd>⌘ T</kbd></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const themeChoices = [...document.querySelectorAll('[data-theme-choice]')];
+
+    function setTheme(theme, persist = true) {
+      const resolved = theme === 'light' ? 'light' : 'dark';
+      document.body.dataset.theme = resolved;
+      themeChoices.forEach(button => {
+        const active = button.dataset.themeChoice === resolved;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      if (persist) {
+        try { localStorage.setItem('tin-proposal-theme', resolved); } catch {}
+      }
+    }
+
+    let initialTheme = new URLSearchParams(location.search).get('theme');
+    if (!initialTheme) {
+      try { initialTheme = localStorage.getItem('tin-proposal-theme'); } catch {}
+    }
+    setTheme(initialTheme || 'dark', false);
+    themeChoices.forEach(button => button.addEventListener('click', () => setTheme(button.dataset.themeChoice)));
+
+    const canvas = document.getElementById('canvas');
+    const inspectorTrigger = document.getElementById('inspectorTrigger');
+    const inspectorClose = document.getElementById('inspectorClose');
+    const inspectTitle = document.getElementById('inspectTitle');
+    const commandPalette = document.getElementById('commandPalette');
+    const commandSearch = document.getElementById('commandSearch');
+
+    function setInspector(open) {
+      canvas.classList.toggle('inspector-open', open);
+      inspectorTrigger.classList.toggle('active', open);
+    }
+
+    inspectorTrigger.addEventListener('click', () => setInspector(!canvas.classList.contains('inspector-open')));
+    inspectorClose.addEventListener('click', () => setInspector(false));
+
+    document.querySelectorAll('.tile').forEach(tile => {
+      tile.addEventListener('click', () => {
+        document.querySelectorAll('.tile').forEach(item => item.classList.remove('selected'));
+        tile.classList.add('selected');
+        inspectTitle.textContent = tile.dataset.name;
+        setInspector(true);
+      });
+    });
+
+    document.querySelectorAll('.app-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.app-tab').forEach(item => item.classList.remove('active'));
+        tab.classList.add('active');
+      });
+    });
+
+    document.querySelectorAll('.view-switch button').forEach(button => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('.view-switch button').forEach(item => item.classList.remove('active'));
+        button.classList.add('active');
+        const tiles = [...document.querySelectorAll('.tile')];
+        tiles.forEach((tile, index) => {
+          tile.style.display = button.dataset.mode === 'tabs' && index > 0 ? 'none' : '';
+        });
+        document.getElementById('spatialGrid').style.gridTemplateColumns = button.dataset.mode === 'tabs' ? '1fr' : '';
+      });
+    });
+
+    function openCommands() {
+      commandPalette.classList.add('open');
+      requestAnimationFrame(() => commandSearch.focus());
+    }
+    function closeCommands() { commandPalette.classList.remove('open'); }
+
+    document.getElementById('commandTrigger').addEventListener('click', openCommands);
+    commandPalette.addEventListener('click', event => { if (event.target === commandPalette) closeCommands(); });
+    document.addEventListener('keydown', event => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        commandPalette.classList.contains('open') ? closeCommands() : openCommands();
+      }
+      if (event.key === 'Escape') closeCommands();
+    });
+  </script>
+</body>
+</html>
