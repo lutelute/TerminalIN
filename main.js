@@ -636,9 +636,11 @@ async function writeWorkspacesJson() {
       });
     }
     // 復元に失敗して保留中のエントリも書き戻す (次回起動で再度復元を試せる)。
-    // 同じ windowNumber / slot が生きた snap で使われていればそちらを優先。
+    // 同じ windowNumber が生きた snap にあればそちらを優先 (=再snap済み)。
+    // slot の重複では捨てない — 保留 slot を他窓が使っていても、復元時に占有を見て
+    // 空き slot へ再割当されるため、エントリ自体を失う理由にならない (欠落バグの原因だった)。
     for (const p of (ws._unrestoredSnaps || [])) {
-      if (snapped.some(s => s.windowNumber === p.windowNumber || s.slot === p.slot)) continue;
+      if (snapped.some(s => s.windowNumber === p.windowNumber)) continue;
       snapped.push(p);
     }
     // 永続化: daemon が保持する grid 端末 (slot + sessionId + cwd)。再起動時に再アタッチして復元する。
@@ -741,109 +743,6 @@ function matchPersistedToLive(persisted, liveWindows) {
   return null;
 }
 
-// 永続化された snapped エントリを現在のウィンドウにマッチさせ、grid に配置する。
-// 結果 (復元成功/失敗) を renderer に送って通知バナーを表示させる。
-async function restoreSnappedWindows(ws, persistedList) {
-  if (!ws || !ws.win || ws.win.isDestroyed()) return;
-  if (!persistedList || persistedList.length === 0) return;
-
-  // daemon.list を取得 (最大 2 回リトライ: daemon 起動遅延対策)
-  let liveWindows = [];
-  for (let attempt = 0; attempt < 3; attempt++) {
-    liveWindows = await listWindows();
-    if (liveWindows.length > 0) break;
-    await new Promise(r => setTimeout(r, 400));
-  }
-  // 別 Space にいるウィンドウも復元対象にする (push-to-space 後の再起動で消えるバグ対策)
-  let liveAllSpaces = liveWindows;
-  if (axHelper && axHelper.listWindowsAllSpaces) {
-    try {
-      const allSpaces = axHelper.listWindowsAllSpaces();
-      if (allSpaces.length > liveWindows.length) liveAllSpaces = allSpaces;
-    } catch (e) { console.warn('[tin] restore: listWindowsAllSpaces failed:', e?.message || e); }
-  }
-
-  const restored = [];
-  const missing = [];
-  const moveCmds = [];
-
-  for (const p of persistedList) {
-    // まず現 Space で探し、なければ全 Space で探す (_spaceAbsent として復元)
-    const live = matchPersistedToLive(p, liveWindows) || matchPersistedToLive(p, liveAllSpaces);
-    const isAbsent = live && !liveWindows.some(w => w.windowNumber === live.windowNumber);
-    if (!live) {
-      missing.push({ app: p.app, title: p.title, slot: p.slot });
-      continue;
-    }
-    // slot は保存時のもの — 競合しないかチェック
-    if (ws.snappedExternals.has(live.windowNumber)) continue;
-    const total = ws.gridCols * ws.gridRows;
-    let slot = p.slot;
-    if (slot >= total) {
-      // grid サイズが縮んでる可能性 → 空きスロットに割当
-      slot = nextFreeSlot(ws);
-      if (slot < 0) {
-        missing.push({ app: p.app, title: p.title, slot: p.slot, reason: 'no-slot' });
-        continue;
-      }
-    }
-    // 既にそのスロットを使っている window があればスキップ (保守的)
-    let slotOccupied = false;
-    for (const [, info] of ws.snappedExternals) {
-      if (info.slot === slot) { slotOccupied = true; break; }
-    }
-    if (slotOccupied) {
-      slot = nextFreeSlot(ws);
-      if (slot < 0) {
-        missing.push({ app: p.app, title: p.title, slot: p.slot, reason: 'no-slot' });
-        continue;
-      }
-    }
-    ws.snappedExternals.set(live.windowNumber, {
-      app: live.app, pid: live.pid, title: live.title,
-      windowNumber: live.windowNumber, windowIndex: live.windowIndex || 0, slot,
-      origX: p.origX, origY: p.origY, origW: p.origW, origH: p.origH,
-      snappedAt: p.snappedAt || Date.now(),
-      _spaceAbsent: isAbsent || false,
-    });
-    ws._lastKnownSnappedWns.add(live.windowNumber);
-    snappedIndexAdd(live.windowNumber, ws);
-    const pos = getSlotBounds(ws, slot);
-    if (pos) {
-      moveCmds.push({
-        windowNumber: live.windowNumber, pid: live.pid,
-        app: live.app, title: live.title, ...pos,
-      });
-    }
-    restored.push({ app: live.app, title: live.title, slot });
-  }
-
-  // まとめて move (daemon 経由、1 回の呼び出しで全件)
-  if (moveCmds.length > 0) {
-    await batchMove(moveCmds);
-  }
-
-  // renderer にレポート送信 (サイドバー上部にバナー表示)
-  // restored にはマッチした windowNumber/app/title を入れて renderer の
-  // snappedExternals Map を初期化させる
-  try {
-    ws.win.webContents.send('restore-report', {
-      restored, missing,
-      savedAgoMinutes: Math.round((Date.now() - (ws._savedAt || Date.now())) / 60000),
-    });
-    // renderer の snappedExternals Map を初期化するための別 IPC
-    const hydrate = [];
-    for (const [wn, info] of ws.snappedExternals) {
-      hydrate.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
-    }
-    ws.win.webContents.send('hydrate-snapped', hydrate);
-  } catch (e) { console.warn('[tin] restore hydrate send failed:', e?.message || e); }
-
-  // サイドバー側の snappedExternals Map も同期するため
-  // external-windows 更新を即座に trigger (pollTimer を待たずに)
-  scheduleSyncSnapped();
-  console.log(`[tin] restored ${restored.length} snapped windows, ${missing.length} missing`);
-}
 
 // ── Space / Display 移動: workspace + snapped ターミナルを丸ごと移動 ──
 // Spaces 移動は #5 で別途対応 (プライベート API で不安定のため一旦削除)
@@ -892,12 +791,18 @@ async function restoreAllPending() {
       const live = matchPersistedToLive(p, liveWindows) || matchPersistedToLive(p, liveAllSpaces);
       if (!live) { missing.push({ app: p.app, title: p.title, slot: p.slot }); unrestored.push(p); continue; }
       if (ws.snappedExternals.has(live.windowNumber)) continue;
+      // 保存時の slot が現グリッドで無効 (縮小/レイアウト変更) or 既に占有 (内蔵PTY 含む) なら空きへ。
+      // 空きゼロのとき黙って捨てると次回の自動保存で snap 情報が永久消滅するため、
+      // missing 報告 + unrestored 保持に回す (グリッド拡張後の再起動/再試行で戻れる)。
       let slot = p.slot;
-      const total = ws.gridCols * ws.gridRows;
-      if (slot >= total) { slot = nextFreeSlot(ws); if (slot < 0) continue; }
-      let occupied = false;
-      for (const [, info] of ws.snappedExternals) { if (info.slot === slot) { occupied = true; break; } }
-      if (occupied) { slot = nextFreeSlot(ws); if (slot < 0) continue; }
+      if (!validSlotIdSet(ws).has(slot) || occupiedSlots(ws).has(slot)) {
+        slot = nextFreeSlot(ws);
+        if (slot < 0) {
+          missing.push({ app: p.app, title: p.title, slot: p.slot, reason: 'no-slot' });
+          unrestored.push(p);
+          continue;
+        }
+      }
       const isAbsent = !liveWindowSet.has(live.windowNumber);
       ws.snappedExternals.set(live.windowNumber, {
         app: live.app, pid: live.pid, title: live.title,
@@ -1452,30 +1357,38 @@ async function retileAll(ws, fireAndForget = false, positionOnly = false) {
   }
 }
 
-function nextFreeSlot(ws) {
-  const used = new Set();
-  for (const [slot] of ws.gridWindows) used.add(slot);
+// ── slot 占有の一元判定 ──
+// 占有者は2種: 内蔵PTY (gridWindows: Map<slot,gw>) と外部窓 (snappedExternals: Map<wn,info{slot}>)。
+// 経路ごとに片方のマップしか見ない実装が「同一slotに2窓」「window1が出ない」の原因だったため、
+// slot の空き/占有判定は必ず occupiedSlots / nextFreeSlot を通すこと。
+// なお削除/unsnap で slot を自動的に詰めない (復元・履歴・外部連携(REST/Raycast の slot) を揺らさないため)。
+function occupiedSlots(ws) {
+  const used = new Set(ws.gridWindows.keys());
   for (const [, info] of ws.snappedExternals) used.add(info.slot);
-  if (ws.slotLayout) {
-    for (const cell of ws.slotLayout) {
-      if (!used.has(cell.id)) return cell.id;
-    }
-    return -1;
-  }
-  const total = ws.gridCols * ws.gridRows;
-  for (let i = 0; i < total; i++) if (!used.has(i)) return i;
+  return used;
+}
+
+// 現在有効な slot id の集合 (slotLayout があればその id 列、なければ 0..cols*rows-1)。挿入順を保つ。
+function validSlotIdSet(ws) {
+  return new Set(ws.slotLayout
+    ? ws.slotLayout.map(c => c.id)
+    : Array.from({ length: ws.gridCols * ws.gridRows }, (_, i) => i));
+}
+
+function nextFreeSlot(ws) {
+  const used = occupiedSlots(ws);
+  for (const id of validSlotIdSet(ws)) if (!used.has(id)) return id;
   return -1;
 }
 
+// 空き slot を前に詰める。自動では呼ばない設計 (slot 番号の安定が復元/履歴/外部連携の前提)。
+// 将来「詰める」を明示操作 (ボタン/ショートカット) として出すときにここを呼ぶ。
 function compactSlots(ws) {
   const all = [];
   for (const [slot, gw] of ws.gridWindows) all.push({ type: 'grid', slot, ref: gw });
   for (const [wn, info] of ws.snappedExternals) all.push({ type: 'ext', slot: info.slot, ref: info, wn });
   all.sort((a, b) => a.slot - b.slot);
-  // slotLayout がある場合は有効な id リストから割り当て、ない場合は連番
-  const validSlots = ws.slotLayout
-    ? ws.slotLayout.map(c => c.id)
-    : Array.from({ length: ws.gridCols * ws.gridRows }, (_, i) => i);
+  const validSlots = [...validSlotIdSet(ws)];
   for (let i = 0; i < all.length; i++) {
     const newSlot = i < validSlots.length ? validSlots[i] : validSlots[validSlots.length - 1];
     const item = all[i];
@@ -1676,13 +1589,11 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
   if (!ws) return { ok: false };
   const existing = isExternalSnapped(windowNumber);
   if (existing && existing.id !== ws.id) return { ok: false, reason: 'snapped-elsewhere' };
-  // targetSlot 指定あり & 空なら使う。なければ nextFreeSlot にフォールバック。
+  // targetSlot 指定あり & 有効 & 空なら使う。なければ nextFreeSlot にフォールバック。
   let slot = -1;
-  if (Number.isInteger(targetSlot) && targetSlot >= 0 && targetSlot < ws.gridCols * ws.gridRows) {
-    let occupied = false;
-    for (const [, info] of ws.snappedExternals) { if (info.slot === targetSlot) { occupied = true; break; } }
-    if (ws.gridWindows.has(targetSlot)) occupied = true;
-    if (!occupied) slot = targetSlot;
+  if (Number.isInteger(targetSlot) && validSlotIdSet(ws).has(targetSlot)
+      && !occupiedSlots(ws).has(targetSlot)) {
+    slot = targetSlot;
   }
   if (slot < 0) slot = nextFreeSlot(ws);
   if (slot < 0) {
@@ -1821,7 +1732,10 @@ async function flipGrid(ws, axis) {
       else cell.row = rows - cell.row - cell.rowSpan;
     }
   } else {
+    const total = cols * rows;
     const remap = (slot) => {
+      // 範囲外 slot (evict 漏れ等の残骸) は変換せずそのまま — 負値や他窓の slot に化けるのを防ぐ
+      if (!Number.isInteger(slot) || slot < 0 || slot >= total) return slot;
       const col = slot % cols, row = Math.floor(slot / cols);
       return axis === 'h' ? row * cols + (cols - 1 - col) : (rows - 1 - row) * cols + col;
     };
@@ -2614,10 +2528,10 @@ ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
 // ── 有効スロットに収まらないスナップウィンドウを処理 ──
 // 空きスロットがあればシフト、なければ元位置に戻してアンスナップ
 function evictOverflowSnapped(ws, validSlotIds) {
-  // 現在有効スロット内で使用中のスロットを収集
+  // 現在有効スロット内で使用中のスロットを収集 (内蔵PTY も占有者 — 外部窓だけ見ると PTY の slot へ shift して2窓重なる)
   const usedSlots = new Set();
-  for (const [, info] of ws.snappedExternals) {
-    if (validSlotIds.has(info.slot)) usedSlots.add(info.slot);
+  for (const slot of occupiedSlots(ws)) {
+    if (validSlotIds.has(slot)) usedSlots.add(slot);
   }
 
   const overflow = [];
@@ -4624,9 +4538,9 @@ function writeWorkspacesJsonSync() {
         snappedAt: info.snappedAt || 0,
       });
     }
-    // 未復元エントリの書き戻し (async 版 writeWorkspacesJson と同じ理由)
+    // 未復元エントリの書き戻し (async 版 writeWorkspacesJson と同じ理由 — slot 重複では捨てない)
     for (const p of (ws._unrestoredSnaps || [])) {
-      if (snapped.some(s => s.windowNumber === p.windowNumber || s.slot === p.slot)) continue;
+      if (snapped.some(s => s.windowNumber === p.windowNumber)) continue;
       snapped.push(p);
     }
     // 永続化: daemon が保持する grid 端末 (slot + sessionId + cwd)。再起動時に再アタッチして復元する。
