@@ -26,6 +26,12 @@ jobs:
           node-version: '20'
 
       # lib/ と test/ は依存ゼロなので npm install は不要。
+      #
+      # npm test の `node --test test/*.test.js` はグロブを **クオートしない** こと。
+      # クオートすると Node 自身がグロブを解釈するが、その対応は Node 21+ で、
+      # ここ(Node 20)では "Could not find 'test/*.test.js'" で落ちる。
+      # 逆に `node --test test/` (ディレクトリ指定) は Node 24 で動かない。
+      # 非クオートならシェルが展開して明示パスになるため、どのバージョンでも動く。
       - name: Unit tests
         run: npm test
 
