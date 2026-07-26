@@ -1,13 +1,28 @@
 name: release
 
-# タグ v* を push すると Windows ビルド(x64/arm64)を 1 回の electron-builder 実行で作り、
-# GitHub Release(draft)へ添付 + 自動アップデート用メタデータ(latest.yml / *.blockmap)を生成・publish する。
-# 両 arch を単一実行で出すことで latest.yml が両インストーラを列挙し、electron-updater(v6)が
-# 実行中マシンの arch に合うものを自動選択できる(arch ごとに別実行すると latest.yml が衝突する)。
+# タグ v* を push すると Windows(x64/arm64) と macOS(arm64) を両方ビルドし、
+# 同一の GitHub Release(draft)へ添付する。
 #
-# Windows のウィンドウ操作バックエンドは koffi(FFI, ビルド不要・prebuilt 同梱)で、
-# node-pty も prebuilds(N-API)を同梱するため Windows ではネイティブのコンパイルは一切不要。
-# macOS 版は手元ビルド(npm run dist)で同 Release(draft)へ追加してから publish する。
+# Windows:
+#   両 arch を単一の electron-builder 実行で出すことで latest.yml が両インストーラを列挙し、
+#   electron-updater(v6)が実行中マシンの arch に合うものを自動選択できる
+#   (arch ごとに別実行すると latest.yml が衝突する)。
+#   ウィンドウ操作は koffi(FFI, ビルド不要・prebuilt 同梱)、node-pty も prebuilds(N-API)を
+#   同梱するため、Windows ではネイティブのコンパイルは一切不要。
+#
+# macOS:
+#   ax-helper.mm を node-gyp でビルドする必要があるため build-native.js を明示実行する
+#   (npmRebuild:false かつ predist は `npm run dist` 経由でしか走らないため)。
+#   N-API(node-addon-api)なので Node ヘッダでビルドしたものが Electron でもそのまま動く。
+#   `identity: null` で未署名。macOS ランナー上で証明書を探しに行かないよう
+#   CSC_IDENTITY_AUTO_DISCOVERY=false を明示する。
+#   **注意**: mac の自動アップデートは lib/updater.js で意図的に無効化されている
+#   (未署名アプリは Squirrel.Mac が使えない)。ここで latest-mac.yml が生成されても
+#   現状それを読む経路は無い。mac の自動更新には別方式(ditto+xattr)の実装が必要。
+#
+# 直列化(mac は win の後):
+#   同じタグの draft release を 2 ジョブが同時に作りに行くと draft が重複するため、
+#   needs で順に実行する。
 #
 # 自動更新は「公開済み(draft でない)」Release のみ検知するため、draft を手動 publish した時点で
 # 既存ユーザーへ配信される。workflow_dispatch(tag 空)で起動した場合はビルド検証のみ(publish しない)。
@@ -26,7 +41,36 @@ permissions:
   contents: write
 
 jobs:
+  # 単体テストの門番 + publish するかの判定。
+  # ci.yml は push(branches) でしか走らずタグ push では動かないため、
+  # 「テストが落ちたままリリースが出る」のをここで塞ぐ。
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.mode.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # lib/ と test/ は依存ゼロなので npm install 不要。
+      - name: Unit tests
+        run: npm test
+
+      # publish するか判定: タグ push か、dispatch で tag 指定があれば publish(=draft release へアップロード)。
+      - name: Decide publish mode
+        id: mode
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* || -n "${{ github.event.inputs.tag }}" ]]; then
+            echo "publish=always" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=never" >> "$GITHUB_OUTPUT"
+          fi
+
   win:
+    needs: check
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -39,17 +83,6 @@ jobs:
       - name: Install deps (no native build)
         run: npm install --ignore-scripts
 
-      # publish するか判定: タグ push か、dispatch で tag 指定があれば publish(=draft release へアップロード)。
-      - name: Decide publish mode
-        id: mode
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* || -n "${{ github.event.inputs.tag }}" ]]; then
-            echo "publish=always" >> "$GITHUB_OUTPUT"
-          else
-            echo "publish=never" >> "$GITHUB_OUTPUT"
-          fi
-
       # npmRebuild:false なので electron-builder は native を再ビルドせず、同梱 prebuilt をそのまま使う。
       # arch を指定せず --win のみ → package.json の win.target(x64+arm64)を 1 実行でまとめてビルドし、
       # 単一の latest.yml(両 arch を列挙)を生成する。publish=always のとき GH_TOKEN で Release へアップロード。
@@ -57,7 +90,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win --publish ${{ steps.mode.outputs.publish }}
+        run: npx electron-builder --win --publish ${{ needs.check.outputs.publish }}
 
       - name: List dist
         shell: bash
@@ -73,3 +106,49 @@ jobs:
             dist/*.zip
             dist/*.blockmap
             dist/latest*.yml
+
+  mac:
+    # win と同じ draft release を触るため直列化する(並行だと draft が重複生成される)。
+    needs: [check, win]
+    # macos-14 は Apple Silicon ランナー。package.json の mac.target は arm64 のみ。
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # --ignore-scripts: node-pty は darwin-arm64 の prebuilt を使うためビルド不要。
+      - name: Install deps (no native build)
+        run: npm install --ignore-scripts
+
+      # ax_helper(native/ax-helper.mm)だけは実ビルドが要る。
+      # ここが壊れると mac 版が AX を失って osascript fallback に落ちるため、
+      # CI で毎リリース必ずコンパイルを通すのが本ジョブの主目的。
+      - name: Build native addon (ax_helper)
+        run: node scripts/build-native.js
+
+      - name: Verify ax_helper.node was produced
+        run: |
+          test -f build/Release/ax_helper.node
+          file build/Release/ax_helper.node
+
+      # identity:null で未署名。ランナー上のキーチェーンを探しに行かせない。
+      - name: Package & publish with electron-builder
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npx electron-builder --mac --publish ${{ needs.check.outputs.publish }}
+
+      - name: List dist
+        run: ls -la dist/ || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-dist
+          if-no-files-found: error
+          path: |
+            dist/*.zip
+            dist/*.blockmap
+            dist/latest-mac.yml
