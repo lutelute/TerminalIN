@@ -8,6 +8,10 @@ const { promisify } = require('util');
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const autoSnap = require('./auto-snap');
+// 純粋ロジックは lib/ 側に置き、単体テスト (npm test) で実機なしに検証する。
+// ここに生えている関数を編集するときは test/*.test.js も併せて更新すること。
+const { occupiedSlots, validSlotIdSet, nextFreeSlot, compactSlots, computeSlotBounds } = require('./lib/layout');
+const { isAllowedRestRequest } = require('./lib/rest-guard');
 
 // ── File logging (クラッシュ事後解析用) ──
 // Finder 起動時は stdout が捨てられ、クラッシュ原因が一切残らない。
@@ -1180,55 +1184,10 @@ function getGridArea(ws) {
   };
 }
 
+// グリッド座標の算術本体は lib/layout.js の computeSlotBounds にある (単体テスト対象)。
+// ここは BrowserWindow 依存の getGridArea を噛ませるだけの薄いラッパ。
 function getSlotBounds(ws, slot) {
-  const area = getGridArea(ws);
-  if (!area) return null;
-
-  // ── Tab モード: 全スロットを同じ全画面位置に配置、AX raise でアクティブを前面に ──
-  // オフスクリーンパーキング不可（CGWindowList の OnScreenOnly から消える → unsnap 誤発火）
-  if (ws.viewMode === 'tab') {
-    return { x: area.x, y: area.y, width: area.width, height: area.height };
-  }
-
-  // ── Grid モード: 通常のグリッドレイアウト ──
-  // gap/padding は workspace.html の .gp-grid-container と一致させる
-  // CSS: gap:8px, padding: 4px 8px 8px (top=4, right=8, bottom=8, left=8)
-  const cols = ws.gridCols, rows = ws.gridRows;
-  const gap = 8, padX = 8, padTop = 4, padBottom = 8;
-
-  const colRatios = (ws.colRatios && ws.colRatios.length === cols) ? ws.colRatios : Array(cols).fill(1/cols);
-  const rowRatios = (ws.rowRatios && ws.rowRatios.length === rows) ? ws.rowRatios : Array(rows).fill(1/rows);
-
-  const innerW = area.width  - padX * 2 - gap * (cols - 1);
-  const innerH = area.height - padTop - padBottom - gap * (rows - 1);
-
-  // ── 柔軟グリッド: slotLayout がある場合は colSpan/rowSpan を考慮 ──
-  let cellCol, cellRow, cellColSpan, cellRowSpan;
-  if (ws.slotLayout) {
-    const cell = ws.slotLayout.find(c => c.id === slot);
-    if (!cell) return null;
-    cellCol = cell.col; cellRow = cell.row;
-    cellColSpan = cell.colSpan; cellRowSpan = cell.rowSpan;
-  } else {
-    cellCol = slot % cols; cellRow = Math.floor(slot / cols);
-    cellColSpan = 1; cellRowSpan = 1;
-  }
-
-  let xOff = 0, yOff = 0;
-  for (let i = 0; i < cellCol; i++) xOff += innerW * colRatios[i] + gap;
-  for (let i = 0; i < cellRow; i++) yOff += innerH * rowRatios[i] + gap;
-
-  let w = 0, h = 0;
-  for (let i = 0; i < cellColSpan; i++) w += innerW * colRatios[cellCol + i] + (i > 0 ? gap : 0);
-  for (let i = 0; i < cellRowSpan; i++) h += innerH * rowRatios[cellRow + i] + (i > 0 ? gap : 0);
-
-  // #8: 端を丸めて幅 = 右端 - 左端 とする(各セルの幅を個別に round すると累積誤差で
-  // 右端/下端に余白が出る)。最終列/行の右端は area の端(padding 内)にちょうど揃う。
-  const x  = Math.round(area.x + padX + xOff);
-  const y  = Math.round(area.y + padTop + yOff);
-  const x2 = Math.round(area.x + padX + xOff + w);
-  const y2 = Math.round(area.y + padTop + yOff + h);
-  return { x, y, width: x2 - x, height: y2 - y };
+  return computeSlotBounds(getGridArea(ws), ws, slot);
 }
 
 // フォーカス中ウィンドウが属する workspace を返す(無ければ最初の生存 workspace)。
@@ -1358,49 +1317,11 @@ async function retileAll(ws, fireAndForget = false, positionOnly = false) {
 }
 
 // ── slot 占有の一元判定 ──
+// 実装は lib/layout.js (occupiedSlots / validSlotIdSet / nextFreeSlot / compactSlots)。
 // 占有者は2種: 内蔵PTY (gridWindows: Map<slot,gw>) と外部窓 (snappedExternals: Map<wn,info{slot}>)。
 // 経路ごとに片方のマップしか見ない実装が「同一slotに2窓」「window1が出ない」の原因だったため、
 // slot の空き/占有判定は必ず occupiedSlots / nextFreeSlot を通すこと。
 // なお削除/unsnap で slot を自動的に詰めない (復元・履歴・外部連携(REST/Raycast の slot) を揺らさないため)。
-function occupiedSlots(ws) {
-  const used = new Set(ws.gridWindows.keys());
-  for (const [, info] of ws.snappedExternals) used.add(info.slot);
-  return used;
-}
-
-// 現在有効な slot id の集合 (slotLayout があればその id 列、なければ 0..cols*rows-1)。挿入順を保つ。
-function validSlotIdSet(ws) {
-  return new Set(ws.slotLayout
-    ? ws.slotLayout.map(c => c.id)
-    : Array.from({ length: ws.gridCols * ws.gridRows }, (_, i) => i));
-}
-
-function nextFreeSlot(ws) {
-  const used = occupiedSlots(ws);
-  for (const id of validSlotIdSet(ws)) if (!used.has(id)) return id;
-  return -1;
-}
-
-// 空き slot を前に詰める。自動では呼ばない設計 (slot 番号の安定が復元/履歴/外部連携の前提)。
-// 将来「詰める」を明示操作 (ボタン/ショートカット) として出すときにここを呼ぶ。
-function compactSlots(ws) {
-  const all = [];
-  for (const [slot, gw] of ws.gridWindows) all.push({ type: 'grid', slot, ref: gw });
-  for (const [wn, info] of ws.snappedExternals) all.push({ type: 'ext', slot: info.slot, ref: info, wn });
-  all.sort((a, b) => a.slot - b.slot);
-  const validSlots = [...validSlotIdSet(ws)];
-  for (let i = 0; i < all.length; i++) {
-    const newSlot = i < validSlots.length ? validSlots[i] : validSlots[validSlots.length - 1];
-    const item = all[i];
-    if (item.type === 'grid') {
-      ws.gridWindows.delete(item.slot);
-      item.ref.slot = newSlot;
-      ws.gridWindows.set(newSlot, item.ref);
-    } else {
-      item.ref.slot = newSlot;
-    }
-  }
-}
 
 // ── Create an embedded grid terminal (BrowserWindow + xterm.js) ──
 // opts.sessionId / opts.attach: 永続化セッションへ再アタッチして復元する場合に指定。
@@ -4585,24 +4506,13 @@ function restReply(res, status, obj) {
 }
 
 // ── ローカル以外・ブラウザ経由のアクセスを遮断 ──
-// bind は 127.0.0.1 だが、ブラウザは DNS rebinding (攻撃ドメインを 127.0.0.1 に向ける) で
-// 任意の Web ページから叩けてしまう (CORS は応答の読取だけを制御し、送信自体は止めない)。
-// /api/v1/launch は任意コマンド実行なのでここは実質 RCE 面。
-// - Host が 127.0.0.1 / localhost / [::1] 以外 → 拒否 (rebinding はここで落ちる)
-// - Origin 付き (=ブラウザ発) で localhost 系以外 → 拒否 ('null' Origin も拒否)
-// ネイティブクライアントは Origin を送らないため影響なし。
-function isAllowedRestRequest(req) {
-  const host = String(req.headers.host || '').toLowerCase();
-  if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)) return false;
-  const origin = req.headers.origin;
-  if (!origin) return true;
-  return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(origin);
-}
+// 判定本体は lib/rest-guard.js の isAllowedRestRequest (単体テスト対象)。
+// /api/v1/launch は任意コマンド実行なのでここは実質 RCE 面。DNS rebinding 対策の詳細は同ファイル参照。
 
 function startRestServer() {
   if (_restServer) return;
   _restServer = http.createServer(async (req, res) => {
-    if (!isAllowedRestRequest(req)) {
+    if (!isAllowedRestRequest(req.headers)) {
       console.warn(`[tin] REST reject: host=${req.headers.host || ''} origin=${req.headers.origin || ''}`);
       return restReply(res, 403, { ok: false, error: 'forbidden origin/host' });
     }

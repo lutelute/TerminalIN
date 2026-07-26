@@ -12,6 +12,7 @@
 const koffi = require('koffi');
 const fs = require('fs');
 const path = require('path');
+const { computeWinBounds } = require('./lib/win-geom');
 
 const user32 = koffi.load('user32.dll');
 const kernel32 = koffi.load('kernel32.dll');
@@ -282,17 +283,11 @@ function moveWindows(cmds, positionOnly) {
       if (IsZoomed(hWnd)) ShowWindow(hWnd, SW_RESTORE);
 
       // 透明な縁を補正して「見える窓の縁」が要求座標に揃うようにする。
+      // 座標の算術は lib/win-geom.js に切り出してあり、mac 上でも DPI 200% を単体テストできる。
       const b = frameBorder(hWnd);
-      let x = Math.round(c.x * dpiScale) - b.l;
-      let y = Math.round(c.y * dpiScale) - b.t;
+      const { x, y, cx, cy } = computeWinBounds(c, b, dpiScale, positionOnly);
       let flags = SWP_NOZORDER | SWP_NOACTIVATE;
-      let cx = 0, cy = 0;
-      if (positionOnly) {
-        flags |= SWP_NOSIZE;
-      } else {
-        cx = Math.round((c.width || 0) * dpiScale) + b.l + b.r;
-        cy = Math.round((c.height || 0) * dpiScale) + b.t + b.b;
-      }
+      if (positionOnly) flags |= SWP_NOSIZE;
       if (SetWindowPos(hWnd, 0, x, y, cx, cy, flags)) moved++;
     } catch { /* ignore */ }
   }
