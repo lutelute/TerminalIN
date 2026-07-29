@@ -4009,7 +4009,7 @@ function render() {
         `<span class="sa-icon">⊞</span><span>全部スナップ</span>` +
         `<span class="sa-count">${availableTerminal.length}枚</span>` +
         `<span class="sa-kbd">⌘⌥A</span>`;
-      snapAllBtn.title = '開いているターミナルを全部グリッドにスナップ（開いた順に左上から配置、スロット不足時はグリッド自動拡張）';
+      snapAllBtn.title = '開いているターミナルを全部グリッドにスナップ（開いた順に左上から配置、窓数はターミナル数に自動調整）';
       snapAllBtn.addEventListener('click', async () => {
         snapAllBtn.disabled = true;
         try {

@@ -8,7 +8,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const {
-  occupiedSlots, validSlotIdSet, nextFreeSlot, compactSlots, computeSlotBounds,
+  occupiedSlots, validSlotIdSet, nextFreeSlot, compactSlots, fitGridDims, computeSlotBounds,
 } = require('../lib/layout');
 
 // ── テスト用の最小 ws (BrowserWindow は一切持たない) ──
@@ -262,4 +262,54 @@ test('computeSlotBounds: slotLayout に無い slot は null', () => {
 test('computeSlotBounds: 同じ入力なら常に同じ出力 (純粋性)', () => {
   const ws = mkWs({ cols: 3, rows: 2 });
   assert.deepStrictEqual(computeSlotBounds(AREA, ws, 4), computeSlotBounds(AREA, ws, 4));
+});
+
+// ────────────────────────── fitGridDims ──────────────────────────
+// All Snap の「窓数をターミナル数に自動で合わせる」の形状選択。
+// スコア重み (EMPTY_WEIGHT=0.6) を変えるとここの形状表が変わる —
+// 変更時は「1窓で 1x1」「5窓で 5x1 でなく 3x2」が保たれているか必ず見ること。
+
+const LANDSCAPE = { maxCols: 20, maxRows: 20, areaWidth: 1920, areaHeight: 1080 };
+const PORTRAIT  = { maxCols: 20, maxRows: 20, areaWidth: 1080, areaHeight: 1920 };
+
+test('fitGridDims: 横長画面での形状表 (1..9, 12窓)', () => {
+  const expected = {
+    1: [1, 1], 2: [2, 1], 3: [3, 1], 4: [2, 2], 5: [3, 2],
+    6: [3, 2], 7: [4, 2], 8: [4, 2], 9: [3, 3], 12: [4, 3],
+  };
+  for (const [need, [cols, rows]] of Object.entries(expected)) {
+    assert.deepStrictEqual(fitGridDims(Number(need), LANDSCAPE), { cols, rows },
+      `need=${need} は ${cols}x${rows}`);
+  }
+});
+
+test('fitGridDims: 空きセルは最小限 (need より 3 以上余る形状は選ばない)', () => {
+  for (let need = 1; need <= 16; need++) {
+    const { cols, rows } = fitGridDims(need, LANDSCAPE);
+    assert.ok(cols * rows >= need, `need=${need}: 全窓が収まる (${cols}x${rows})`);
+    assert.ok(cols * rows - need <= 2, `need=${need}: 空きセルは2以下 (${cols}x${rows})`);
+  }
+});
+
+test('fitGridDims: 縦長画面では縦に積む', () => {
+  assert.deepStrictEqual(fitGridDims(2, PORTRAIT), { cols: 1, rows: 2 });
+  assert.deepStrictEqual(fitGridDims(6, PORTRAIT), { cols: 2, rows: 3 });
+});
+
+test('fitGridDims: maxCols 制限下では行方向で吸収する', () => {
+  assert.deepStrictEqual(fitGridDims(5, { ...LANDSCAPE, maxCols: 2 }), { cols: 2, rows: 3 });
+});
+
+test('fitGridDims: どの形状でも収まらないときは上限形状 (skipped は呼び出し側)', () => {
+  assert.deepStrictEqual(fitGridDims(10, { ...LANDSCAPE, maxCols: 3, maxRows: 3 }), { cols: 3, rows: 3 });
+});
+
+test('fitGridDims: need が 0 以下や非数なら 1x1', () => {
+  assert.deepStrictEqual(fitGridDims(0, LANDSCAPE), { cols: 1, rows: 1 });
+  assert.deepStrictEqual(fitGridDims(NaN, LANDSCAPE), { cols: 1, rows: 1 });
+});
+
+test('fitGridDims: area 不明時は横長 (16:9) と仮定する', () => {
+  assert.deepStrictEqual(fitGridDims(4, {}), { cols: 2, rows: 2 });
+  assert.deepStrictEqual(fitGridDims(2, {}), { cols: 2, rows: 1 });
 });

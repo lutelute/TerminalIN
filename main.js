@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 const autoSnap = require('./auto-snap');
 // 純粋ロジックは lib/ 側に置き、単体テスト (npm test) で実機なしに検証する。
 // ここに生えている関数を編集するときは test/*.test.js も併せて更新すること。
-const { occupiedSlots, validSlotIdSet, nextFreeSlot, compactSlots, computeSlotBounds } = require('./lib/layout');
+const { occupiedSlots, validSlotIdSet, nextFreeSlot, compactSlots, fitGridDims, computeSlotBounds } = require('./lib/layout');
 const { isAllowedRestRequest } = require('./lib/rest-guard');
 
 // ── File logging (クラッシュ事後解析用) ──
@@ -1554,41 +1554,42 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
 });
 
 // ── All Snap: 開いているターミナルウィンドウを一括 snap ──
-// スロットが足りない場合は grid を自動拡張する (cols 優先 → 上限 20 で rows)。
+// 窓数(スロット数)は snap 後の総窓数に自動で合わせる (拡張も縮小もする)。
+// 形状は lib/layout.js の fitGridDims が選ぶ。
 async function snapAllTerminals(ws) {
   if (!ws || !ws.win || ws.win.isDestroyed()) return { ok: false, reason: 'no-workspace' };
   const all = await listWindows();
   const targets = all.filter(w => TERMINAL_APPS.has(w.app) && !isExternalSnapped(w.windowNumber));
-  if (targets.length === 0) return { ok: true, snapped: 0, total: 0, skipped: 0, cols: ws.gridCols, rows: ws.gridRows };
 
   // CGWindowList は z-order (最前面が先頭) のため、そのままだと「最後に触った窓が左上」
   // になり直感と逆。windowNumber 昇順 ≈ 生成順に並べ、古い窓から左上→右下に配置する。
   targets.sort((a, b) => a.windowNumber - b.windowNumber);
 
-  // 必要スロット数を満たすまで grid を拡張。
-  // 1 セルの最低サイズを保証 — 細かすぎる grid は中身が見えなくなるため、
-  // 画面サイズから実用的な上限 (maxCols/maxRows) を算出し、それ以上は拡張しない。
+  // 窓数(スロット数)を snap 後の総窓数 need に自動で合わせる。
+  // 以前は不足時の拡張のみで、端末数より窓数が多いと空きスロットが残るため
+  // 「右パネルで窓数を合わせてから All Snap」という手動手順が必要だった。
+  // 1 セルの最低サイズは保証 — 細かすぎる grid は中身が見えなくなるため、
+  // 画面サイズから実用的な上限 (maxCols/maxRows) を算出し、それ以上は広げない。
   // 上限で snap しきれなかった分は戻り値 skipped で UI に知らせる。
   const MIN_CELL_W = 180, MIN_CELL_H = 220;
   const area = getGridArea(ws);
   const maxCols = Math.min(20, Math.max(ws.gridCols, area ? Math.max(1, Math.floor(area.width / MIN_CELL_W)) : 20));
   const maxRows = Math.min(20, Math.max(ws.gridRows, area ? Math.max(1, Math.floor(area.height / MIN_CELL_H)) : 20));
   const need = ws.snappedExternals.size + ws.gridWindows.size + targets.length;
-  let cols = ws.gridCols, rows = ws.gridRows;
-  while (cols * rows < need && (cols < maxCols || rows < maxRows)) {
-    if (cols < maxCols) cols++; else rows++;
-  }
-  if (cols !== ws.gridCols || rows !== ws.gridRows) {
-    console.log(`[tin] snap-all: grid ${ws.gridCols}x${ws.gridRows} → ${cols}x${rows} (need ${need} slots)`);
-    ws.gridCols = cols;
-    ws.gridRows = rows;
-    ws.colRatios = null;
-    ws.rowRatios = null;
-    ws.slotLayout = null;
-    if (ws.win && !ws.win.isDestroyed()) {
-      ws.win.webContents.send('update-grid-panel', { cols, rows, colRatios: null, rowRatios: null, slotLayout: null });
+  // 窓が1枚もないなら何もしない (空グリッドを 1x1 に潰さない)。
+  // targets が空でも既存窓があれば続行する — 「端末を閉じた後に All Snap で
+  // 窓数を整え直す」を成立させるため (新規 snap 0 件でも形状合わせ + retile は走る)。
+  if (need === 0) return { ok: true, snapped: 0, total: 0, skipped: 0, cols: ws.gridCols, rows: ws.gridRows };
+  // 有効スロット数が既に一致しているなら形状は触らない
+  // (カスタム slotLayout やユーザーが意図して選んだ形状を尊重する)。
+  if (validSlotIdSet(ws).size !== need) {
+    const fit = fitGridDims(need, { maxCols, maxRows, areaWidth: area?.width, areaHeight: area?.height });
+    if (fit.cols !== ws.gridCols || fit.rows !== ws.gridRows || ws.slotLayout) {
+      console.log(`[tin] snap-all: grid ${ws.gridCols}x${ws.gridRows} → ${fit.cols}x${fit.rows} (need ${need} slots)`);
+      applyGridSize(ws, fit.cols, fit.rows);
     }
   }
+  const cols = ws.gridCols, rows = ws.gridRows;
 
   beginStabilize('snap-all', ws);
   const moveCmds = [];
@@ -2427,9 +2428,10 @@ ipcMain.handle('swap-grid-slots', async (event, { src, dst }) => {
   return { ok: true };
 });
 
-ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
-  const ws = findWorkspace(event.sender);
-  if (!ws) return;
+// グリッド寸法変更の本体。手動 (set-grid-size) と All Snap の窓数自動調整の両方から
+// 呼び、「収まらないスナップの押し出し → 寸法変更 → renderer 通知」のセマンティクスを
+// 揃える。retile / save は呼び出し側の責務 (All Snap は snap 後にまとめて retile する)。
+function applyGridSize(ws, cols, rows) {
   // 新サイズに収まらないスナップを押し出してから変更
   const validSlotIds = new Set(Array.from({ length: cols * rows }, (_, i) => i));
   evictOverflowSnapped(ws, validSlotIds);
@@ -2438,9 +2440,33 @@ ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
   ws.colRatios = null;
   ws.rowRatios = null;
   ws.slotLayout = null;
+  // evictOverflowSnapped が動かすのは外部窓だけなので、縮小時に内蔵PTY の slot が
+  // 範囲外に残ることがある (getSlotBounds の ratios 参照が範囲外になり座標が NaN)。
+  // 範囲外の占有者が居るときだけ前詰めする。compactSlots は詰め先不足なら何も
+  // 変更しない (あふれ時の退避方針は未決 — その場合は従来どおり orphan のまま)。
+  const orphaned = [...occupiedSlots(ws)].some(slot => !validSlotIds.has(slot));
+  if (orphaned) {
+    const r = compactSlots(ws);
+    if (r.ok) {
+      // 前詰めで外部窓の slot も動きうるので renderer に再同期
+      if (ws.win && !ws.win.isDestroyed()) {
+        const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot }));
+        ws.win.webContents.send('hydrate-snapped', hydrate);
+      }
+      scheduleSyncSnapped();
+    } else {
+      console.warn(`[tin] applyGridSize: ${r.overflow} occupants exceed ${cols}x${rows} — slots left as-is`);
+    }
+  }
   if (ws.win && !ws.win.isDestroyed()) {
     ws.win.webContents.send('update-grid-panel', { cols, rows, colRatios: null, rowRatios: null, slotLayout: null });
   }
+}
+
+ipcMain.handle('set-grid-size', (event, { cols, rows }) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return;
+  applyGridSize(ws, cols, rows);
   beginStabilize('set-grid-size', ws);
   retileAll(ws);
   scheduleSaveWorkspaces();
