@@ -1,0 +1,45 @@
+name: ci
+
+# 純粋ロジック (lib/) の単体テスト。push / PR のたびに走る。
+# Electron も OS ネイティブも起動しないため数秒で終わり、依存インストールも不要
+# (node:test は Node 標準、lib/ は外部依存を持たない)。
+#
+# ここでカバーするのは「実機なしで検証できる部分」だけ:
+#   - slot 占有判定とグリッド座標計算 (lib/layout.js)
+#   - REST の Host/Origin 検証 (lib/rest-guard.js)
+#   - Windows の DPI/縁補正の座標変換 (lib/win-geom.js) ← mac 上で 200% を検証できる
+# AX 操作・ウィンドウ実移動・DOM は対象外 (scripts/smoke-test.sh 等の実機テスト側)。
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # lib/ と test/ は依存ゼロなので npm install は不要。
+      #
+      # npm test の `node --test test/*.test.js` はグロブを **クオートしない** こと。
+      # クオートすると Node 自身がグロブを解釈するが、その対応は Node 21+ で、
+      # ここ(Node 20)では "Could not find 'test/*.test.js'" で落ちる。
+      # 逆に `node --test test/` (ディレクトリ指定) は Node 24 で動かない。
+      # 非クオートならシェルが展開して明示パスになるため、どのバージョンでも動く。
+      - name: Unit tests
+        run: npm test
+
+      # main.js / win-helper.js が構文的に壊れていないかだけ確認する
+      # (require は Electron/koffi を要求するため実行はしない)。
+      - name: Syntax check
+        run: |
+          node --check main.js
+          node --check win-helper.js
+          node --check auto-snap.js
+          for f in lib/*.js; do node --check "$f"; done

@@ -4,6 +4,7 @@
   "description": "Terminal workspace manager for macOS & Windows",
   "main": "main.js",
   "scripts": {
+    "test": "node --test test/*.test.js",
     "start": "electron .",
     "predev": "node scripts/predev.js",
     "dev": "electron . --dev",

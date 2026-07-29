@@ -11,7 +11,10 @@ cd "$(dirname "$0")/.."
 PORT=37199
 BASE="http://127.0.0.1:$PORT"
 UD=.tin-test-userdata-rest
-LOG=$(mktemp /tmp/tin-rest-test.XXXXXX.log)
+# macOS の mktemp はテンプレート末尾の X 列しか置換しない。
+# 以前は '...XXXXXX.log' としていたためリテラル名のファイルが残り、2回目以降
+# 「File exists」+ set -e でテスト本体が一度も走らない状態になっていた。
+LOG=$(mktemp /tmp/tin-rest-test.XXXXXX)
 PASS=0; FAIL=0
 
 cleanup() {
