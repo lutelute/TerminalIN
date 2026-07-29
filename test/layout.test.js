@@ -313,3 +313,17 @@ test('fitGridDims: area 不明時は横長 (16:9) と仮定する', () => {
   assert.deepStrictEqual(fitGridDims(4, {}), { cols: 2, rows: 2 });
   assert.deepStrictEqual(fitGridDims(2, {}), { cols: 2, rows: 1 });
 });
+
+// All Snap の前詰め (main.js snapAllTerminals) が依存する契約。
+// 「開いた順に左上から」を壊さないことが前提なので、順序保持は明示的に固定しておく。
+test('compactSlots: 前詰めしても占有者の相対順が変わらない', () => {
+  // slot 0,1,2,4,5,6,7 に7窓 (slot3 が unsnap 跡の穴) — 実機で観測した形
+  const ws = mkWs({ ext: [0, 1, 2, 4, 5, 6, 7], cols: 4, rows: 2 });
+  const before = [...ws.snappedExternals].sort((a, b) => a[1].slot - b[1].slot).map(([wn]) => wn);
+  const r = compactSlots(ws);
+  assert.strictEqual(r.ok, true);
+  const after = [...ws.snappedExternals].sort((a, b) => a[1].slot - b[1].slot).map(([wn]) => wn);
+  assert.deepStrictEqual(after, before, '詰めても並び順は不変');
+  assert.deepStrictEqual([...ws.snappedExternals].map(([, i]) => i.slot).sort((a, b) => a - b),
+    [0, 1, 2, 3, 4, 5, 6], '穴が埋まり 0..6 が連続で埋まる');
+});

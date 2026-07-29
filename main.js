@@ -1591,6 +1591,15 @@ async function snapAllTerminals(ws) {
   }
   const cols = ws.gridCols, rows = ws.gridRows;
 
+  // 既存 snap に穴 (unsnap 跡の空き slot) があると、形状を合わせても穴だけが
+  // 途中に residual として残る (例: 9x1 で slot3 が空の7窓 → 4x2 にしても右上が空く)。
+  // All Snap は「全部きれいに並べ直す」明示操作なので、ここでは前詰めしてよい
+  // — 自動 compact を避けているのは delete/unsnap 等の暗黙経路で番号が動くのを
+  // 防ぐためで、ユーザーが明示的に叩くこの経路は対象外。
+  // 相対順 (slot 昇順 = 概ね開いた順) は compactSlots が保つ。
+  const compacted = compactSlots(ws);
+  if (compacted.moved) console.log(`[tin] snap-all: compacted ${compacted.moved} slots`);
+
   beginStabilize('snap-all', ws);
   const moveCmds = [];
   const snappedWns = [];
