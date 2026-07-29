@@ -1555,7 +1555,7 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
 
 // ── All Snap: 開いているターミナルウィンドウを一括 snap ──
 // 窓数(スロット数)は snap 後の総窓数に自動で合わせる (拡張も縮小もする)。
-// 形状は lib/layout.js の fitGridDims が選ぶ。
+// 形状は lib/layout.js の fitGridDims — **今の行数を維持して列だけ動かす**。
 async function snapAllTerminals(ws) {
   if (!ws || !ws.win || ws.win.isDestroyed()) return { ok: false, reason: 'no-workspace' };
   const all = await listWindows();
@@ -1583,7 +1583,8 @@ async function snapAllTerminals(ws) {
   // 有効スロット数が既に一致しているなら形状は触らない
   // (カスタム slotLayout やユーザーが意図して選んだ形状を尊重する)。
   if (validSlotIdSet(ws).size !== need) {
-    const fit = fitGridDims(need, { maxCols, maxRows, areaWidth: area?.width, areaHeight: area?.height });
+    // keepRows: 今の行数を維持して列だけ合わせる (1行運用なら1行のまま)
+    const fit = fitGridDims(need, { maxCols, maxRows, keepRows: ws.gridRows });
     if (fit.cols !== ws.gridCols || fit.rows !== ws.gridRows || ws.slotLayout) {
       console.log(`[tin] snap-all: grid ${ws.gridCols}x${ws.gridRows} → ${fit.cols}x${fit.rows} (need ${need} slots)`);
       applyGridSize(ws, fit.cols, fit.rows);

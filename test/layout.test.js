@@ -266,52 +266,67 @@ test('computeSlotBounds: 同じ入力なら常に同じ出力 (純粋性)', () =
 
 // ────────────────────────── fitGridDims ──────────────────────────
 // All Snap の「窓数をターミナル数に自動で合わせる」の形状選択。
-// スコア重み (EMPTY_WEIGHT=0.6) を変えるとここの形状表が変わる —
-// 変更時は「1窓で 1x1」「5窓で 5x1 でなく 3x2」が保たれているか必ず見ること。
+// 方針は「今の行数 (keepRows) を維持して列だけ動かす」— 何行が good かは
+// 好みであって計算では決まらない、というユーザー判断 (2026-07-29) に基づく。
+// 行数を曲げるのは「行がまるごと空く」「列が maxCols 超過」の2ケースのみ。
 
-const LANDSCAPE = { maxCols: 20, maxRows: 20, areaWidth: 1920, areaHeight: 1080 };
-const PORTRAIT  = { maxCols: 20, maxRows: 20, areaWidth: 1080, areaHeight: 1920 };
+const LIMITS = { maxCols: 20, maxRows: 20 };
 
-test('fitGridDims: 横長画面での形状表 (1..9, 12窓)', () => {
-  const expected = {
-    1: [1, 1], 2: [2, 1], 3: [3, 1], 4: [2, 2], 5: [3, 2],
-    6: [3, 2], 7: [4, 2], 8: [4, 2], 9: [3, 3], 12: [4, 3],
-  };
-  for (const [need, [cols, rows]] of Object.entries(expected)) {
-    assert.deepStrictEqual(fitGridDims(Number(need), LANDSCAPE), { cols, rows },
-      `need=${need} は ${cols}x${rows}`);
+test('fitGridDims: 1行運用なら列だけ増減して1行のまま', () => {
+  for (const need of [1, 2, 5, 7, 12]) {
+    assert.deepStrictEqual(fitGridDims(need, { ...LIMITS, keepRows: 1 }), { cols: need, rows: 1 },
+      `need=${need} は ${need}x1`);
   }
 });
 
-test('fitGridDims: 空きセルは最小限 (need より 3 以上余る形状は選ばない)', () => {
-  for (let need = 1; need <= 16; need++) {
-    const { cols, rows } = fitGridDims(need, LANDSCAPE);
-    assert.ok(cols * rows >= need, `need=${need}: 全窓が収まる (${cols}x${rows})`);
-    assert.ok(cols * rows - need <= 2, `need=${need}: 空きセルは2以下 (${cols}x${rows})`);
+test('fitGridDims: 2行運用なら2行のまま列を合わせる', () => {
+  const expected = { 4: 2, 6: 3, 7: 4, 8: 4, 12: 6 };
+  for (const [need, cols] of Object.entries(expected)) {
+    assert.deepStrictEqual(fitGridDims(Number(need), { ...LIMITS, keepRows: 2 }), { cols, rows: 2 },
+      `need=${need} は ${cols}x2`);
   }
 });
 
-test('fitGridDims: 縦長画面では縦に積む', () => {
-  assert.deepStrictEqual(fitGridDims(2, PORTRAIT), { cols: 1, rows: 2 });
-  assert.deepStrictEqual(fitGridDims(6, PORTRAIT), { cols: 2, rows: 3 });
+test('fitGridDims: 行がまるごと空くなら行を減らす', () => {
+  // 3行に4窓 → 2x3 は最終行が丸ごと空く → 2x2 に落とす
+  assert.deepStrictEqual(fitGridDims(4, { ...LIMITS, keepRows: 3 }), { cols: 2, rows: 2 });
+  // 2行に1窓 → 1x2 は下段が空く → 1x1
+  assert.deepStrictEqual(fitGridDims(1, { ...LIMITS, keepRows: 2 }), { cols: 1, rows: 1 });
+  // 2行に2窓は「1列2行」で両方埋まるので減らさない (2行運用の維持)
+  assert.deepStrictEqual(fitGridDims(2, { ...LIMITS, keepRows: 2 }), { cols: 1, rows: 2 });
 });
 
-test('fitGridDims: maxCols 制限下では行方向で吸収する', () => {
-  assert.deepStrictEqual(fitGridDims(5, { ...LANDSCAPE, maxCols: 2 }), { cols: 2, rows: 3 });
+test('fitGridDims: 全形状で全窓が収まり、空きは行数未満', () => {
+  for (const keepRows of [1, 2, 3]) {
+    for (let need = 1; need <= 16; need++) {
+      const { cols, rows } = fitGridDims(need, { ...LIMITS, keepRows });
+      assert.ok(cols * rows >= need, `keepRows=${keepRows} need=${need}: 収まる (${cols}x${rows})`);
+      assert.ok(cols * rows - need < Math.max(rows, 2),
+        `keepRows=${keepRows} need=${need}: 空きは行数未満 (${cols}x${rows})`);
+    }
+  }
+});
+
+test('fitGridDims: 列が maxCols を超えるときだけ行を増やす (セルが細くなりすぎる)', () => {
+  // 1行運用でも 12窓を maxCols=10 には入れられない → 行方向に逃がす
+  assert.deepStrictEqual(fitGridDims(12, { maxCols: 10, maxRows: 20, keepRows: 1 }), { cols: 6, rows: 2 });
+  // 上限内なら1行のまま
+  assert.deepStrictEqual(fitGridDims(10, { maxCols: 10, maxRows: 20, keepRows: 1 }), { cols: 10, rows: 1 });
 });
 
 test('fitGridDims: どの形状でも収まらないときは上限形状 (skipped は呼び出し側)', () => {
-  assert.deepStrictEqual(fitGridDims(10, { ...LANDSCAPE, maxCols: 3, maxRows: 3 }), { cols: 3, rows: 3 });
+  assert.deepStrictEqual(fitGridDims(20, { maxCols: 3, maxRows: 3, keepRows: 1 }), { cols: 3, rows: 3 });
 });
 
 test('fitGridDims: need が 0 以下や非数なら 1x1', () => {
-  assert.deepStrictEqual(fitGridDims(0, LANDSCAPE), { cols: 1, rows: 1 });
-  assert.deepStrictEqual(fitGridDims(NaN, LANDSCAPE), { cols: 1, rows: 1 });
+  assert.deepStrictEqual(fitGridDims(0, { ...LIMITS, keepRows: 3 }), { cols: 1, rows: 1 });
+  assert.deepStrictEqual(fitGridDims(NaN, { ...LIMITS, keepRows: 3 }), { cols: 1, rows: 1 });
 });
 
-test('fitGridDims: area 不明時は横長 (16:9) と仮定する', () => {
-  assert.deepStrictEqual(fitGridDims(4, {}), { cols: 2, rows: 2 });
-  assert.deepStrictEqual(fitGridDims(2, {}), { cols: 2, rows: 1 });
+test('fitGridDims: keepRows 未指定/不正でも 1行として扱う', () => {
+  assert.deepStrictEqual(fitGridDims(5, {}), { cols: 5, rows: 1 });
+  assert.deepStrictEqual(fitGridDims(5, { ...LIMITS, keepRows: 0 }), { cols: 5, rows: 1 });
+  assert.deepStrictEqual(fitGridDims(5, { ...LIMITS, keepRows: -3 }), { cols: 5, rows: 1 });
 });
 
 // All Snap の前詰め (main.js snapAllTerminals) が依存する契約。
