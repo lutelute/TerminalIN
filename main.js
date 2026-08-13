@@ -1060,6 +1060,7 @@ async function recoverSnappedWindows() {
       if (allLive.find(w => w.windowNumber === k)) {
         // 戻ってきた
         if (info._spaceAbsent || info._absentSince) { info._spaceAbsent = false; info._absentSince = 0; }
+        info._goneStreak = 0;
         continue;
       }
       let liveness = null; // ログに破棄理由を残すため (原因追跡はこのログが頼り)
@@ -1071,10 +1072,12 @@ async function recoverSnappedWindows() {
           return liveness;
         },
         absentSince: info._absentSince,
+        goneStreak: info._goneStreak || 0,
         now: Date.now(),
       });
       if (verdict === 'wait') { info._missCount = 0; continue; }
-      if (verdict === 'ghost') { markAbsent(info); continue; }
+      if (verdict === 'gone-pending') { info._goneStreak = (info._goneStreak || 0) + 1; markAbsent(info); continue; }
+      if (verdict === 'ghost') { info._goneStreak = 0; markAbsent(info); continue; }
       ws.snappedExternals.delete(k);
       ws._lastKnownSnappedWns.delete(k);
       snappedIndexRemove(k);
@@ -3142,36 +3145,44 @@ function createWorkspace(name, savedState) {
           continue;
         }
         // ghost 中 (別 Space / 最小化 / 確証が取れないまま消えている) は miss を数えない。
-        // 猶予を過ぎたところで一度だけ生死を問い合わせ、生きていれば猶予を延長する。
-        // 別 Space に置きっぱなしの窓を時間切れで外さないための延長。
+        // 毎 poll で AX を叩くのは無駄なので、問い合わせるのは
+        //   - 前回 gone 寄りの答えが出ている (確定させるためもう一度見る)
+        //   - 猶予を過ぎた (諦めてよいか最終確認する)
+        // のどちらかのときだけ。生きていれば猶予を延長する — 別 Space に
+        // 置きっぱなしの窓を時間切れで外さないため。
         if (info._spaceAbsent) {
-          if (Date.now() - (info._absentSince || 0) >= ABSENT_EVICT_MS) {
-            const liveness = snapTargetLiveness(info, probeAllSpaceWindowIds());
-            if (liveness === 'alive') {
-              info._absentSince = Date.now();
-            } else {
-              ws.snappedExternals.delete(k);
-              ws._lastKnownSnappedWns.delete(k);
-              snappedIndexRemove(k);
-              snappedChanged = true;
-              console.log(`[tin] evict wn=${k} "${info.app}: ${info.title}" slot=${info.slot} (${liveness}, absent > ${Math.round(ABSENT_EVICT_MS / 60000)}min)`);
-            }
-          }
-          continue;
+          const due = (info._goneStreak || 0) > 0
+            || Date.now() - (info._absentSince || 0) >= ABSENT_EVICT_MS;
+          if (!due) continue;
+        } else {
+          info._missCount = (info._missCount || 0) + 1;
+          if (info._missCount < 3) continue;
         }
-        info._missCount = (info._missCount || 0) + 1;
-        if (info._missCount >= 3) {
+        {
           // CGWindowList から消えた ≠ 閉じられた。確証が取れた時だけ破棄し、
           // それ以外 (別 Space / 最小化 / display 切替中の欠落) は ghost 保持で
           // slot を守る。戻ってきたら上の live 経路で再配置される。
-          const liveness = snapTargetLiveness(info, probeAllSpaceWindowIds());
-          if (liveness === 'gone') {
+          let liveness = null;
+          const verdict = absentVerdict({
+            stabilizing: false, // ここに来る前に isStabilizing で弾いている
+            livenessFn: () => (liveness = snapTargetLiveness(info, probeAllSpaceWindowIds())),
+            absentSince: info._absentSince,
+            goneStreak: info._goneStreak || 0,
+            now: Date.now(),
+          });
+          if (verdict === 'gone-pending') {
+            info._goneStreak = (info._goneStreak || 0) + 1;
+            markAbsent(info);
+          } else if (verdict === 'ghost') {
+            info._goneStreak = 0;
+            if (info._spaceAbsent) info._absentSince = Date.now(); // 生存確認できたので猶予を延長
+            else markAbsent(info);
+          } else {
             ws.snappedExternals.delete(k);
             ws._lastKnownSnappedWns.delete(k);
             snappedIndexRemove(k);
-            console.log(`[tin] evict wn=${k} "${info.app}: ${info.title}" slot=${info.slot} (confirmed closed)`);
-          } else {
-            markAbsent(info);
+            const why = liveness === 'gone' ? 'confirmed closed' : `${liveness}, absent > ${Math.round(ABSENT_EVICT_MS / 60000)}min`;
+            console.log(`[tin] evict wn=${k} "${info.app}: ${info.title}" slot=${info.slot} (${why})`);
           }
           snappedChanged = true;
         }
@@ -3181,6 +3192,7 @@ function createWorkspace(name, savedState) {
       if (info._spaceAbsent) {
         info._spaceAbsent = false;
         info._absentSince = 0;
+        info._goneStreak = 0;
         // 正しいスロット位置に再配置
         const pos = getSlotBounds(ws, info.slot);
         if (pos) fireAndForgetMove([{ windowNumber: live.windowNumber, pid: live.pid, app: info.app, title: info.title, ...pos }]);

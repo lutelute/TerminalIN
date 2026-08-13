@@ -1074,6 +1074,10 @@ static napi_value ListWindowsAllSpaces(napi_env env, napi_callback_info info) {
 
 // ── AX 経由で PID のウィンドウ番号一覧を取得 ──
 // transparent ウィンドウは CGWindowList に出ないため AXUIElement で取得する。
+//
+// 注意: kAXWindows は「そのアプリの全ウィンドウ」ではない。別 Space の窓が
+// 落ちることがある (実測: 現存する Terminal の窓 3 つが出てこなかった)。
+// ここに出てくることは生存の証拠になるが、出てこないことは閉じた証拠にならない。
 static napi_value GetWindowNumbersByPid(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
@@ -1087,16 +1091,13 @@ static napi_value GetWindowNumbersByPid(napi_env env, napi_callback_info info) {
 
     AXUIElementRef app = AXUIElementCreateApplication(pid);
     CFArrayRef windows = NULL;
-    AXError axErr = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute, (CFTypeRef *)&windows);
-    NSLog(@"[tin] getWindowNumbersByPid pid=%d axErr=%d windows=%@", pid, axErr, windows ? @"ok" : @"nil");
+    AXUIElementCopyAttributeValue(app, kAXWindowsAttribute, (CFTypeRef *)&windows);
     if (windows) {
         CFIndex count = CFArrayGetCount(windows);
-        NSLog(@"[tin] window count=%ld", (long)count);
         for (CFIndex i = 0; i < count; i++) {
             AXUIElementRef win = (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
             CGWindowID wid = 0;
-            AXError widErr = _AXUIElementGetWindow(win, &wid);
-            NSLog(@"[tin]   win[%ld] widErr=%d wid=%u", (long)i, widErr, wid);
+            _AXUIElementGetWindow(win, &wid);
             if (wid > 0) {
                 napi_value numVal;
                 napi_create_int32(env, (int32_t)wid, &numVal);

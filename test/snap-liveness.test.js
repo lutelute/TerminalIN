@@ -27,23 +27,35 @@ test('プロセスが消えていれば AX が居ると言っても閉じた扱�
   assert.strictEqual(livenessOf(unknown({ processAlive: false, axWindowIds: [WN] })), 'gone');
 });
 
-test('AX の窓一覧に居れば生存', () => {
+test('AX と CGWindowList の両方が居ないと言ったときだけ閉じたと断定する', () => {
+  assert.strictEqual(
+    livenessOf(unknown({ processAlive: true, axWindowIds: [999], allSpaceWindowIds: [42] })), 'gone');
+});
+
+// 実測した誤判定の回帰。AX の kAXWindows は別 Space の窓を落とすことがある。
+test('AX に出てこなくても CGWindowList に居れば生存 (AX の見落としを閉じたと読まない)', () => {
+  assert.strictEqual(
+    livenessOf(unknown({ processAlive: true, axWindowIds: [999], allSpaceWindowIds: [WN] })), 'alive');
+});
+
+test('CGWindowList から消えていても AX に居れば生存 (display 切替中の欠落)', () => {
+  assert.strictEqual(
+    livenessOf(unknown({ processAlive: true, axWindowIds: [WN], allSpaceWindowIds: [42] })), 'alive');
+});
+
+test('片方が判定不能なら、もう片方が「居ない」と言っても破棄しない', () => {
+  // 否定は全員一致でのみ採用する。片肺の否定で破棄すると snap 外れになる。
+  assert.strictEqual(
+    livenessOf(unknown({ processAlive: true, axWindowIds: [], allSpaceWindowIds: [42] })), 'unknown');
+  assert.strictEqual(
+    livenessOf(unknown({ processAlive: true, axWindowIds: [999], allSpaceWindowIds: [] })), 'unknown');
+  assert.strictEqual(
+    livenessOf(unknown({ processAlive: true, axWindowIds: [999], allSpaceWindowIds: null })), 'unknown');
+});
+
+test('どちらか一方でも居ると言えば生存 (肯定は 1 つで足りる)', () => {
   assert.strictEqual(livenessOf(unknown({ processAlive: true, axWindowIds: [999, WN] })), 'alive');
-});
-
-test('AX の窓一覧に居なければ閉じたと断定する (タブだけ閉じてプロセスは生存)', () => {
-  assert.strictEqual(livenessOf(unknown({ processAlive: true, axWindowIds: [999] })), 'gone');
-});
-
-test('AX が空配列 (AXWindowID 非対応/応答なし) なら判定不能として次の根拠に進む', () => {
-  assert.strictEqual(
-    livenessOf(unknown({ processAlive: true, axWindowIds: [], allSpaceWindowIds: [WN] })), 'alive');
-  assert.strictEqual(
-    livenessOf(unknown({ processAlive: true, axWindowIds: [], allSpaceWindowIds: [42] })), 'gone');
-});
-
-test('別 Space / 最小化で CGWindowList から消えていても AX が居ると言えば生存', () => {
-  assert.strictEqual(livenessOf(unknown({ processAlive: true, axWindowIds: [WN], allSpaceWindowIds: [] })), 'alive');
+  assert.strictEqual(livenessOf(unknown({ processAlive: true, allSpaceWindowIds: [WN] })), 'alive');
 });
 
 // ここが「しばらくすると snap が外れる」の核心。
@@ -60,9 +72,10 @@ test('CGWindowList が空を返す瞬間を「全部閉じた」と読まない'
   assert.deepStrictEqual(entries.map(livenessOf), ['unknown', 'unknown', 'unknown', 'unknown', 'unknown']);
 });
 
-test('pid 不明 (processAlive=null) でも AX の答えがあればそれに従う', () => {
+test('pid 不明 (processAlive=null) でも窓が見えていれば生存と分かる', () => {
   assert.strictEqual(livenessOf(unknown({ axWindowIds: [WN] })), 'alive');
-  assert.strictEqual(livenessOf(unknown({ axWindowIds: [777] })), 'gone');
+  // pid が分からないだけで、両方が居ないと言うなら閉じている
+  assert.strictEqual(livenessOf(unknown({ axWindowIds: [777], allSpaceWindowIds: [777] })), 'gone');
 });
 
 // ── absentVerdict: 見えないエントリの扱い ──
@@ -83,8 +96,21 @@ test('stabilize 中は生死の問い合わせ自体を走らせない', () => {
   assert.strictEqual(called, 0);
 });
 
-test('確証が取れたら破棄', () => {
-  assert.strictEqual(verdict({ livenessFn: () => 'gone' }), 'evict');
+test('gone は 1 回では確定させない (同時見落としの保険)', () => {
+  assert.strictEqual(verdict({ livenessFn: () => 'gone' }), 'gone-pending');
+});
+
+test('gone が続けて出たら破棄', () => {
+  assert.strictEqual(verdict({ livenessFn: () => 'gone', goneStreak: 1 }), 'evict');
+});
+
+test('確定に必要な回数は呼び出し側で変えられる', () => {
+  assert.strictEqual(verdict({ livenessFn: () => 'gone', goneConfirmCount: 1 }), 'evict');
+  assert.strictEqual(verdict({ livenessFn: () => 'gone', goneStreak: 1, goneConfirmCount: 3 }), 'gone-pending');
+});
+
+test('間に alive が挟まれば ghost に戻る (streak は呼び出し側でリセットする)', () => {
+  assert.strictEqual(verdict({ livenessFn: () => 'alive', goneStreak: 1 }), 'ghost');
 });
 
 test('生きていると分かっているものは ghost として slot を保持する', () => {
