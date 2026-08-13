@@ -107,6 +107,9 @@ jobs:
             dist/*.blockmap
             dist/latest*.yml
 
+          # ビルド成果物はリリースに載るので、artifact は短くてよい。
+          # 未設定だと既定90日で貯まり続ける（実際に全体で72GBまで膨れた）
+          retention-days: 7
   mac:
     # win と同じ draft release を触るため直列化する(並行だと draft が重複生成される)。
     needs: [check, win]
@@ -152,3 +155,7 @@ jobs:
             dist/*.zip
             dist/*.blockmap
             dist/latest-mac.yml
+
+          # ビルド成果物はリリースに載るので、artifact は短くてよい。
+          # 未設定だと既定90日で貯まり続ける（実際に全体で72GBまで膨れた）
+          retention-days: 7
