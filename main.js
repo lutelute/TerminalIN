@@ -12,6 +12,7 @@ const autoSnap = require('./auto-snap');
 // ここに生えている関数を編集するときは test/*.test.js も併せて更新すること。
 const { occupiedSlots, validSlotIdSet, nextFreeSlot, compactSlots, fitGridDims, computeSlotBounds } = require('./lib/layout');
 const { isAllowedRestRequest } = require('./lib/rest-guard');
+const { ABSENT_EVICT_MS, livenessOf, absentVerdict } = require('./lib/snap-liveness');
 
 // ── File logging (クラッシュ事後解析用) ──
 // Finder 起動時は stdout が捨てられ、クラッシュ原因が一切残らない。
@@ -965,6 +966,55 @@ const STABILIZE_MS = 30000;
 let retileAfterStabilize = null;
 let recoveryTimers = [];
 
+// ── snapped エントリの生死判定 ──
+// 判定の筋道は lib/snap-liveness.js (純粋ロジック・単体テストあり)。
+// ここは OS への問い合わせ (probe) だけを受け持つ。probe はどれも
+// 「判定不能」を null で返し、判定不能は保持側に倒す — 誤って保持しても
+// slot が余分に埋まるだけだが、誤って破棄するとユーザーが並べた配置が壊れる。
+
+// pid 生存。EPERM は「他ユーザーの生存プロセス」なので生存扱い。
+function probeProcessAlive(pid) {
+  if (!pid) return null;
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return e.code === 'ESRCH' ? false : true; }
+}
+
+// AX が返すそのプロセスの窓 ID 一覧。Space・最小化・CGWindowList の揺れに
+// 影響されないので、生死の根拠としては CGWindowList より信頼できる。
+function probeAxWindowIds(pid) {
+  if (!pid || !axHelper || !axHelper.getWindowNumbersByPid) return null;
+  try {
+    const wns = axHelper.getWindowNumbersByPid(pid);
+    return Array.isArray(wns) ? wns : null;
+  } catch (e) { console.warn('[tin] liveness: getWindowNumbersByPid failed:', e?.message || e); return null; }
+}
+
+// 全 Space の窓 ID 一覧。全窓列挙なので判定サイクルごとに 1 回だけ取って使い回す。
+function probeAllSpaceWindowIds() {
+  if (!axHelper || !axHelper.listWindowsAllSpaces) return null;
+  try {
+    const all = axHelper.listWindowsAllSpaces();
+    return Array.isArray(all) ? all.map(w => w.windowNumber) : null;
+  } catch (e) { console.warn('[tin] liveness: listWindowsAllSpaces failed:', e?.message || e); return null; }
+}
+
+// 'gone' | 'alive' | 'unknown'
+function snapTargetLiveness(info, allSpaceWindowIds) {
+  return livenessOf({
+    windowNumber: info.windowNumber,
+    processAlive: probeProcessAlive(info.pid),
+    axWindowIds: probeAxWindowIds(info.pid),
+    allSpaceWindowIds,
+  });
+}
+
+// 姿が見えないエントリを ghost にする (slot は占有したまま復帰を待つ)。
+function markAbsent(info) {
+  if (!info._absentSince) info._absentSince = Date.now();
+  info._missCount = 0;
+  info._spaceAbsent = true;
+}
+
 // 再 snap: title + app で live window を探し、snap し直す
 async function recoverSnappedWindows() {
   const allLive = await listWindows();
@@ -991,26 +1041,46 @@ async function recoverSnappedWindows() {
       info.windowNumber = live.windowNumber;
       info.pid = live.pid;
       info._missCount = 0;
+      info._spaceAbsent = false;
+      info._absentSince = 0;
       ws.snappedExternals.set(live.windowNumber, info);
       ws._lastKnownSnappedWns.add(live.windowNumber);
       snappedIndexAdd(live.windowNumber, ws);
     }
     if (toRelink.length > 0) console.log(`[tin] recovered ${toRelink.length} snapped in "${ws.name}"`);
-    // 見つからないエントリを evict（別 Space 確認後に削除）
+    // 見つからないエントリの扱い。
+    // ここは display 切替 / sleep 復帰の直後に走るので、CGWindowList に写らない
+    // ＝閉じられた、ではない。確証 (snapTargetLiveness) が取れた時だけ破棄し、
+    // それ以外は ghost として slot を保持したまま復帰を待つ。
+    // stabilize 中は CGWindowList 全体が信用できないので破棄判断そのものを見送る。
+    const stabilizing = isStabilizing(ws);
+    let allSpaceIds; // 全窓列挙は重いので、必要になった時に 1 回だけ取って使い回す
     let evicted = 0;
     for (const [k, info] of ws.snappedExternals) {
-      if (allLive.find(w => w.windowNumber === k)) continue; // 生きている
-      // title prefix でも見つからない場合は別 Space 確認
-      let foundElsewhere = false;
-      if (axHelper && axHelper.listWindowsAllSpaces) {
-        try { foundElsewhere = axHelper.listWindowsAllSpaces().some(w => w.windowNumber === k); } catch (e) { console.warn('[tin] recover: listWindowsAllSpaces failed:', e?.message || e); }
+      if (allLive.find(w => w.windowNumber === k)) {
+        // 戻ってきた
+        if (info._spaceAbsent || info._absentSince) { info._spaceAbsent = false; info._absentSince = 0; }
+        continue;
       }
-      if (!foundElsewhere) {
-        ws.snappedExternals.delete(k);
-        ws._lastKnownSnappedWns.delete(k);
-        snappedIndexRemove(k);
-        evicted++;
-      }
+      let liveness = null; // ログに破棄理由を残すため (原因追跡はこのログが頼り)
+      const verdict = absentVerdict({
+        stabilizing,
+        livenessFn: () => {
+          if (allSpaceIds === undefined) allSpaceIds = probeAllSpaceWindowIds();
+          liveness = snapTargetLiveness(info, allSpaceIds);
+          return liveness;
+        },
+        absentSince: info._absentSince,
+        now: Date.now(),
+      });
+      if (verdict === 'wait') { info._missCount = 0; continue; }
+      if (verdict === 'ghost') { markAbsent(info); continue; }
+      ws.snappedExternals.delete(k);
+      ws._lastKnownSnappedWns.delete(k);
+      snappedIndexRemove(k);
+      evicted++;
+      const why = liveness === 'gone' ? 'confirmed closed' : `${liveness}, absent > ${Math.round(ABSENT_EVICT_MS / 60000)}min`;
+      console.log(`[tin] evict wn=${k} "${info.app}: ${info.title}" slot=${info.slot} (${why})`);
     }
     if (evicted > 0) {
       console.log(`[tin] evicted ${evicted} stale snapped in "${ws.name}"`);
@@ -1042,7 +1112,9 @@ function beginStabilize(reason, ws) {
   console.log(`[tin] stabilizing for ${STABILIZE_MS}ms (reason: ${reason})`);
   recoveryTimers.forEach(t => clearTimeout(t));
   recoveryTimers = [];
-  [1000, 3000, 8000, 15000, 30000].forEach(delay => {
+  // 末尾の 35000 は STABILIZE_MS(30000) 明けの 1 回。ここで初めて破棄判断が有効になる
+  // ので、stabilize 中ずっと保留していた ghost の後始末と retile が必ず一度は走る。
+  [1000, 3000, 8000, 15000, 30000, 35000].forEach(delay => {
     const t = setTimeout(() => {
       recoverSnappedWindows().catch(e => console.warn('[tin] recovery failed:', e.message));
     }, delay);
@@ -3069,35 +3141,46 @@ function createWorkspace(name, savedState) {
           info._missCount = 0;
           continue;
         }
-        // space-absent 中は既に別 Space と判定済み → miss を数えない
-        if (info._spaceAbsent) continue;
+        // ghost 中 (別 Space / 最小化 / 確証が取れないまま消えている) は miss を数えない。
+        // 猶予を過ぎたところで一度だけ生死を問い合わせ、生きていれば猶予を延長する。
+        // 別 Space に置きっぱなしの窓を時間切れで外さないための延長。
+        if (info._spaceAbsent) {
+          if (Date.now() - (info._absentSince || 0) >= ABSENT_EVICT_MS) {
+            const liveness = snapTargetLiveness(info, probeAllSpaceWindowIds());
+            if (liveness === 'alive') {
+              info._absentSince = Date.now();
+            } else {
+              ws.snappedExternals.delete(k);
+              ws._lastKnownSnappedWns.delete(k);
+              snappedIndexRemove(k);
+              snappedChanged = true;
+              console.log(`[tin] evict wn=${k} "${info.app}: ${info.title}" slot=${info.slot} (${liveness}, absent > ${Math.round(ABSENT_EVICT_MS / 60000)}min)`);
+            }
+          }
+          continue;
+        }
         info._missCount = (info._missCount || 0) + 1;
         if (info._missCount >= 3) {
-          // 別 Space に存在するか確認 (閉じた vs Space 移動の区別)
-          let foundElsewhere = false;
-          if (axHelper && axHelper.listWindowsAllSpaces) {
-            try {
-              const allWins = axHelper.listWindowsAllSpaces();
-              foundElsewhere = allWins.some(w => w.windowNumber === k);
-            } catch {}
-          }
-          if (foundElsewhere) {
-            // 別 Space にいる → ghost として保持、スロットは占有したまま
-            info._spaceAbsent = true;
-            info._missCount = 0;
-          } else {
-            // 本当に閉じた → 削除（スロット位置は維持）
+          // CGWindowList から消えた ≠ 閉じられた。確証が取れた時だけ破棄し、
+          // それ以外 (別 Space / 最小化 / display 切替中の欠落) は ghost 保持で
+          // slot を守る。戻ってきたら上の live 経路で再配置される。
+          const liveness = snapTargetLiveness(info, probeAllSpaceWindowIds());
+          if (liveness === 'gone') {
             ws.snappedExternals.delete(k);
             ws._lastKnownSnappedWns.delete(k);
             snappedIndexRemove(k);
-            snappedChanged = true;
+            console.log(`[tin] evict wn=${k} "${info.app}: ${info.title}" slot=${info.slot} (confirmed closed)`);
+          } else {
+            markAbsent(info);
           }
+          snappedChanged = true;
         }
         continue;
       }
       // ウィンドウが現 Space に戻ってきた
       if (info._spaceAbsent) {
         info._spaceAbsent = false;
+        info._absentSince = 0;
         // 正しいスロット位置に再配置
         const pos = getSlotBounds(ws, info.slot);
         if (pos) fireAndForgetMove([{ windowNumber: live.windowNumber, pid: live.pid, app: info.app, title: info.title, ...pos }]);
@@ -4267,7 +4350,26 @@ app.whenReady().then(async () => {
     }
     beginStabilize('display-removed');
   });
-  screen.on('display-metrics-changed', () => beginStabilize('display-metrics-changed'));
+  // display-metrics-changed は解像度変更 / ディスプレイ抜き差し / クラムシェルの最中に
+  // 90ms 間隔で数十回連発する。毎回 beginStabilize すると recovery タイマーが張り直され
+  // 続け、バーストが止まった 1 秒後 ＝ 窓がまだ CGWindowList に戻りきっていない瞬間に
+  // recovery が走る。leading で即座に保護し、trailing で「落ち着いた後」に一度だけ
+  // 張り直す形にまとめる。
+  let _dmcTrailingTimer = null;
+  let _dmcLastFire = 0;
+  screen.on('display-metrics-changed', () => {
+    const now = Date.now();
+    if (now - _dmcLastFire > 1000) {
+      _dmcLastFire = now;
+      beginStabilize('display-metrics-changed');
+    }
+    if (_dmcTrailingTimer) clearTimeout(_dmcTrailingTimer);
+    _dmcTrailingTimer = setTimeout(() => {
+      _dmcTrailingTimer = null;
+      _dmcLastFire = Date.now();
+      beginStabilize('display-metrics-settled');
+    }, 600);
+  });
 
   const template = [
     { label: app.name, submenu: [
