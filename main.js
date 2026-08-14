@@ -13,6 +13,7 @@ const autoSnap = require('./auto-snap');
 const { occupiedSlots, validSlotIdSet, nextFreeSlot, compactSlots, fitGridDims, computeSlotBounds } = require('./lib/layout');
 const { isAllowedRestRequest } = require('./lib/rest-guard');
 const { ABSENT_EVICT_MS, livenessOf, absentVerdict } = require('./lib/snap-liveness');
+const { findRelinkTarget, matchPersistedToLive } = require('./lib/snap-relink');
 
 // ── File logging (クラッシュ事後解析用) ──
 // Finder 起動時は stdout が捨てられ、クラッシュ原因が一切残らない。
@@ -702,51 +703,11 @@ function loadPersistedWorkspaces() {
   }
 }
 
-// 復元対象のウィンドウを現在の live list に match させる。
-// 優先度: windowNumber → title完全 → title前方40 → titleセクション(唯一時) → サイズ近似(唯一時)
-function matchPersistedToLive(persisted, liveWindows) {
-  // 1. windowNumber で厳密一致
-  const byNum = liveWindows.find(w => w.windowNumber === persisted.windowNumber);
-  if (byNum) return byNum;
-  // 2. app + title 完全一致
-  const byFull = liveWindows.find(w => w.app === persisted.app && w.title === persisted.title);
-  if (byFull) return byFull;
-  // 3. app + title 前方 40 文字一致
-  if (persisted.title && persisted.title.length > 0) {
-    const prefix = persisted.title.slice(0, Math.min(40, persisted.title.length));
-    const byPrefix = liveWindows.find(w =>
-      w.app === persisted.app &&
-      w.title && w.title.startsWith(prefix)
-    );
-    if (byPrefix) return byPrefix;
-  }
-  // 4. app + タイトルの最初のセクション（em dash / ダッシュ区切り）
-  // 誤マッチを防ぐため、同じsection名を持つliveウィンドウが1つだけの場合のみ適用
-  // 例: "DevMaze — ✳ ... — 48×31" → "DevMaze" でマッチ
-  if (persisted.title) {
-    const pSection = persisted.title.split(/\s*[—\-–]\s*/)[0].trim();
-    if (pSection.length >= 3) {
-      const matches = liveWindows.filter(w =>
-        w.app === persisted.app &&
-        w.title && w.title.split(/\s*[—\-–]\s*/)[0].trim() === pSection
-      );
-      if (matches.length === 1) return matches[0];
-    }
-  }
-  // 5. app + サイズ近似（±30px）: 同じ設定で起動したターミナルは同サイズになることが多い
-  // 誤マッチを防ぐため、このappのliveウィンドウが1つだけの場合のみ適用
-  if (persisted.origW > 0 && persisted.origH > 0) {
-    const sameApp = liveWindows.filter(w => w.app === persisted.app);
-    if (sameApp.length === 1) {
-      const w = sameApp[0];
-      if (Math.abs((w.width || 0) - persisted.origW) <= 30 &&
-          Math.abs((w.height || 0) - persisted.origH) <= 30) {
-        return w;
-      }
-    }
-  }
-  return null;
-}
+// 復元/再リンクの match ロジックは lib/snap-relink.js (純粋ロジック・単体テストあり)。
+// ここは「その窓はもう誰かの snap になっているか」という main 側しか知らない情報を渡すだけ。
+// これを渡さないと、閉じた窓のエントリが同じ title の生きている窓を掴んでしまい、
+// 「消したはずの端末が snap に残る」ことになる (経緯は lib/snap-relink.js の冒頭)。
+const isWindowClaimed = (wn) => _globalSnappedIndex.has(wn);
 
 
 // ── Space / Display 移動: workspace + snapped ターミナルを丸ごと移動 ──
@@ -791,11 +752,22 @@ async function restoreAllPending() {
     const restored = [];
     const missing = [];
     const unrestored = [];  // マッチしなかった生エントリ — 捨てずに保持して再試行・再保存する
+    let expired = 0;        // 諦めたエントリ (もう存在しない端末を復元し続けないため)
     for (const p of persistedList) {
-      // 現 Space を優先、見つからなければ全 Space から探す
-      const live = matchPersistedToLive(p, liveWindows) || matchPersistedToLive(p, liveAllSpaces);
-      if (!live) { missing.push({ app: p.app, title: p.title, slot: p.slot }); unrestored.push(p); continue; }
-      if (ws.snappedExternals.has(live.windowNumber)) continue;
+      // 一度も戻ってこないまま保持期限を過ぎたエントリは諦める。
+      // unrestored は毎回 workspaces.json に書き戻され、savedAt も毎回更新されるので、
+      // 期限を切らないと「とうに閉じた端末」が何度も再起動をまたいで生き残り、
+      // 緩い match (前方一致 / サイズ近似) でいつか無関係な窓を掴む。
+      if (p.unrestoredSince && Date.now() - p.unrestoredSince > WORKSPACES_STALE_MS) { expired++; continue; }
+      // 現 Space を優先、見つからなければ全 Space から探す。
+      // 既に他エントリが使っている窓は候補から外す (同 title の生きた窓を横取りしないため)。
+      const live = matchPersistedToLive(p, liveWindows, isWindowClaimed)
+                || matchPersistedToLive(p, liveAllSpaces, isWindowClaimed);
+      if (!live) {
+        missing.push({ app: p.app, title: p.title, slot: p.slot });
+        unrestored.push({ ...p, unrestoredSince: p.unrestoredSince || Date.now() });
+        continue;
+      }
       // 保存時の slot が現グリッドで無効 (縮小/レイアウト変更) or 既に占有 (内蔵PTY 含む) なら空きへ。
       // 空きゼロのとき黙って捨てると次回の自動保存で snap 情報が永久消滅するため、
       // missing 報告 + unrestored 保持に回す (グリッド拡張後の再起動/再試行で戻れる)。
@@ -804,7 +776,8 @@ async function restoreAllPending() {
         slot = nextFreeSlot(ws);
         if (slot < 0) {
           missing.push({ app: p.app, title: p.title, slot: p.slot, reason: 'no-slot' });
-          unrestored.push(p);
+          // 窓自体は生きている (match した) ので、期限切れの対象にはしない。
+          unrestored.push({ ...p, unrestoredSince: 0 });
           continue;
         }
       }
@@ -830,7 +803,8 @@ async function restoreAllPending() {
     }
     // マッチしなかったエントリは保持: workspaces.json に書き戻し続けることで
     // 「クラッシュ→再起動直後にウィンドウ列挙が間に合わず復元失敗→直後の自動保存で
-    //  snap 情報が永久消滅」する問題を防ぐ (24h stale 期限は loadPersistedWorkspaces 側)。
+    //  snap 情報が永久消滅」する問題を防ぐ。ただし保持は無期限ではない
+    // (unrestoredSince から WORKSPACES_STALE_MS で諦める — 上のループ冒頭)。
     ws._unrestoredSnaps = unrestored;
     // renderer に通知
     try {
@@ -839,7 +813,8 @@ async function restoreAllPending() {
       for (const [wn, info] of ws.snappedExternals) hydrate.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
       ws.win.webContents.send('hydrate-snapped', hydrate);
     } catch (e) { console.warn('[tin] restore hydrate send failed:', e?.message || e); }
-    console.log(`[tin] restored ${restored.length} snapped (${absentWns.length} absent), ${missing.length} missing in "${ws.name}"`);
+    const expiredNote = expired > 0 ? `, ${expired} expired` : '';
+    console.log(`[tin] restored ${restored.length} snapped (${absentWns.length} absent), ${missing.length} missing${expiredNote} in "${ws.name}"`);
   }
 
   // 現 Space のウィンドウを移動 (別 Space のものは Space restore に任せる)
@@ -963,6 +938,9 @@ function fireAndForgetMove(windows, positionOnly = false) {
 // for a while afterward.
 let stabilizingUntil = 0; // グローバル fallback (sleep/display 系イベント用)
 const STABILIZE_MS = 30000;
+// ghost (姿が見えない snapped) の生死を確かめ直す間隔。
+// 短くすると閉じた端末の slot が早く空くが、そのたび全窓列挙 + AX 問い合わせが走る。
+const GHOST_RECHECK_MS = 30000;
 let retileAfterStabilize = null;
 let recoveryTimers = [];
 
@@ -1021,17 +999,17 @@ async function recoverSnappedWindows() {
   for (const [, ws] of workspaces) {
     if (!ws.win || ws.win.isDestroyed()) continue;
     ensureOnScreen(ws);
-    // 各 snapped について再リンク試行
+    // 各 snapped について再リンク試行。
+    // 引き継ぎ先は「まだ誰の snap でもない窓」に限る — 同 title の生きた窓を横取りすると
+    // Map の同一キー上書きで元エントリが消え、閉じた端末が slot に残る (lib/snap-relink.js)。
+    // このループ内で先に確保した窓も claimed 扱いにして、2 エントリが同じ窓を掴むのを防ぐ。
+    const takenHere = new Set();
+    const claimed = (wn) => takenHere.has(wn) || isWindowClaimed(wn);
     const toRelink = [];
     for (const [k, info] of ws.snappedExternals) {
       if (allLive.find(w => w.windowNumber === k)) continue; // 既に生きている
-      // title + app で再検索
-      let live = allLive.find(w => w.app === info.app && w.title === info.title);
-      if (!live && info.title) {
-        const prefix = info.title.slice(0, Math.min(40, info.title.length));
-        live = allLive.find(w => w.app === info.app && w.title && w.title.startsWith(prefix));
-      }
-      if (live) toRelink.push({ oldKey: k, info, live });
+      const live = findRelinkTarget(info, allLive, claimed);
+      if (live) { takenHere.add(live.windowNumber); toRelink.push({ oldKey: k, info, live }); }
     }
     // 再リンク実行
     for (const { oldKey, info, live } of toRelink) {
@@ -1043,6 +1021,7 @@ async function recoverSnappedWindows() {
       info._missCount = 0;
       info._spaceAbsent = false;
       info._absentSince = 0;
+      info._lastLivenessAt = 0;
       ws.snappedExternals.set(live.windowNumber, info);
       ws._lastKnownSnappedWns.add(live.windowNumber);
       snappedIndexAdd(live.windowNumber, ws);
@@ -1059,7 +1038,7 @@ async function recoverSnappedWindows() {
     for (const [k, info] of ws.snappedExternals) {
       if (allLive.find(w => w.windowNumber === k)) {
         // 戻ってきた
-        if (info._spaceAbsent || info._absentSince) { info._spaceAbsent = false; info._absentSince = 0; }
+        if (info._spaceAbsent || info._absentSince) { info._spaceAbsent = false; info._absentSince = 0; info._lastLivenessAt = 0; }
         info._goneStreak = 0;
         continue;
       }
@@ -1068,6 +1047,7 @@ async function recoverSnappedWindows() {
         stabilizing,
         livenessFn: () => {
           if (allSpaceIds === undefined) allSpaceIds = probeAllSpaceWindowIds();
+          info._lastLivenessAt = Date.now();
           liveness = snapTargetLiveness(info, allSpaceIds);
           return liveness;
         },
@@ -3107,20 +3087,15 @@ function createWorkspace(name, savedState) {
       }
     }
     let snappedChanged = false;
+    let pollAllSpaceIds; // 全 Space の窓 ID (遅延取得・この poll 内で使い回す)
     for (const [k, info] of ws.snappedExternals) {
       let live = liveMap.get(k);
-      // sleep 復帰等で windowNumber が変わった場合: title + app + pid で再マッチ
+      // sleep 復帰等で windowNumber が変わった場合: title + app で再マッチ。
+      // 引き継ぎ先は「まだ誰の snap でもない窓」に限る。ここを空けておくと、閉じた端末の
+      // エントリが同じ title の生きた窓を掴んで元エントリを上書きし、閉じたはずの端末が
+      // slot に残ったように見える (詳細は lib/snap-relink.js)。
       if (!live && info.title) {
-        for (const w of windows) {
-          if (w.app === info.app && w.title === info.title) { live = w; break; }
-        }
-        if (!live) {
-          // 前方一致でも試す
-          const prefix = info.title.slice(0, Math.min(40, info.title.length));
-          for (const w of windows) {
-            if (w.app === info.app && w.title && w.title.startsWith(prefix)) { live = w; break; }
-          }
-        }
+        live = findRelinkTarget(info, windows, isWindowClaimed);
         if (live) {
           // windowNumber を更新して再リンク
           ws.snappedExternals.delete(k);
@@ -3145,14 +3120,20 @@ function createWorkspace(name, savedState) {
           continue;
         }
         // ghost 中 (別 Space / 最小化 / 確証が取れないまま消えている) は miss を数えない。
-        // 毎 poll で AX を叩くのは無駄なので、問い合わせるのは
+        // 毎 poll で AX を叩くのは無駄 (全窓列挙 + AX 問い合わせ) なので間引くが、
+        // 猶予切れ (10 分) まで一切見ないと「別 Space に置いた端末を閉じた」ときに
+        // slot が 10 分空かない — これが「閉じたはずの端末が snap に残る」の一因だった。
+        // GHOST_RECHECK_MS ごとに確かめて折り合いをつける。問い合わせるのは
         //   - 前回 gone 寄りの答えが出ている (確定させるためもう一度見る)
+        //   - 前回の確認から GHOST_RECHECK_MS 経った
         //   - 猶予を過ぎた (諦めてよいか最終確認する)
-        // のどちらかのときだけ。生きていれば猶予を延長する — 別 Space に
+        // のいずれか。生きていると分かれば猶予を延長する — 別 Space に
         // 置きっぱなしの窓を時間切れで外さないため。
         if (info._spaceAbsent) {
+          const now = Date.now();
           const due = (info._goneStreak || 0) > 0
-            || Date.now() - (info._absentSince || 0) >= ABSENT_EVICT_MS;
+            || now - (info._lastLivenessAt || 0) >= GHOST_RECHECK_MS
+            || now - (info._absentSince || 0) >= ABSENT_EVICT_MS;
           if (!due) continue;
         } else {
           info._missCount = (info._missCount || 0) + 1;
@@ -3165,7 +3146,12 @@ function createWorkspace(name, savedState) {
           let liveness = null;
           const verdict = absentVerdict({
             stabilizing: false, // ここに来る前に isStabilizing で弾いている
-            livenessFn: () => (liveness = snapTargetLiveness(info, probeAllSpaceWindowIds())),
+            livenessFn: () => {
+              // 全窓列挙は重いので poll 内で 1 回だけ取って ghost 全員で使い回す。
+              if (pollAllSpaceIds === undefined) pollAllSpaceIds = probeAllSpaceWindowIds();
+              info._lastLivenessAt = Date.now();
+              return (liveness = snapTargetLiveness(info, pollAllSpaceIds));
+            },
             absentSince: info._absentSince,
             goneStreak: info._goneStreak || 0,
             now: Date.now(),
@@ -3175,7 +3161,10 @@ function createWorkspace(name, savedState) {
             markAbsent(info);
           } else if (verdict === 'ghost') {
             info._goneStreak = 0;
-            if (info._spaceAbsent) info._absentSince = Date.now(); // 生存確認できたので猶予を延長
+            // 猶予を延ばすのは 'alive' — つまり別 Space / 最小化と分かったときだけ。
+            // 'unknown' でも延ばすと、次に問い合わせるのがまた ABSENT_EVICT_MS 後になり、
+            // 猶予がリセットされ続けて閉じた窓の slot が永久に空かない。
+            if (info._spaceAbsent) { if (liveness === 'alive') info._absentSince = Date.now(); }
             else markAbsent(info);
           } else {
             ws.snappedExternals.delete(k);
@@ -3192,6 +3181,7 @@ function createWorkspace(name, savedState) {
       if (info._spaceAbsent) {
         info._spaceAbsent = false;
         info._absentSince = 0;
+        info._lastLivenessAt = 0;
         info._goneStreak = 0;
         // 正しいスロット位置に再配置
         const pos = getSlotBounds(ws, info.slot);
