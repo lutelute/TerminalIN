@@ -2911,6 +2911,12 @@ function createWorkspace(name, savedState) {
   win.on('move', onWinMove);
   win.on('resize', onWinMove);
   win.on('will-move', () => { _dragging = true; _lastDragEventAt = Date.now(); });
+  if (!IS_WIN) {
+    // macOS はネイティブの zoom (緑ボタンの ⌥クリック / タイトルバーのダブルクリック) でも
+    // 最大化状態が変わるので、どの経路でも #maximize-btn のアイコンが追従するよう通知する。
+    win.on('maximize', () => { try { win.webContents.send('win-maximized', true); } catch {} });
+    win.on('unmaximize', () => { try { win.webContents.send('win-maximized', false); } catch {} });
+  }
   // Windows: 最大化を workArea 擬似最大化へ一本化する。
   // ネイティブドラッグで Aero スナップが効くと、上端ドラッグ/Win+↑ で OS が native 最大化し、
   // frameless+transparent では不可視縁(約8px)ぶん画面外へはみ出す(タスクバーを覆う/端が切れる/
