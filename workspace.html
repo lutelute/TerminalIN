@@ -1673,6 +1673,8 @@ function commandDefinitions() {
       desc: currentViewMode === 'grid' ? '全スロットを重ねて1画面に — タブで切り替える表示へ' : 'タブ表示をやめて格子状に並べる表示へ', run: toggleViewMode },
     { icon: 'drawer', label: 'Open workspace inspector', meta: 'VIEW', preview: 'drawer',
       desc: '窓一覧・メモ・設定をまとめたサイドパネルを開く', run: () => toggleDrawer(true) },
+    { icon: 'drawer', label: 'Open Snap Info (floating)', meta: 'VIEW', preview: 'drawer',
+      desc: '全 Workspace のスナップ状態を常時表示する小窓を最前面に開く', run: () => ipcRenderer.invoke('open-snap-info') },
     { icon: 'maximize', label: 'Maximize / restore window (画面いっぱい)', meta: 'WINDOW', preview: 'maximize',
       desc: 'TiN ウィンドウを画面いっぱいに広げる / 元のサイズへ戻す', run: () => winCtl('maximize') },
     { icon: currentTheme === 'dark' ? 'sun' : 'moon', label: currentTheme === 'dark' ? 'Use white theme' : 'Use black theme', meta: 'APPEARANCE', preview: 'theme',
@@ -2211,6 +2213,17 @@ async function openPreferences() {
       </div>
       <div id="pref-hk-rows" style="display:grid;grid-template-columns:1fr auto;gap:6px 10px;align-items:center;"></div>
     </div>
+    <div style="border-top:1px solid rgba(0,0,0,0.08);margin:0 -4px 12px;padding-top:12px;">
+      <div style="font-weight:600;font-size:12px;color:rgba(0,0,0,0.5);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
+        パネル
+      </div>
+      <button id="pref-open-snapinfo" style="display:flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid rgba(0,0,0,0.15);border-radius:6px;background:#fff;cursor:pointer;font-size:12px;">
+        ${iconSvg('drawer', 'width="14" height="14"')}<span>Snap Info をフローティング表示</span>
+      </button>
+      <div style="font-size:11px;color:rgba(0,0,0,0.4);padding-left:2px;line-height:1.5;margin-top:6px;margin-bottom:4px;">
+        全 Workspace のスナップ状態を常時表示する小窓を開きます (最前面固定・クリックで前面化)。
+      </div>
+    </div>
     <div style="border-top:1px solid rgba(0,0,0,0.08);margin:0 -4px 14px;padding-top:12px;">
       <div style="font-weight:600;font-size:12px;color:rgba(0,0,0,0.5);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
         Developer
@@ -2243,6 +2256,7 @@ async function openPreferences() {
   panel.querySelector('#pref-autolaunch').checked = !!settings.autoLaunch;
   panel.querySelector('#pref-sticky').checked = !!settings.stickyWindows;
   panel.querySelector('#pref-orch-api').checked = !!settings.orchApi;
+  panel.querySelector('#pref-open-snapinfo').onclick = () => ipcRenderer.invoke('open-snap-info');
   let selectedTheme = settings.theme === 'light' ? 'light' : 'dark';
   const syncAppearance = () => panel.querySelectorAll('.appearance-option').forEach(button => {
     button.classList.toggle('selected', button.dataset.theme === selectedTheme);
