@@ -128,11 +128,28 @@ npm run dist:win         # dist/ に NSIS インストーラ(.exe) / zip を生�
 
 ### アップデート
 
+**アプリ内の自動アップデート**
+
+TiN は起動 8 秒後と 6 時間ごとに GitHub Releases を確認し、新版があればバックグラウンドで
+ダウンロードします。手動で確かめるときは **設定（`⌘,`）→ バージョン情報 →「更新を確認」**。
+
+適用のタイミングは OS で異なります。
+
+| | 検出・ダウンロード | 適用 |
+|---|---|---|
+| macOS | GitHub Releases API から mac zip | 右下の通知で**「今すぐ再起動」を押したときだけ**、起動中の `.app`（通常は `/Applications/TiN.app`）を差し替える（`ditto` + quarantine 除去。署名不要） |
+| Windows | electron-updater（`latest.yml`） | ダウンロード完了後、**アプリの終了時に自動で**インストール（「今すぐ再起動」も選べる） |
+
+mac で「あとで」を選ぶと今回は適用されませんが、次回起動時にまた提示されます。
+アプリ本体を丸ごと差し替える操作なので、mac は明示的に押したときだけ実行します。
+
+**ソースから更新（開発者向け）**
+
 ```bash
 cd TerminalIN
 git pull
 npm install              # 依存が変わっていなければスキップ可
-npm run dist && bash scripts/install.sh
+npm run dist && bash scripts/install.sh   # macOS
 ```
 
 snap 状態・ワークスペース設定は `~/Library/Application Support/TiN/` に保存されるため、再インストールしても引き継がれます。
