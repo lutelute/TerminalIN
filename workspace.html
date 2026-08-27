@@ -2408,7 +2408,11 @@ function _allWindowTabs() {
   return host ? [...host.querySelectorAll('.groupy-tab')] : [];
 }
 // タブ要素を直接アクティブ化 (クリックと共通動作)。pty/ext は dataset で判定。
-function switchToTab(tab) {
+// opts.activate: 外部窓を raise するだけでなくアプリ自体を前面化する。
+// 吸われたクリックの救済でのみ true。AXRaise はアプリの中で窓を上げるだけなので、
+// これが無いとキーボードフォーカスが TiN に残り「もう一度クリック」が必要になる。
+// ヘッダーのタブクリックは従来どおり (フォーカスを奪わない) のままにしてある。
+function switchToTab(tab, opts = {}) {
   if (!tab) return;
   _allWindowTabs().forEach(t => t.classList.toggle('active', t === tab));
   if (tab.dataset.kind === 'pty') {
@@ -2418,8 +2422,13 @@ function switchToTab(tab) {
   } else {
     const wn = Number(tab.dataset.wn);
     frontmostWindowNumber = wn; activePtySlot = null;
-    if (currentViewMode === 'tab') { activateTab(Number(tab.dataset.slot) || 0); }
-    else { render(); ipcRenderer.invoke('raise-snapped', { windowNumber: wn }); }
+    if (currentViewMode === 'tab') {
+      activateTab(Number(tab.dataset.slot) || 0);
+      if (opts.activate) ipcRenderer.invoke('raise-snapped', { windowNumber: wn, activate: true });
+    } else {
+      render();
+      ipcRenderer.invoke('raise-snapped', { windowNumber: wn, activate: !!opts.activate });
+    }
   }
   requestAnimationFrame(() => updateTabOverflow(true));
 }
@@ -4645,7 +4654,7 @@ let _gpDragging = false;  // 分割線ドラッグ中か
       const { slot } = await ipcRenderer.invoke('resolve-grid-slot', { x: e.screenX, y: e.screenY });
       if (slot >= 0) tab = _allWindowTabs().find(x => Number(x.dataset.slot) === slot) || null;
     }
-    if (tab) switchToTab(tab);
+    if (tab) switchToTab(tab, { activate: true });
   });
 }
 

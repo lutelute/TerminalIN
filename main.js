@@ -1789,7 +1789,11 @@ ipcMain.handle('unsnap-external', async (event, { windowNumber }) => {
 // ── IPC: 個別 snapped window を前面化 (相互機能: 解釈A)
 // workspace sidebar の個別スロットクリックから呼ばれる。
 // URL スキーム tin://raise でも同じロジックを叩けるが、そちらは match-key 検索を伴う。
-ipcMain.handle('raise-snapped', async (event, { windowNumber }) => {
+// activate=true のときはアプリ自体も前面化する。kAXRaiseAction は「そのアプリの中で」
+// 窓を上げるだけでアプリはアクティブにならないため、これを付けないと窓は出てくるのに
+// キーボードフォーカスは TiN に残り、ユーザーはもう一度クリックする羽目になる。
+// 呼び元は救済クリックのみ (タブクリックは従来どおりフォーカスを奪わない)。
+ipcMain.handle('raise-snapped', async (event, { windowNumber, activate }) => {
   for (const [, ws] of workspaces) {
     const info = ws.snappedExternals.get(windowNumber);
     if (!info) continue;
@@ -1797,6 +1801,10 @@ ipcMain.handle('raise-snapped', async (event, { windowNumber }) => {
       app: info.app, pid: info.pid, title: info.title,
       windowNumber: info.windowNumber, windowIndex: info.windowIndex,
     }]);
+    if (activate && info.pid && axHelper && axHelper.activateApp) {
+      try { axHelper.activateApp(info.pid); }
+      catch (e) { console.warn('[tin] activateApp failed:', e && e.message); }
+    }
     return { ok: true };
   }
   return { ok: false };
