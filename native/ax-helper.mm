@@ -498,6 +498,47 @@ static napi_value RaiseWindows(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// activateApp(pid) → bool
+// 指定 pid のアプリを前面(アクティブ)にする。
+//
+// なぜ必要か: kAXRaiseAction は「そのアプリの中で」窓を前に出すだけで、アプリ自体は
+// アクティブにならない。グリッド越しのクリックが TiN に吸われた場合、救済で窓を
+// raise してもキーボードフォーカスは TiN に残るため、ユーザーは端末を選ぶのに
+// もう一度クリックする羽目になる。raise の直後にこれを呼んで初めて「選んだ」になる。
+//
+// NSApplicationActivateAllWindows は付けない。付けると snap していない同じアプリの
+// 他の窓まで一緒にせり上がってきてグリッドを覆う。
+static napi_value ActivateApp(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+
+    int32_t pid = 0;
+    napi_get_value_int32(env, args[0], &pid);
+
+    bool ok = false;
+    if (pid > 0) {
+        // 1) AX 経路 (kAXFrontmost)。この addon は Electron main 内で動き TiN の
+        //    Accessibility 権限をそのまま使えるので、ファイル内の他の操作と同じ土俵で済む。
+        AXUIElementRef appRef = AXUIElementCreateApplication((pid_t)pid);
+        if (appRef) {
+            if (AXUIElementSetAttributeValue(appRef, kAXFrontmostAttribute, kCFBooleanTrue)
+                == kAXErrorSuccess) ok = true;
+            CFRelease(appRef);
+        }
+        // 2) AX が拒否された場合のフォールバック (権限が落ちている等)。
+        if (!ok) {
+            NSRunningApplication *app =
+                [NSRunningApplication runningApplicationWithProcessIdentifier:(pid_t)pid];
+            if (app) ok = [app activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+        }
+    }
+
+    napi_value result;
+    napi_get_boolean(env, ok, &result);
+    return result;
+}
+
 // ── Spaces 移動 (CGS プライベート API — フォールバック用) ──
 extern "C" {
     int CGSMainConnectionID(void);
@@ -1121,6 +1162,9 @@ static napi_value Init(napi_env env, napi_value exports) {
 
     napi_create_function(env, NULL, 0, RaiseWindows, NULL, &fn);
     napi_set_named_property(env, exports, "raiseWindows", fn);
+
+    napi_create_function(env, NULL, 0, ActivateApp, NULL, &fn);
+    napi_set_named_property(env, exports, "activateApp", fn);
 
     napi_create_function(env, NULL, 0, GetWindowNumbersByPid, NULL, &fn);
     napi_set_named_property(env, exports, "getWindowNumbersByPid", fn);

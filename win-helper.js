@@ -376,6 +376,16 @@ function raiseWindows(cmds) {
   return n;
 }
 
+// activateApp(pid) — mac 版 (ax-helper.mm) と export 名を合わせるための対応物。
+//
+// Windows では「アプリを前面化」という mac の kAXFrontmost に相当する操作は無く、
+// 前面化は窓単位。上の raiseOne が既に AttachThreadInput + SetForegroundWindow で
+// フォーカスまで移しているので、ここでやることは残っていない。
+// mac 固有の「窓は上がるがアプリはアクティブにならない」問題が Windows には無い。
+function activateApp(_pid) {
+  return true;
+}
+
 function getFrontmostWindowNumber() {
   try { return Number(GetForegroundWindow()) || 0; } catch { return 0; }
 }
@@ -471,6 +481,7 @@ module.exports = {
   moveWindows,
   getMoveIssues,
   raiseWindows,
+  activateApp,
   getFrontmostWindowNumber,
   getWindowNumbersByPid,
   isAXTrusted,
