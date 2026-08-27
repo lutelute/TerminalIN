@@ -5,7 +5,11 @@
   --tin-sans: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
   --tin-mono: "SFMono-Regular", "SF Mono", "Cascadia Code", Consolas, monospace;
   --tin-radius: 3px;
-  --tin-header-h: 36px;
+  /* ヘッダー高さの正はここ (#titlebar に !important で当たる)。
+     main.js の TITLEBAR_H / GROUPY_Y_OFFSET と必ず一致させること —
+     食い違うと外部窓がヘッダー下にめり込む/隙間が空き、clickthrough の
+     ヘッダー保護帯もズレてグリッド上端が操作不能になる。 */
+  --tin-header-h: 46px;
 }
 
 body[data-theme="dark"] {
@@ -18,6 +22,10 @@ body[data-theme="dark"] {
   --tin-field: #090d13;
   --tin-line: rgba(189, 218, 255, .13);
   --tin-line-strong: rgba(189, 218, 255, .24);
+  /* ボタン/入力の輪郭。line-strong は暗地で 1.84:1 しか出ず「面が見えない」ため、
+     非文字要素の目安 3:1 を満たす専用値を持つ (実測 3.2:1)。 */
+  --tin-ctl-line: rgba(189, 218, 255, .42);
+  --tin-ctl-face: rgba(255, 255, 255, .06);
   --tin-text: #e9f0f8;
   --tin-text-2: #a7b3c2;
   --tin-text-3: #6d798a;
@@ -47,6 +55,8 @@ body[data-theme="light"] {
   --tin-field: #f7f9fa;
   --tin-line: rgba(21, 40, 59, .14);
   --tin-line-strong: rgba(21, 40, 59, .25);
+  --tin-ctl-line: rgba(21, 40, 59, .34);
+  --tin-ctl-face: rgba(21, 40, 59, .04);
   --tin-text: #111c27;
   --tin-text-2: #435263;
   --tin-text-3: #758291;
@@ -667,6 +677,203 @@ body[data-theme="light"] #tin-command-backdrop { background: rgba(224, 230, 235,
 .command-meta { color: var(--tin-text-4); font: 550 8px/1 var(--tin-mono); }
 .command-footer { display: flex; gap: 14px; padding: 8px 12px; color: var(--tin-text-4); background: var(--tin-field); border-top: 1px solid var(--tin-line); font: 500 8px/1 var(--tin-mono); }
 
+/* ── コマンドプレビュー: 選択中コマンドの概念をミニチュア動画+説明で見せるカード ──
+   GIF アセットではなく CSS アニメ (テーマ変数追従・軽量)。位置は JS が決める。 */
+#tin-command-preview {
+  position: fixed;
+  width: 224px;
+  padding: 10px 10px 12px;
+  color: var(--tin-text);
+  background: var(--tin-surface);
+  border: 1px solid var(--tin-line-strong);
+  border-radius: 4px;
+  box-shadow: var(--tin-shadow);
+  opacity: 0;
+  transform: translateX(-4px);
+  pointer-events: none;
+  transition: opacity .16s ease, transform .16s ease;
+}
+#tin-command-preview.show { opacity: 1; transform: none; }
+.cp-title { margin-top: 8px; font-size: 11px; font-weight: 600; color: var(--tin-text); }
+.cp-desc { margin-top: 3px; font-size: 10.5px; line-height: 1.55; color: var(--tin-text-3); }
+
+/* ミニチュアの舞台 (小さなデスクトップ) */
+.cp-scene {
+  position: relative;
+  height: 116px;
+  overflow: hidden;
+  background: var(--tin-field);
+  border: 1px solid var(--tin-line);
+  border-radius: 3px;
+}
+.cp-scene i, .cp-scene b { display: block; position: absolute; }
+.cp-still { display: grid; place-items: center; }
+.cp-still svg { width: 34px; height: 34px; color: var(--tin-text-3); }
+
+/* セル (ミニウィンドウ)。2×2 の定位置 p1..p4 */
+.cpc {
+  width: 42.5%; height: 38%;
+  background: var(--tin-surface);
+  border: 1px solid var(--tin-line-strong);
+  border-radius: 3px;
+}
+.cpc.p1 { left: 5%; top: 8%; }   .cpc.p2 { left: 52.5%; top: 8%; }
+.cpc.p3 { left: 5%; top: 54%; }  .cpc.p4 { left: 52.5%; top: 54%; }
+.cpc.term::before {
+  content: '>_';
+  position: absolute; left: 5px; top: 4px;
+  font: 700 8px/1 var(--tin-mono);
+  color: var(--tin-cyan);
+}
+/* 端末の中身 (テキスト2行) — 一目で「ターミナル」と読めるように */
+.cpc.term::after {
+  content: '';
+  position: absolute; left: 5px; top: 18px;
+  width: 58%; height: 2px; border-radius: 1px;
+  background: var(--tin-line-strong);
+  box-shadow: 0 5px 0 0 var(--tin-line-strong);
+}
+.cpc.ghost { background: transparent; border-style: dashed; border-color: var(--tin-line); }
+
+/* 動きの方向を明示する矢印 (flip / space) */
+.cp-arrow {
+  left: 50%; top: 46%;
+  transform: translate(-50%, -50%);
+  font: 800 16px/1 var(--tin-mono);
+  color: var(--tin-cyan);
+  opacity: 0; z-index: 3;
+  animation: cpArrow 2.6s ease infinite;
+}
+.cp-arrow.sp { left: 87%; top: 40%; animation-duration: 3s; }
+@keyframes cpArrow { 0%, 14% { opacity: 0; } 24%, 46% { opacity: 1; } 58%, 100% { opacity: 0; } }
+
+/* focus: 対象以外を沈めて「これが前に出る」を見せる */
+.cpc.dim { animation: cpDim 2.4s ease infinite; }
+@keyframes cpDim { 0%, 100% { opacity: 1; } 38%, 62% { opacity: .35; } }
+
+/* maximize セルのミニタイトルバー */
+.cpbar { left: 0; right: 0; top: 0; height: 7px; border-radius: 2px 2px 0 0; background: var(--tin-line); }
+
+/* 出現 (new-term / fill)。d1..d3 で波状に */
+.cpc.appear { opacity: 0; animation: cpAppear 2.6s ease infinite; }
+.cpc.appear.d1 { animation-delay: .25s; }
+.cpc.appear.d2 { animation-delay: .55s; }
+.cpc.appear.d3 { animation-delay: .85s; }
+@keyframes cpAppear {
+  0%, 16% { opacity: 0; transform: scale(.72); }
+  30%, 78% { opacity: 1; transform: scale(1); }
+  92%, 100% { opacity: 0; transform: scale(.96); }
+}
+
+/* Retile: ズレた姿勢 (--sk) から定位置へスナップ */
+.cpc.askew { animation: cpRetile 2.6s ease infinite; }
+@keyframes cpRetile {
+  0%, 18% { transform: var(--sk); }
+  45%, 82% { transform: none; }
+  100% { transform: var(--sk); }
+}
+
+/* Flip: 左右/上下の座標を入れ替え */
+.cpc.sw-r, .cpc.sw-l { top: 8%; }
+.cpc.sw-r.low, .cpc.sw-l.low { top: 54%; }
+.cpc.sw-d, .cpc.sw-u { left: 5%; }
+.cpc.sw-d.rgt, .cpc.sw-u.rgt { left: 52.5%; }
+.cpc.sw-r { animation: cpSwapR 2.6s ease infinite; }
+.cpc.sw-l { animation: cpSwapL 2.6s ease infinite; }
+.cpc.sw-d { animation: cpSwapD 2.6s ease infinite; }
+.cpc.sw-u { animation: cpSwapU 2.6s ease infinite; }
+@keyframes cpSwapR { 0%, 18% { left: 5%; } 50%, 84% { left: 52.5%; } 100% { left: 5%; } }
+@keyframes cpSwapL { 0%, 18% { left: 52.5%; } 50%, 84% { left: 5%; } 100% { left: 52.5%; } }
+@keyframes cpSwapD { 0%, 18% { top: 8%; } 50%, 84% { top: 54%; } 100% { top: 8%; } }
+@keyframes cpSwapU { 0%, 18% { top: 54%; } 50%, 84% { top: 8%; } 100% { top: 54%; } }
+
+/* View 切り替え: 統合ペインとタブ列 */
+.cpm {
+  left: 5%; top: 20%; width: 90%; height: 72%;
+  background: var(--tin-surface);
+  border: 1px solid rgba(var(--tin-cyan-rgb), .45);
+  border-radius: 3px;
+}
+.cpm::before {
+  content: '>_';
+  position: absolute; left: 6px; top: 5px;
+  font: 700 8px/1 var(--tin-mono);
+  color: var(--tin-cyan);
+}
+.cpt {
+  left: 5%; top: 8%; width: 90%; height: 9%;
+  background:
+    linear-gradient(to right,
+      rgba(var(--tin-cyan-rgb), .5) 0 22%, transparent 22% 26%,
+      var(--tin-line-strong) 26% 48%, transparent 48% 52%,
+      var(--tin-line-strong) 52% 74%, transparent 74%);
+  border-radius: 2px;
+}
+.cpm.merge, .cpt.tabsin { opacity: 0; animation: cpFadeIn 2.8s ease infinite; }
+.cpm.split, .cpt.tabsout { opacity: 1; animation: cpFadeOut 2.8s ease infinite; }
+.cpc.late { opacity: 0; animation: cpFadeIn 2.8s ease infinite; }
+@keyframes cpFadeIn { 0%, 32% { opacity: 0; } 55%, 88% { opacity: 1; } 98%, 100% { opacity: 0; } }
+@keyframes cpFadeOut { 0%, 32% { opacity: 1; } 55%, 88% { opacity: 0; } 98%, 100% { opacity: 1; } }
+
+/* Inspector: 左からサイドパネルが滑り込む */
+.cpd {
+  left: 0; top: 0; bottom: 0; width: 34%;
+  background: var(--tin-surface);
+  border-right: 1px solid var(--tin-line-strong);
+  animation: cpSlideIn 2.8s ease infinite;
+}
+.cpd b { left: 12%; width: 76%; height: 3px; border-radius: 2px; background: var(--tin-line-strong); }
+.cpd b:nth-child(1) { top: 18%; background: rgba(var(--tin-cyan-rgb), .55); }
+.cpd b:nth-child(2) { top: 34%; }
+.cpd b:nth-child(3) { top: 50%; }
+@keyframes cpSlideIn {
+  0%, 10% { transform: translateX(-110%); }
+  38%, 86% { transform: none; }
+  100% { transform: translateX(-110%); }
+}
+
+/* Maximize: 中央の小窓が画面いっぱいへ */
+.cpc.grow { animation: cpGrow 2.8s ease infinite; }
+@keyframes cpGrow {
+  0%, 16% { left: 30%; top: 26%; width: 40%; height: 44%; }
+  50%, 84% { left: 4%; top: 6%; width: 92%; height: 88%; }
+  100% { left: 30%; top: 26%; width: 40%; height: 44%; }
+}
+
+/* Theme: 舞台ごと白黒トグル (テーマ切替そのものを描くので二値でよい) */
+.cp-scene.theme-anim { animation: cpThemeBg 3s steps(1) infinite; }
+.theme-anim .cpc { animation: cpThemeCell 3s steps(1) infinite; }
+@keyframes cpThemeBg { 0%, 49% { background: #0b1017; } 50%, 100% { background: #e8ecf1; } }
+@keyframes cpThemeCell {
+  0%, 49% { background: #141b24; border-color: #2a3542; }
+  50%, 100% { background: #ffffff; border-color: #c6cfd8; }
+}
+
+/* Space: ペインが隣のデスクトップへホップ。下部ドットが現在地 */
+.cpc.hop { left: 15%; top: 12%; width: 70%; height: 60%; animation: cpHop 3s ease infinite; }
+@keyframes cpHop {
+  0%, 22% { transform: none; opacity: 1; }
+  46% { transform: translateX(125%); opacity: 0; }
+  47% { transform: translateX(-125%); opacity: 0; }
+  72%, 100% { transform: none; opacity: 1; }
+}
+.cp-dot { bottom: 9%; width: 5px; height: 5px; border-radius: 50%; background: var(--tin-line-strong); }
+.cp-dot.d-a { left: 44%; animation: cpDotA 3s steps(1) infinite; }
+.cp-dot.d-b { left: 53%; animation: cpDotB 3s steps(1) infinite; }
+@keyframes cpDotA { 0%, 45% { background: var(--tin-cyan); } 46%, 100% { background: var(--tin-line-strong); } }
+@keyframes cpDotB { 0%, 45% { background: var(--tin-line-strong); } 46%, 100% { background: var(--tin-cyan); } }
+
+/* Focus: 対象セルが浮き上がって前面へ */
+.cpc.pulse { animation: cpPulse 2.4s ease infinite; z-index: 2; }
+@keyframes cpPulse {
+  0%, 100% { transform: none; border-color: var(--tin-line-strong); box-shadow: none; }
+  38%, 62% { transform: scale(1.06); border-color: var(--tin-cyan); box-shadow: 0 0 0 3px var(--tin-cyan-soft); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cp-scene *, .cp-scene { animation: none !important; }
+}
+
 /* Preferences/help use the same visual system even though legacy inline styles remain. */
 #tin-prefs-backdrop,
 #tin-hotkey-help {
@@ -717,3 +924,176 @@ body[data-theme="light"] #tin-hotkey-help { background: rgba(224, 230, 235, .72)
   #titlebar-controls .grid-opt:not(.grid-size-cycle) { display: none !important; }
   #title { max-width: 88px; }
 }
+
+/* ── ダーク視認性の穴埋め (2026-08-27) ──
+   workspace.html のインライン CSS はライト前提の固定色 (rgba(0,0,0,…) 等) で書かれており、
+   この theme css がトークンで被せる構成。base セレクタだけ被せて :hover / .active の
+   派生を取りこぼしていた箇所があり、ダークでは前景が地に沈んで見えなくなっていた
+   (実測コントラスト 1.0〜1.2:1)。派生状態までトークン化して塞ぐ。
+   ここに足すときは「ライトでも意味が壊れないトークン」を選ぶこと (var() は両テーマで解決する)。 */
+
+/* グリッドサイズ / レイアウトのポップアップ — 選ぼうとした瞬間に消えるのが最も困る */
+.grid-size-item:hover { color: var(--tin-text) !important; background: var(--tin-surface-hover) !important; }
+.grid-size-item.active { color: var(--tin-cyan) !important; background: var(--tin-cyan-soft) !important; }
+.glp-cell.merged:hover { background: rgba(var(--tin-cyan-rgb), .22) !important; }
+.glp-cell.selected-merged { color: var(--tin-amber) !important; }
+.glp-btn.danger { color: var(--tin-red) !important; }
+.glp-btn.secondary:hover { background: var(--tin-surface-hover) !important; }
+.glp-btn.primary:hover { background: var(--tin-cyan) !important; filter: brightness(1.1); }
+.grid-size-custom-btn:hover { filter: brightness(1.1); }
+
+/* タイトルバーのツール列 */
+.grid-opt.active { color: var(--tin-cyan) !important; background: var(--tin-cyan-soft) !important; }
+#collapse-btn { color: var(--tin-text-3) !important; }
+#collapse-btn:hover { color: var(--tin-text) !important; background: var(--tin-surface-hover) !important; }
+#win-controls .wc { color: var(--tin-text-3) !important; }
+#win-controls .wc:hover { color: var(--tin-text) !important; background: var(--tin-surface-hover) !important; }
+#win-controls .wc.wc-close:hover { color: #fff !important; }
+/* 掴み代のドット地 — 固定の紺色では黒地に沈む */
+.titlebar-grab::before {
+  background-image: radial-gradient(circle, currentColor 1px, transparent 1.3px) !important;
+  color: var(--tin-text-3);
+}
+
+/* ドロワー: グリッドプレビュー / 一覧 / バッジ */
+#status { color: var(--tin-text-3) !important; }
+#drawer-grid-preview .dgp-label { color: var(--tin-text-3) !important; }
+.dgp-cell { color: var(--tin-text-3) !important; }
+.dgp-cell.occupied { color: var(--tin-cyan) !important; }
+.grid-dot:hover { color: var(--tin-text) !important; background: var(--tin-surface-hover) !important; }
+.card-close { color: var(--tin-text-3) !important; }
+.card-close:hover { color: var(--tin-red) !important; }
+.add-btn.grid-add { color: var(--tin-text-3) !important; }
+.add-btn.grid-add:hover { color: var(--tin-text) !important; background: var(--tin-surface-hover) !important; }
+.section-title-clickable:hover { color: var(--tin-text-2) !important; }
+.memo-preview-empty { color: var(--tin-text-3) !important; }
+.avail-tab .tab-ai:hover { color: var(--tin-text) !important; background: var(--tin-surface-hover) !important; }
+
+/* 種別バッジ / 行アイコン — 濃い原色はダーク地で沈むのでテーマの発色を使う */
+.badge-grid,
+.badge-tin { color: var(--tin-violet) !important; background: rgba(167, 156, 255, .13) !important; }
+.badge-ext,
+.badge-term { color: var(--tin-cyan) !important; background: var(--tin-cyan-soft) !important; }
+.badge-app { color: var(--tin-green) !important; background: rgba(124, 225, 174, .12) !important; }
+.snapped-badge { color: var(--tin-cyan) !important; background: var(--tin-cyan-soft) !important; }
+.ws-badge { color: var(--tin-amber) !important; background: rgba(242, 198, 109, .13) !important; }
+.row.term .row-icon { color: var(--tin-cyan) !important; background: var(--tin-cyan-soft) !important; }
+.row.tin .row-icon { color: var(--tin-violet) !important; background: rgba(167, 156, 255, .13) !important; }
+.avail-tab.term.active { color: var(--tin-cyan) !important; }
+.avail-tab.tin.active { color: var(--tin-violet) !important; }
+.avail-tab.apps.active { color: var(--tin-green) !important; }
+.avail-tab.term.active .tab-count { color: var(--tin-cyan) !important; background: var(--tin-cyan-soft) !important; }
+.avail-tab.tin.active .tab-count { color: var(--tin-violet) !important; background: rgba(167, 156, 255, .13) !important; }
+.avail-tab.apps.active .tab-count { color: var(--tin-green) !important; background: rgba(124, 225, 174, .12) !important; }
+
+/* スナップ / 解除ボタン */
+.ext-btn.snap { color: var(--tin-cyan) !important; background: var(--tin-cyan-soft) !important; }
+.ext-btn.snap:hover { color: var(--tin-cyan) !important; background: rgba(var(--tin-cyan-rgb), .2) !important; filter: brightness(1.15); }
+.ext-btn.release,
+.release-all-btn { color: var(--tin-red) !important; background: rgba(255, 129, 142, .1) !important; }
+.ext-btn.release:hover,
+.release-all-btn:hover { background: rgba(255, 129, 142, .18) !important; }
+
+/* ── グリッドポップアップのボタンが地に溶ける問題 (2026-08-27) ──
+   .glp-size-item / .glp-preset-btn / .grid-size-item は background:var(--tin-field)(#090d13) で、
+   ポップアップ地の var(--tin-surface)(#0d121a) とほぼ同値。さらに枠が inline CSS で
+   transparent 指定のため、ダークでは「ボタンの形が全く見えない」状態だった
+   (地との実測コントラスト 約1.1:1)。地より一段明るい面 + 実線の枠で輪郭を立てる。 */
+.glp-size-item,
+.glp-preset-btn,
+.grid-size-item {
+  background: var(--tin-ctl-face) !important;
+  border: 1.5px solid var(--tin-ctl-line) !important;
+}
+.glp-size-item:hover,
+.glp-preset-btn:hover,
+.grid-size-item:hover {
+  background: var(--tin-surface-hover) !important;
+  border-color: var(--tin-line-strong) !important;
+}
+.glp-size-item.active,
+.glp-preset-btn.active,
+.grid-size-item.active {
+  background: var(--tin-cyan-soft) !important;
+  border-color: rgba(var(--tin-cyan-rgb), .55) !important;
+}
+/* ミニグリッド図とラベルは選択時だけアクセント、通常時は本文色寄りで読ませる */
+.glp-size-item svg,
+.glp-preset-btn svg,
+.grid-size-item svg { color: var(--tin-text-2); }
+.glp-size-item.active svg,
+.glp-preset-btn.active svg,
+.grid-size-item.active svg { color: var(--tin-cyan); }
+.glp-size-item span,
+.glp-preset-btn span { color: var(--tin-text-2) !important; }
+
+/* フッターのボタン列 — 枠が無いと押せる場所が分からない */
+.glp-btn { border: 1px solid var(--tin-ctl-line) !important; background: var(--tin-ctl-face) !important; }
+.glp-btn.primary { border-color: var(--tin-cyan) !important; }
+.glp-btn.danger { background: rgba(255, 129, 142, .12) !important; border-color: rgba(255, 129, 142, .62) !important; }
+.glp-btn.danger:hover { background: rgba(255, 129, 142, .2) !important; }
+.grid-size-custom-btn { border: 1px solid var(--tin-cyan) !important; }
+/* 入力欄のフォーカス枠もテーマ発色に揃える */
+.glp-custom-row input:focus,
+.grid-size-custom-row input:focus { border-color: var(--tin-cyan) !important; }
+.glp-cell.selected-merged { background: rgba(242, 198, 109, .16) !important; border-color: rgba(242, 198, 109, .6) !important; }
+.glp-cell.merged:hover { border-color: rgba(var(--tin-cyan-rgb), .8) !important; }
+
+/* ── グリッドポップアップの Custom 行 (2026-08-27) ──
+   Custom ラベル・数値入力・×・▲▼ステッパー・区切り線は JS の inline style で
+   rgba(0,0,0,…) 固定だった。inline はテーマ CSS より優先されるため、ダークでは
+   文字も枠も地に沈んで「行ごと消える」状態だった。inline を外してここで定義する。
+   → サイズ・余白もここが唯一の定義なので削らないこと (消すとレイアウトが崩れる)。 */
+.glp-custom-label {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--tin-text-2);
+}
+.glp-custom-x {
+  font-size: 11px;
+  color: var(--tin-text-3);
+}
+.glp-custom-input {
+  width: 34px;
+  padding: 2px 3px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--tin-text) !important;
+  background: var(--tin-field) !important;
+  border: 1px solid var(--tin-ctl-line) !important;
+  border-radius: 3px;
+}
+.glp-custom-input:focus {
+  outline: none;
+  border-color: var(--tin-cyan) !important;
+}
+.glp-stepper-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 12px;
+  flex: none;
+  padding: 0;
+  font-size: 8px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--tin-text-2) !important;
+  background: var(--tin-ctl-face) !important;
+  border: 1px solid var(--tin-ctl-line) !important;
+  border-radius: 3px;
+}
+.glp-stepper-btn:hover {
+  color: var(--tin-text) !important;
+  background: var(--tin-surface-hover) !important;
+  border-color: var(--tin-cyan) !important;
+}
+.glp-sep {
+  margin: 2px 0;
+  border-top: 1px solid var(--tin-ctl-line);
+}
+
+/* プレビューのセルも同じ輪郭基準に揃える (1.8:1 では格子が読めない) */
+.glp-cell { border: 1px solid var(--tin-ctl-line) !important; }
+.glp-grid,
+.glp-size-preview { border: 1px solid var(--tin-line-strong) !important; }
