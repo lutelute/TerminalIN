@@ -4725,7 +4725,8 @@ app.whenReady().then(async () => {
     createWorkspace();
   }
 
-  // Windows 自動アップデート開始 (status はフォーカス窓 → 無ければ先頭 workspace 窓へ送る)
+  // 自動アップデート開始 (Windows=electron-updater / mac=ditto+xattr。
+  //  status はフォーカス窓 → 無ければ先頭 workspace 窓へ送る)
   initAutoUpdate(() => {
     const f = BrowserWindow.getFocusedWindow();
     if (f && !f.isDestroyed()) return f;

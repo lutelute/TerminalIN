@@ -2501,7 +2501,9 @@ function showToast(msg, kind = 'info') {
     now.style.cssText = 'background:#2563eb;color:#fff;border:0;border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;';
     now.onclick = () => { try { ipcRenderer.invoke('update-install-now'); } catch {} };
     const later = document.createElement('button');
-    later.textContent = '終了時に';
+    // Windows は autoInstallOnAppQuit で終了時に入る。mac は「今すぐ再起動」を押した
+    // ときだけ差し替えるので、閉じても入らない — 文言を分ける。
+    later.textContent = process.platform === 'darwin' ? 'あとで' : '終了時に';
     later.style.cssText = 'background:transparent;color:#aaa;border:0;padding:5px 6px;font-size:12px;cursor:pointer;';
     later.onclick = () => { if (banner) { banner.remove(); banner = null; } };
     banner.append(label, now, later);
