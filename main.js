@@ -1874,6 +1874,23 @@ ipcMain.handle('get-snapped-externals', (event) => {
   return Object.fromEntries([...ws.snappedExternals.entries()].map(([k, v]) => [k, v.slot]));
 });
 
+// 設定画面の「バージョン情報」用。app.getVersion() は main にしか無いので橋渡しする。
+ipcMain.handle('get-app-version', () => app.getVersion());
+
+// 設定画面のリンク (GitHub / リリース) を既定ブラウザで開く。
+// renderer は信頼できるが、スキームだけは絞っておく (file:// 等を開かせない)。
+ipcMain.handle('open-external', (_event, { url }) => {
+  try {
+    const u = new URL(String(url));
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return { ok: false };
+    shell.openExternal(u.toString());
+    return { ok: true };
+  } catch (e) {
+    console.warn('[tin] open-external failed:', e && e.message);
+    return { ok: false };
+  }
+});
+
 // ── フローティング Snap Info パネル ──
 // 設定画面の「Snap Info をフローティング表示」から開く always-on-top の小窓。
 // データは snap-info.html 側が 'snap-info-data' を定期 invoke する poll 方式。

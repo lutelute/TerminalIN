@@ -2224,6 +2224,22 @@ async function openPreferences() {
         全 Workspace のスナップ状態を常時表示する小窓を開きます (最前面固定・クリックで前面化)。
       </div>
     </div>
+    <div style="border-top:1px solid rgba(0,0,0,0.08);margin:0 -4px 12px;padding-top:12px;">
+      <!-- 色はインラインで持たせない。.tin-modal-panel の配色はテーマ CSS が !important で
+           決めており、ここに rgba(0,0,0,..) を書くとダークで沈む (既知の罠)。
+           見出しは Appearance と同じ .pref-section-label、他は --tin-* 変数を使う。 -->
+      <div class="pref-section-label">バージョン情報</div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0;">
+        <span style="font-size:13px;">TiN <span id="pref-version">…</span></span>
+        <button id="pref-check-update" style="padding:4px 10px;cursor:pointer;font-size:12px;">更新を確認</button>
+      </div>
+      <div id="pref-update-status" style="font-size:11px;color:var(--tin-text-3);line-height:1.5;margin-bottom:8px;min-height:1em;"></div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;">
+        <a href="#" id="pref-help-link" style="color:var(--tin-cyan);text-decoration:none;">ヘルプ / ショートカット</a>
+        <a href="#" id="pref-github-link" style="color:var(--tin-cyan);text-decoration:none;">GitHub</a>
+        <a href="#" id="pref-releases-link" style="color:var(--tin-cyan);text-decoration:none;">リリース</a>
+      </div>
+    </div>
     <div style="border-top:1px solid rgba(0,0,0,0.08);margin:0 -4px 14px;padding-top:12px;">
       <div style="font-weight:600;font-size:12px;color:rgba(0,0,0,0.5);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">
         Developer
@@ -2311,7 +2327,42 @@ async function openPreferences() {
     hkRows.appendChild(makeHotkeyField(`pref-hk-${key}`, hk[key]));
   }
 
-  const closePrefs = () => { backdrop.remove(); notifyOverlay(false); };
+  const closePrefs = () => { _updStatusSink = null; backdrop.remove(); notifyOverlay(false); };
+
+  // ── バージョン情報セクション ──
+  const REPO_URL = 'https://github.com/lutelute/TerminalIN';
+  const updStatusEl = panel.querySelector('#pref-update-status');
+  const setUpdText = (t) => { if (updStatusEl) updStatusEl.textContent = t; };
+
+  ipcRenderer.invoke('get-app-version')
+    .then(v => { const el = panel.querySelector('#pref-version'); if (el) el.textContent = 'v' + v; })
+    .catch(() => { const el = panel.querySelector('#pref-version'); if (el) el.textContent = '(不明)'; });
+
+  // 更新の進捗は main の 'update-status' が唯一の情報源。設定が開いている間だけ受ける。
+  _updStatusSink = (st) => {
+    if (st.state === 'checking') setUpdText('確認中…');
+    else if (st.state === 'none') setUpdText('最新です');
+    else if (st.state === 'available') setUpdText(`新しいバージョン v${st.version || ''} をダウンロードしています…`);
+    else if (st.state === 'downloading') setUpdText(`ダウンロード中… ${st.percent ?? 0}%`);
+    else if (st.state === 'downloaded') setUpdText(`v${st.version || ''} の準備ができました。右下の通知から再起動できます。`);
+    else if (st.state === 'error') setUpdText(`更新の確認に失敗しました: ${st.message || ''}`);
+  };
+
+  panel.querySelector('#pref-check-update').onclick = async () => {
+    setUpdText('確認中…');
+    try {
+      await ipcRenderer.invoke('update-check-now');
+    } catch {
+      // update-check-now はパッケージ版でしか登録されない (lib/updater.js が dev では
+      // 何もせず return する)。ハンドラ不在は失敗ではないので、そう言う。
+      setUpdText('開発モードでは自動更新は動きません（リリース版で有効）。');
+    }
+  };
+
+  panel.querySelector('#pref-help-link').onclick = (e) => { e.preventDefault(); closePrefs(); showHotkeyHelp(); };
+  panel.querySelector('#pref-github-link').onclick = (e) => { e.preventDefault(); ipcRenderer.invoke('open-external', { url: REPO_URL }); };
+  panel.querySelector('#pref-releases-link').onclick = (e) => { e.preventDefault(); ipcRenderer.invoke('open-external', { url: REPO_URL + '/releases' }); };
+
   panel.querySelector('#pref-cancel').onclick = closePrefs;
   panel.querySelector('#pref-save').onclick = async () => {
     const [c, r] = panel.querySelector('#pref-grid').value.split(',').map(Number);
@@ -2493,6 +2544,10 @@ function showToast(msg, kind = 'info') {
 // ── 自動アップデート通知 (Windows) ──
 // main の lib/updater.js から 'update-status' を受け、ダウンロード中はさりげなく、
 // ダウンロード完了時は「今すぐ再起動して更新」ボタン付きのバナーを出す。
+// 設定画面の「バージョン情報」が開いている間だけ update-status を受け取るための差込口。
+// 設定を閉じたら null に戻す (パネルの DOM を掴み続けないため)。
+let _updStatusSink = null;
+
 (function setupUpdateUI() {
   let banner = null;
   const showBanner = (version) => {
@@ -2533,6 +2588,8 @@ function showToast(msg, kind = 'info') {
     };
     ipcRenderer.on('update-status', (_e, s) => {
       if (!s) return;
+      // 設定画面が開いていればそちらにも同じ状態を流す (購読者が居なければ何もしない)
+      if (typeof _updStatusSink === 'function') { try { _updStatusSink(s); } catch {} }
       if (s.state === 'available') setUpdChip(`更新 v${s.version || ''} をダウンロード中…`);
       else if (s.state === 'downloading') { if (typeof s.percent === 'number') setUpdChip(`更新をダウンロード中… ${s.percent}%`); }
       else if (s.state === 'downloaded') { setUpdChip(null); showBanner(s.version); }
