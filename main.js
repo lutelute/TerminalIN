@@ -467,10 +467,10 @@ const WORKSPACES_FORMAT_VERSION = 1;
 // 保存済みセッションが古すぎる場合は復元しない閾値 (24時間)
 const WORKSPACES_STALE_MS = 24 * 60 * 60 * 1000;
 // Groupy コンテナモード定数
-const TITLEBAR_H = 36;        // TiN ヘッダー高さ (hiddenInset 1行 — workspace.html #titlebar と一致させる)
+const TITLEBAR_H = 46;        // TiN ヘッダー高さ (hiddenInset 1行 — workspace.html #titlebar と一致させる)
 const NATIVE_TITLEBAR_H = 28; // macOS ネイティブタイトルバー高さ (参考値)
 // 外部アプリは TiN ヘッダーの直下に配置 — タイトルバーを完全に表示する
-const GROUPY_Y_OFFSET = TITLEBAR_H; // 68px: 外部アプリは TiN ヘッダーの下から
+const GROUPY_Y_OFFSET = TITLEBAR_H; // 外部アプリは TiN ヘッダーの下から (高さに追従)
 // 旧レイアウト定数 (後方互換)
 const DEFAULT_SIDEBAR_W = 280;
 const SIDEBAR_DIVIDER_W = 6;
@@ -664,6 +664,7 @@ async function writeWorkspacesJson() {
       gridTerminals,
       spaceId: ws._tinSpaceId || 0,
       memo: ws.memo || '',
+      theme: ws.theme || null,   // workspace 個別のテーマ上書き (null=全体設定に従う)
     });
   }
   await atomicWriteJSON(WORKSPACES_JSON, payload);
@@ -1813,6 +1814,21 @@ ipcMain.handle('focus-grid-terminal', (event, { slot }) => {
   return { ok: false };
 });
 
+// ── IPC: 吸われたグリッドクリックの救済用 — スクリーン座標 → slot 解決 ──
+// clickthrough ON が mousemove/ポーリングの後追いで間に合わず、クリックが TiN 側に
+// 落ちたとき、renderer がその座標を送って「本来当たるはずだった slot」を特定する。
+// slot 配置の正は main (getSlotBounds) にしかないため、幾何判定だけここで行い、
+// 選択そのものは renderer がタブクリックと同じ経路 (switchToTab) で行う。
+ipcMain.handle('resolve-grid-slot', (event, { x, y }) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws || ws._editMode || ws._hasOverlay) return { slot: -1 };
+  for (const id of validSlotIdSet(ws)) {
+    const b = getSlotBounds(ws, id);
+    if (b && x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height) return { slot: id };
+  }
+  return { slot: -1 };
+});
+
 // ── IPC: wobble (ジグザグに揺らして場所を示す) + raise ──
 // 「クリックしたカードがどのウィンドウか視覚的に示す」ための軽量アニメ。
 // raise で最前面化した上で、左右+上+元位置の 3-pulse で視認性を高める。
@@ -2079,16 +2095,49 @@ ipcMain.on('set-active-tab-hotkey', (ws, slot) => {
 
 // Settings IPC
 ipcMain.handle('get-settings', () => ({ ...appSettings }));
+// 全体デフォルトのテーマを変える。個別に上書きしている workspace は追従させない
+// (そこはユーザーが意図的にその workspace だけ別テーマにしている)。
 function setAppTheme(requestedTheme) {
   const theme = requestedTheme === 'light' ? 'light' : 'dark';
   appSettings.theme = theme;
   saveSettings();
   for (const [, ws] of workspaces) {
+    if (ws.theme) continue;  // 個別上書きあり → 全体変更では動かさない
     if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('theme-changed', theme);
   }
   return theme;
 }
-ipcMain.handle('set-theme', (_event, requestedTheme) => ({ ok: true, theme: setAppTheme(requestedTheme) }));
+// workspace の実効テーマ (個別上書き > 全体設定)
+function effectiveTheme(ws) {
+  return (ws && ws.theme) ? ws.theme : (appSettings.theme === 'light' ? 'light' : 'dark');
+}
+// タイトルバーのスイッチ / ⌘K からの切り替え = 呼び出した workspace だけを変える。
+// scope:'global' を渡すと従来どおり全体デフォルトを変える (Preferences 用)。
+ipcMain.handle('set-theme', (event, requestedTheme, opts) => {
+  const theme = requestedTheme === 'light' ? 'light' : 'dark';
+  if (opts && opts.scope === 'global') return { ok: true, theme: setAppTheme(theme), scope: 'global' };
+  const ws = findWorkspace(event.sender);
+  if (!ws) return { ok: true, theme: setAppTheme(theme), scope: 'global' };
+  ws.theme = theme;
+  scheduleSaveWorkspaces();
+  if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('theme-changed', theme);
+  return { ok: true, theme, scope: 'workspace' };
+});
+// この workspace の個別上書きを外して全体設定に戻す
+ipcMain.handle('reset-workspace-theme', (event) => {
+  const ws = findWorkspace(event.sender);
+  if (!ws) return { ok: false };
+  ws.theme = null;
+  scheduleSaveWorkspaces();
+  const theme = effectiveTheme(ws);
+  if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('theme-changed', theme);
+  return { ok: true, theme };
+});
+// renderer 起動時: 全体設定ではなく「この workspace の実効テーマ」を返す
+ipcMain.handle('get-workspace-theme', (event) => {
+  const ws = findWorkspace(event.sender);
+  return { theme: effectiveTheme(ws), overridden: !!(ws && ws.theme) };
+});
 ipcMain.handle('save-settings', (_event, newSettings) => {
   const prev = { ...appSettings };
   appSettings = { ...DEFAULT_SETTINGS, ...(newSettings || {}),
@@ -2097,6 +2146,7 @@ ipcMain.handle('save-settings', (_event, newSettings) => {
   saveSettings();
   if (appSettings.theme !== prev.theme) {
     for (const [, ws] of workspaces) {
+      if (ws.theme) continue;  // 個別上書きのある workspace は全体変更に追従させない
       if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('theme-changed', appSettings.theme);
     }
   }
@@ -2709,7 +2759,7 @@ function createWorkspace(name, savedState) {
     x: winX,
     y: winY,
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 12, y: 12 },  // 36px バーの垂直センター (macOS)
+    trafficLightPosition: { x: 12, y: 17 },  // 46px バーの垂直センター (macOS)
     autoHideMenuBar: IS_WIN,  // Windows: 冗長なメニューバーを隠す (Alt で表示・アクセラレータは維持)
     transparent: true,        // グリッドパネル部分を透過させスナップウィンドウを表示
     backgroundColor: '#00000000',
@@ -2965,6 +3015,11 @@ function createWorkspace(name, savedState) {
   ws._lastPollIdentity = '';  // fast-path: skip IPC when nothing changed
   ws.viewMode = 'grid';       // 'grid' | 'tab' — Groupy 表示モード
   ws.activeTabSlot = 0;       // Tab モードでアクティブなスロット番号
+  // テーマは workspace ごとに上書きできる ('dark' | 'light' | null=全体設定に従う)。
+  // タイトルバーのスイッチはこの workspace だけを変え、Preferences の外観設定は
+  // 「上書きしていない workspace」だけに効く全体デフォルトとして残す。
+  ws.theme = (savedState && (savedState.theme === 'dark' || savedState.theme === 'light'))
+    ? savedState.theme : null;
   // Poll external windows
   // pollTimer: デフォルト 1500ms。listWindows (CGWindowList, ~1ms) なので短縮しても CPU 負荷は低い。
   // snap/unsnap の即時操作には影響しない。snapped の grace period は 3 回 miss = ~4.5s。
@@ -3209,14 +3264,24 @@ function createWorkspace(name, savedState) {
     // 変わっても poll が「変化なし」で IPC をスキップしてマークが更新されない問題を防ぐ。
     const _scale = IS_WIN ? (screen.getPrimaryDisplay().scaleFactor || 1) : 1;
     const minConstrainedMap = new Map();
+    const moveDeniedMap = new Map();
     let _constrainedKey = '';
     if (IS_WIN) {
+      // win-helper が SetWindowPos 実測で検出した issue (#43): clamped / denied
+      const _issues = new Map();
+      if (axHelper && axHelper.getMoveIssues) {
+        try { for (const i of axHelper.getMoveIssues()) _issues.set(i.windowNumber, i); } catch {}
+      }
       for (const [wn, info] of ws.snappedExternals) {
         const sb = getSlotBounds(ws, info.slot);
         const live = windowsAll.find(w => w.windowNumber === wn);
-        const c = !!(sb && live && live.width > sb.width * _scale + 24);
+        const issue = _issues.get(wn);
+        const c = !!(sb && live && live.width > sb.width * _scale + 24) || (issue && issue.code === 'clamped');
+        const d = !!(issue && issue.code === 'denied');
         minConstrainedMap.set(wn, c);
+        moveDeniedMap.set(wn, d);
         if (c) _constrainedKey += wn + ',';
+        if (d) _constrainedKey += '!' + wn + ',';
       }
     }
     let identity = '';
@@ -3255,7 +3320,8 @@ function createWorkspace(name, savedState) {
     const snappedList = []; // renderer の snappedExternals を authoritative に同期するため
     for (const [wn, info] of ws.snappedExternals) {
       if (typeof info.slot === 'number') snappedSlots[wn] = info.slot;
-      snappedList.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot, minConstrained: minConstrainedMap.get(wn) || false });
+      snappedList.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot,
+        minConstrained: minConstrainedMap.get(wn) || false, moveDenied: moveDeniedMap.get(wn) || false });
     }
     // 最前面 window (focused slot ハイライト用) — _frontmostInterval (500ms) のキャッシュを流用
     ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots, snappedSlots, _lastFrontmost, snappedList);
@@ -3314,7 +3380,9 @@ function createWorkspace(name, savedState) {
                     && cursor.y >= b.y && cursor.y <= b.y + b.height;
       if (!inWindow) {
         _setCT(false);
-        ws._ctGuardTimer = setTimeout(_ctGuardLoop, 800);
+        // 800ms だと再入直後のクリックが CT OFF のまま TiN に吸われる猶予が長すぎる。
+        // getCursorScreenPoint は軽いので 120ms で回して再入を素早く拾う。
+        ws._ctGuardTimer = setTimeout(_ctGuardLoop, 120);
         return;
       }
       // ヘッダー → OFF (操作可能)、グリッドエリア → ON (背後/grid端末へ透過)。
@@ -4297,12 +4365,33 @@ app.whenReady().then(async () => {
   // Windows: Win32 は物理ピクセル、Electron screen API は DIP を返すため
   // win-helper に DPI スケールを注入して SetWindowPos 時に変換する。
   if (IS_WIN && axHelper && axHelper.setDpiScale) {
-    try {
-      axHelper.setDpiScale(screen.getPrimaryDisplay().scaleFactor || 1);
-      screen.on('display-metrics-changed', () => {
-        try { axHelper.setDpiScale(screen.getPrimaryDisplay().scaleFactor || 1); } catch {}
-      });
-    } catch {}
+    const pushDpi = () => {
+      try {
+        axHelper.setDpiScale(screen.getPrimaryDisplay().scaleFactor || 1);
+        // Per-monitor DPI (#43-4): display.nativeOrigin (物理px 原点) が使える環境では
+        // モニタ表を渡してモニタ別スケールで変換する。nativeOrigin 未サポート環境は
+        // 全モニタ (0,0) が返り得るため、「DIP 原点と物理原点のゼロ/非ゼロが一致するか」で
+        // 健全性を確認し、食い違えば null (従来の primary スケール) にフォールバック。
+        if (axHelper.setDisplayMap) {
+          const ds = screen.getAllDisplays();
+          const sane = ds.length > 0 && ds.every(d => {
+            const no = d.nativeOrigin;
+            if (!no || !Number.isFinite(no.x) || !Number.isFinite(no.y)) return false;
+            const dipZero = d.bounds.x === 0 && d.bounds.y === 0;
+            const physZero = no.x === 0 && no.y === 0;
+            return dipZero === physZero;
+          });
+          axHelper.setDisplayMap(sane ? ds.map(d => ({
+            dipX: d.bounds.x, dipY: d.bounds.y, dipW: d.bounds.width, dipH: d.bounds.height,
+            physX: d.nativeOrigin.x, physY: d.nativeOrigin.y, scale: d.scaleFactor || 1,
+          })) : null);
+        }
+      } catch {}
+    };
+    pushDpi();
+    screen.on('display-metrics-changed', pushDpi);
+    screen.on('display-added', pushDpi);
+    screen.on('display-removed', pushDpi);
   }
   writeInfoJson();
   // NOTE: ここで writeSnappedJson() を呼んではいけない。
@@ -4625,6 +4714,7 @@ function writeWorkspacesJsonSync() {
       gridTerminals,
       spaceId: ws._tinSpaceId || 0,
       memo: ws.memo || '',
+      theme: ws.theme || null,   // workspace 個別のテーマ上書き (null=全体設定に従う)
     });
   }
   atomicWriteJSONSync(WORKSPACES_JSON, payload);

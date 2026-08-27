@@ -12,7 +12,7 @@
 const koffi = require('koffi');
 const fs = require('fs');
 const path = require('path');
-const { computeWinBounds } = require('./lib/win-geom');
+const { computeWinBoundsMulti, assessMoveResult, recenterClamped } = require('./lib/win-geom');
 
 const user32 = koffi.load('user32.dll');
 const kernel32 = koffi.load('kernel32.dll');
@@ -85,6 +85,7 @@ const SendMessageW = user32.func('intptr_t SendMessageW(uintptr_t hWnd, uint32 M
 
 // ── kernel32 ──
 const GetCurrentThreadId = kernel32.func('uint32 GetCurrentThreadId()');
+const GetLastError = kernel32.func('uint32 GetLastError()');
 const OpenProcess = kernel32.func('uintptr_t OpenProcess(uint32 dwDesiredAccess, bool bInheritHandle, uint32 dwProcessId)');
 const CloseHandle = kernel32.func('bool CloseHandle(uintptr_t hObject)');
 const QueryFullProcessImageNameW = kernel32.func('bool QueryFullProcessImageNameW(uintptr_t hProcess, uint32 dwFlags, _Out_ uint16_t* lpExeName, _Inout_ uint32* lpdwSize)');
@@ -144,6 +145,11 @@ const HT_EDGE = { n: 12, s: 15, e: 11, w: 10, ne: 14, nw: 13, se: 17, sw: 16 };
 // DPI スケール (Electron 側から注入)。物理px = DIP * scale。
 let dpiScale = 1;
 function setDpiScale(s) { if (s && s > 0) dpiScale = s; }
+
+// Per-monitor DPI (issue #43-4): main.js が display.nativeOrigin から組んだモニタ表。
+// [{ dipX, dipY, dipW, dipH, physX, physY, scale }]。null なら従来の dpiScale 単一変換。
+let displayMap = null;
+function setDisplayMap(list) { displayMap = (Array.isArray(list) && list.length) ? list : null; }
 
 // pid → {name, path} のキャッシュ (pid は安定)
 const procInfoCache = new Map();
@@ -271,6 +277,29 @@ function listWindowsAllSpaces() {
   return enumerate(true);
 }
 
+// ── 移動結果の記録 (issue #43): クランプ / UIPI 拒否 / 失敗を hwnd ごとに保持 ──
+// SetWindowPos は最小サイズ未満・昇格プロセス相手で silent に効かないため、
+// 実測で検出して main (poll → タブバッジ) と ログに見えるようにする。
+// ログは状態遷移時のみ (毎 retile で吐くとログが埋まる)。
+const moveIssues = new Map(); // hwnd -> { code: 'clamped'|'denied'|'failed', dw, dh }
+function _setMoveIssue(hWnd, issue) {
+  const prev = moveIssues.get(hWnd);
+  if (!issue) { if (prev) moveIssues.delete(hWnd); return; }
+  if (!prev || prev.code !== issue.code) {
+    console.warn(`[tin] win move ${issue.code}: hwnd=${hWnd}`
+      + (issue.code === 'clamped' ? ` over=+${issue.dw}x+${issue.dh}px (最小サイズ/セル量子化)` : '')
+      + (issue.code === 'denied' ? ' (access denied — 昇格プロセスの窓は非昇格 TiN から操作不可)' : ''));
+  }
+  moveIssues.set(hWnd, issue);
+}
+function getMoveIssues() {
+  // 閉じた窓 (HWND 再利用対策) の残骸はここで掃除する
+  for (const wn of [...moveIssues.keys()]) {
+    try { if (!IsWindow(wn)) moveIssues.delete(wn); } catch { moveIssues.delete(wn); }
+  }
+  return [...moveIssues.entries()].map(([wn, v]) => ({ windowNumber: wn, ...v }));
+}
+
 function moveWindows(cmds, positionOnly) {
   if (!Array.isArray(cmds)) return 0;
   let moved = 0;
@@ -284,11 +313,32 @@ function moveWindows(cmds, positionOnly) {
 
       // 透明な縁を補正して「見える窓の縁」が要求座標に揃うようにする。
       // 座標の算術は lib/win-geom.js に切り出してあり、mac 上でも DPI 200% を単体テストできる。
+      // displayMap があればモニタ別スケール (per-monitor DPI)、無ければ primary スケール。
       const b = frameBorder(hWnd);
-      const { x, y, cx, cy } = computeWinBounds(c, b, dpiScale, positionOnly);
+      const want = computeWinBoundsMulti(c, b, displayMap, dpiScale, positionOnly);
       let flags = SWP_NOZORDER | SWP_NOACTIVATE;
       if (positionOnly) flags |= SWP_NOSIZE;
-      if (SetWindowPos(hWnd, 0, x, y, cx, cy, flags)) moved++;
+      if (!SetWindowPos(hWnd, 0, want.x, want.y, want.cx, want.cy, flags)) {
+        const err = GetLastError();
+        _setMoveIssue(hWnd, { code: err === 5 ? 'denied' : 'failed', dw: 0, dh: 0 });
+        continue;
+      }
+      moved++;
+      if (positionOnly) continue;
+      // 実測でクランプ検出 (WM_GETMINMAXINFO の最小サイズ / 文字セル量子化)。
+      // 検出したら超過分を左右 (上下) 半々に振ってスロット中央へ寄せる —
+      // 右下に全部はみ出して隣スロットを覆うよりも視認性が良い。
+      const ar = {};
+      if (GetWindowRect(hWnd, ar)) {
+        const clamp = assessMoveResult(want, ar);
+        if (clamp) {
+          const rc = recenterClamped(want, ar);
+          SetWindowPos(hWnd, 0, rc.x, rc.y, 0, 0, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE);
+          _setMoveIssue(hWnd, { code: 'clamped', dw: clamp.dw, dh: clamp.dh });
+        } else {
+          _setMoveIssue(hWnd, null);
+        }
+      }
     } catch { /* ignore */ }
   }
   return moved;
@@ -415,9 +465,11 @@ function getWindowIdFromHandle(h) { return Number(h) || 0; }
 module.exports = {
   __backend: 'win32-koffi',
   setDpiScale,
+  setDisplayMap,
   listWindows,
   listWindowsAllSpaces,
   moveWindows,
+  getMoveIssues,
   raiseWindows,
   getFrontmostWindowNumber,
   getWindowNumbersByPid,

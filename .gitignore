@@ -11,3 +11,4 @@ logs/
 .claude/handover/
 .claude/scheduled_tasks.lock
 .tin-test-userdata-*
+.claude/worktrees/

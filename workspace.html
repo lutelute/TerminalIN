@@ -77,6 +77,33 @@
   .drawer-btn:hover { background: rgba(0,0,0,0.06); color: rgba(40,40,80,0.8); }
   body.drawer-open .drawer-btn { color: rgba(60,120,230,0.7); background: rgba(60,120,230,0.08); }
 
+  /* テーマ切替: スライドスイッチ (ノブが現テーマ側 — 左=白 / 右=黒) */
+  #theme-toggle-btn { width: 40px; }
+  #theme-toggle-btn .ts-track {
+    position: relative; box-sizing: border-box;
+    width: 34px; height: 18px; border-radius: 9px;
+    padding: 0 3px;
+    display: flex; align-items: center; justify-content: space-between;
+    background: rgba(125,135,150,0.30);
+    transition: background 0.15s;
+  }
+  #theme-toggle-btn .ts-track svg { width: 11px; height: 11px; opacity: 0.7; display: block; }
+  #theme-toggle-btn .ts-knob {
+    position: absolute; left: 2px; top: 2px;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+    transition: transform 0.18s ease;
+  }
+  #theme-toggle-btn.dark .ts-knob { transform: translateX(16px); }
+  #theme-toggle-btn.dark .ts-track { background: rgba(90,180,220,0.40); }
+  /* このワークスペースだけ個別のテーマを指定中 — ノブに印を付ける */
+  #theme-toggle-btn.overridden .ts-knob::after {
+    content: ''; position: absolute; left: 50%; top: 50%;
+    width: 4px; height: 4px; margin: -2px 0 0 -2px;
+    border-radius: 50%; background: rgba(60,140,190,0.85);
+  }
+
   /* ── コンテンツエリア (全幅、透明、外部アプリが透けて見える) ── */
   #grid-panel {
     flex: 1;
@@ -326,8 +353,9 @@
 
   /* ── Titlebar ── */
   /* 1行構成 (高さは main.js の TITLEBAR_H と一致させること) */
+  /* 高さは main.js TITLEBAR_H と一致させること (clickthrough のヘッダー保護判定に使う) */
   #titlebar {
-    height: 36px;
+    height: 46px;
     -webkit-app-region: drag;
     display: flex; align-items: center; gap: 4px;
     padding: 0 8px 0 72px;
@@ -382,6 +410,8 @@
     flex-shrink: 0; margin-left: 1px; font-size: 11px; font-weight: 700;
     color: #d9821f; cursor: help; line-height: 1;
   }
+  /* UIPI (昇格プロセス) で操作不可の窓 */
+  .groupy-tab .tab-denied { color: #d33; font-size: 10px; }
   /* タブ右クリックメニュー */
   #tab-ctx-menu {
     position: fixed; z-index: 99999;
@@ -466,24 +496,27 @@
      タブが増えると #titlebar-grid がタブで埋まり、掴める場所が「タブの上 12px」と
      traffic light の脇だけになって、窓を動かすのも (ダブルクリックで) 広げるのも
      できなくなっていた。ここは何があっても no-drag にしないこと。 */
-  #titlebar-drag {
+  .titlebar-grab {
     flex-shrink: 0; align-self: stretch;
-    min-width: 52px;
+    min-width: 96px;
     -webkit-app-region: drag;
     cursor: grab;
     display: flex; align-items: center; justify-content: center;
   }
+  /* 左上の掴み代: traffic light のすぐ隣。ボタンやタブで左側が詰まっても必ずここで掴める */
+  #titlebar-drag-left { min-width: 44px; }
   /* 掴める場所だと分かるようにドット地を敷く (見えない掴み代は無いのと同じ) */
-  #titlebar-drag::before {
+  .titlebar-grab::before {
     content: '';
-    width: 22px; height: 14px;
+    width: 56px; height: 16px;
     background-image: radial-gradient(circle, rgba(40,40,80,0.45) 1px, transparent 1.3px);
     background-size: 5px 5px;
     opacity: 0.5; transition: opacity 0.12s;
   }
-  #titlebar-drag:hover::before { opacity: 1; }
-  body.window-inactive #titlebar-drag::before { opacity: 0.28; }
-  body.collapsed #titlebar-drag { display: none; }
+  #titlebar-drag-left::before { width: 28px; }
+  .titlebar-grab:hover::before { opacity: 1; }
+  body.window-inactive .titlebar-grab::before { opacity: 0.28; }
+  body.collapsed .titlebar-grab { display: none; }
 
   /* 右端固定コントロール (+ / 🎨 / grid selector) — タブが増えてもスクロールで消えない。
      コンテナ自体は drag のままにして、実際に押せる子だけ no-drag にする。
@@ -513,7 +546,7 @@
   /* 掴み代とコントロール枠も同様。app-region:drag のままだと Chromium が pointer イベントを
      飲み込み、Windows では効かないネイティブドラッグに吸われて「押しても何も起きない帯」に
      なってしまう。no-drag に戻して setupWinDrag の pointer 追従へ渡す。 */
-  body.is-win #titlebar-drag,
+  body.is-win .titlebar-grab,
   body.is-win #titlebar-controls { -webkit-app-region: no-drag; }
   /* Windows: macOS の traffic light 用 72px 左ガターは不要。左端から詰めて
      右側のカスタム min/max/close (#win-controls) と合わせ native な配置にする。 */
@@ -1213,32 +1246,24 @@
   body.compact #status { padding: 4px 8px; font-size: 9px; }
   body.compact .term-embed { height: 150px; }
 
-  /* 復元バナー (再起動直後に表示) */
-  .restore-banner {
-    margin: 6px 8px 0; padding: 6px 8px;
-    font-size: 10px; line-height: 1.4;
-    border-radius: 5px;
-    background: rgba(60, 160, 90, 0.08);
-    border: 1px solid rgba(60, 160, 90, 0.25);
-    color: rgba(40, 120, 70, 0.9);
+  /* 復元結果ポップ (再起動直後に表示)。
+     旧実装は titlebar と content の間に差し込む常設バナーだったが、その帯はグリッド領域で
+     clickthrough ON のため × が押せず、content を押し下げて main のスロット座標ともずれる。
+     クリック不要・自動消滅のフロートポップ (pointer-events:none) にする。 */
+  .restore-pop {
+    position: fixed; top: 54px; left: 50%;
+    transform: translateX(-50%) translateY(-6px);
+    z-index: 10001; pointer-events: none; opacity: 0;
+    background: rgba(28,28,30,0.92); color: #fff;
+    padding: 8px 14px; border-radius: 8px;
+    font-size: 12px; font-weight: 600; line-height: 1.5;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    transition: opacity .14s ease, transform .18s ease;
   }
-  .restore-banner.has-missing {
-    background: rgba(210, 150, 40, 0.09);
-    border-color: rgba(210, 150, 40, 0.3);
-    color: rgba(170, 110, 30, 0.95);
-  }
-  .restore-banner .rb-header {
-    font-weight: 700; font-size: 10px;
-    display: flex; justify-content: space-between; align-items: center;
-  }
-  .restore-banner .rb-close {
-    cursor: pointer; padding: 0 4px; font-size: 12px;
-    color: rgba(0,0,0,0.3);
-  }
-  .restore-banner .rb-close:hover { color: rgba(0,0,0,0.7); }
-  .restore-banner ul { list-style: none; padding: 0; margin: 3px 0 0; }
-  .restore-banner li { font-size: 9px; padding: 1px 0; color: inherit; opacity: 0.85; }
-  body.compact .restore-banner { display: none; }
+  .restore-pop.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .restore-pop.has-missing { background: rgba(150,100,20,0.94); }
+  .restore-pop ul { list-style: none; padding: 0; margin: 4px 0 0; opacity: 0.85; font-weight: 400; }
+  .restore-pop li { font-size: 11px; padding: 1px 0; }
 
   /* ── Drawer グリッドプレビュー ── */
   #drawer-grid-preview {
@@ -1308,7 +1333,7 @@
       <strong id="drawer-workspace-name">TiN</strong>
     </div>
     <button class="chrome-btn" title="Drawerを閉じる" aria-label="Drawerを閉じる" onclick="toggleDrawer(false)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m6 6 12 12M18 6 6 18" stroke-linecap="round"/></svg>
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7.1 5.4 12 10.3l4.9-4.9 1.7 1.7L13.7 12l4.9 4.9-1.7 1.7L12 13.7l-4.9 4.9-1.7-1.7L10.3 12 5.4 7.1Z"/></svg>
     </button>
   </div>
   <div class="drawer-summary" id="drawer-summary">
@@ -1323,7 +1348,7 @@
 <div id="tin-command-backdrop" aria-hidden="true">
   <div class="command-panel" role="dialog" aria-modal="true" aria-label="TiN commands">
     <div class="command-search-wrap">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4" stroke-linecap="round"/></svg>
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Zm0 2.4a4.1 4.1 0 1 1 0 8.2 4.1 4.1 0 0 1 0-8.2Z"/><rect x="14.6" y="13.4" width="7" height="2.5" rx="1.25" transform="rotate(45 14.6 13.4)"/></svg>
       <input id="tin-command-search" type="text" placeholder="Search windows, workspaces, and actions…" autocomplete="off" spellcheck="false">
       <span class="command-esc">ESC</span>
     </div>
@@ -1334,34 +1359,35 @@
 
 <div id="sidebar">
   <div id="titlebar">
-    <!-- 1行構成: ☰ タイトル | タブ(スクロール) | コントロール(右端固定) ⊞ -->
+    <!-- 1行構成: (掴み代) ☰ タイトル | タブ(スクロール) | (掴み代) コントロール(右端固定) ⊞ -->
+    <div class="titlebar-grab" id="titlebar-drag-left" title="ドラッグでウィンドウを移動 / ダブルクリックで画面いっぱい"></div>
     <div class="drawer-btn" id="drawer-toggle-btn" title="Workspace inspector" onclick="toggleDrawer()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h6v6H4zm10 0h6v6h-6zM4 14h6v6H4zm10 0h6v6h-6z"/></svg>
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="3.5" y="4.5" width="6" height="15" rx="1.5"/><rect x="11.5" y="6" width="9" height="2" rx="1" opacity=".4"/><rect x="11.5" y="11" width="9" height="2" rx="1" opacity=".4"/><rect x="11.5" y="16" width="9" height="2" rx="1" opacity=".4"/></svg>
     </div>
     <span id="title">TiN</span>
     <input id="title-input" type="text" />
     <div id="titlebar-grid"></div>
     <!-- 常に残す掴み代。ドラッグでウィンドウ移動、ダブルクリックで最大化 -->
-    <div id="titlebar-drag" title="ドラッグでウィンドウを移動 / ダブルクリックで画面いっぱい"></div>
+    <div class="titlebar-grab" id="titlebar-drag" title="ドラッグでウィンドウを移動 / ダブルクリックで画面いっぱい"></div>
     <div id="titlebar-controls"></div>
     <button class="chrome-btn" id="command-btn" title="Commands (Cmd/Ctrl+K)" onclick="openCommandPalette()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4" stroke-linecap="round"/></svg><kbd>⌘K</kbd>
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Zm0 2.4a4.1 4.1 0 1 1 0 8.2 4.1 4.1 0 0 1 0-8.2Z"/><rect x="14.6" y="13.4" width="7" height="2.5" rx="1.25" transform="rotate(45 14.6 13.4)"/></svg><kbd>⌘K</kbd>
     </button>
     <div class="drawer-btn" id="theme-toggle-btn" title="白 / 黒テーマを切り替え" onclick="toggleTheme()"></div>
     <div class="drawer-btn" id="help-btn" title="ヘルプ / ショートカット / 問題を報告" onclick="showHotkeyHelp()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.4 2.4 0 1 1 3.2 2.27c-.7.3-1 .73-1 1.48V14m0 3h.01" stroke-linecap="round"/></svg>
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8.5" opacity=".35"/><g fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M9.9 9.4a2.3 2.3 0 1 1 3 2.2c-.6.25-.9.7-.9 1.4v.2M12 16.4h.01"/></g></svg>
     </div>
     <div class="drawer-btn" id="settings-btn" title="設定" onclick="openPreferences()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.45"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A8 8 0 0 0 15 6l-.3-2.6h-4L10.4 6a8 8 0 0 0-1.6 1L6.5 6 4.4 9.5l2 1.5a7 7 0 0 0 0 2l-2 1.5L6.5 18l2.3-1a8 8 0 0 0 1.6 1l.3 2.6h4L15 18a8 8 0 0 0 1.6-1l2.3 1 2.1-3.5-2-1.5a7 7 0 0 0 0-1Z" stroke-linejoin="round"/></svg>
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M9.81 4.83 10.48 2.42 13.52 2.42 14.19 4.83 15.52 5.38 17.7 4.15 19.85 6.3 18.62 8.48 19.17 9.81 21.58 10.48 21.58 13.52 19.17 14.19 18.62 15.52 19.85 17.7 17.7 19.85 15.52 18.62 14.19 19.17 13.52 21.58 10.48 21.58 9.81 19.17 8.48 18.62 6.3 19.85 4.15 17.7 5.38 15.52 4.83 14.19 2.42 13.52 2.42 10.48 4.83 9.81 5.38 8.48 4.15 6.3 6.3 4.15 8.48 5.38ZM15.3 12a3.3 3.3 0 1 0-6.6 0a3.3 3.3 0 1 0 6.6 0Z"/></svg>
     </div>
     <div id="view-mode-btn" class="drawer-btn" title="View — グリッド分割 / フルスクリーンタブ を切り替え" onclick="toggleViewMode()"></div>
     <!-- 画面いっぱい (zoom) — macOS の緑ボタンはフルスクリーンに入ってしまい、
          タイトルバーのダブルクリックは掴み代が細くて当てづらいので明示ボタンを置く。
          Windows は #win-controls に最大化があるので非表示。 -->
     <div id="maximize-btn" class="drawer-btn" title="画面いっぱいに広げる / 元に戻す (⌘⇧M)" onclick="winCtl('maximize')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path class="mx-out" d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/>
-        <path class="mx-in" d="M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5"/>
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path class="mx-out" d="M4.5 4.5H10v2.4H6.9V10H4.5ZM14 4.5h5.5V10h-2.4V6.9H14ZM4.5 14h2.4v3.1H10v2.4H4.5ZM17.1 14h2.4v5.5H14v-2.4h3.1Z"/>
+        <path class="mx-in" d="M10 10H4.5V7.6h3.1V4.5H10ZM14 10V4.5h2.4v3.1h3.1V10ZM10 14v5.5H7.6v-3.1H4.5V14ZM14 14h5.5v2.4h-3.1v3.1H14Z"/>
       </svg>
     </div>
     <div id="collapse-btn" title="Collapse sidebar (Cmd+B)" style="display:none">‹</div>
@@ -1402,32 +1428,37 @@ const { Terminal } = require('@xterm/xterm');
 const { FitAddon } = require('@xterm/addon-fit');
 
 // ── Crystalline icon + appearance system ──
+// アイコンは Solid Duotone (案C, 2026-08-27 選定): 塗りつぶし+opacity の副要素。
+// ラッパー iconSvg() が fill="currentColor" を与える。線が要る細部は要素側で stroke を明示する。
 const ICONS = {
-  search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4" stroke-linecap="round"/>',
-  sun: '<circle cx="12" cy="12" r="3.5"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" stroke-linecap="round"/>',
-  moon: '<path d="M19.2 15.2A7.8 7.8 0 0 1 8.8 4.8a7.9 7.9 0 1 0 10.4 10.4Z" stroke-linejoin="round"/>',
-  grid: '<path d="M4 4h6v6H4zm10 0h6v6h-6zM4 14h6v6H4zm10 0h6v6h-6z"/>',
-  tabs: '<path d="M3 6h18v13H3zM7 6V3h6v3" stroke-linejoin="round"/>',
-  terminal: '<path d="m5 7 5 5-5 5m8 0h6" stroke-linecap="round" stroke-linejoin="round"/>',
-  fill: '<path d="M4 5h7v6H4zm9 0h7v6h-7zM4 13h7v6H4zm9 0h7v6h-7z"/><path d="m6 7 2 1.5L6 10m9 5 2 1.5-2 1.5" stroke-linecap="round" stroke-linejoin="round"/>',
-  refresh: '<path d="M19 8a8 8 0 1 0 1 7m-1-7V3m0 5h-5" stroke-linecap="round" stroke-linejoin="round"/>',
-  edit: '<path d="m4 16-.5 4.5L8 20l11-11-4-4L4 16Zm9-9 4 4" stroke-linejoin="round"/>',
-  flipH: '<path d="M12 3v18M8 7 3 12l5 5m8-10 5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/>',
-  flipV: '<path d="M3 12h18M7 8l5-5 5 5M7 16l5 5 5-5" stroke-linecap="round" stroke-linejoin="round"/>',
-  space: '<path d="M5 12h14m-5-5 5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/>',
-  sparkle: '<path d="m12 3 1.2 4.2L17 9l-3.8 1.8L12 15l-1.2-4.2L7 9l3.8-1.8L12 3Zm6 11 .7 2.3L21 17l-2.3.7L18 20l-.7-2.3L15 17l2.3-.7L18 14Z" stroke-linejoin="round"/>',
-  settings: '<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.4 1A8 8 0 0 0 15 6l-.3-2.6h-4L10.4 6a8 8 0 0 0-1.6 1L6.5 6 4.4 9.5l2 1.5a7 7 0 0 0 0 2l-2 1.5L6.5 18l2.3-1a8 8 0 0 0 1.6 1l.3 2.6h4L15 18a8 8 0 0 0 1.6-1l2.3 1 2.1-3.5-2-1.5a7 7 0 0 0 0-1Z" stroke-linejoin="round"/>',
-  window: '<path d="M3 5h18v14H3zM3 9h18"/><circle cx="6" cy="7" r=".6" fill="currentColor" stroke="none"/><circle cx="8.5" cy="7" r=".6" fill="currentColor" stroke="none"/>',
-  drawer: '<path d="M4 4h16v16H4zm6 0v16"/>',
-  maximize: '<path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" stroke-linecap="round" stroke-linejoin="round"/>',
-  close: '<path d="m6 6 12 12M18 6 6 18" stroke-linecap="round"/>',
-  plus: '<path d="M12 5v14M5 12h14" stroke-linecap="round"/>',
+  search: '<path d="M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Zm0 2.4a4.1 4.1 0 1 1 0 8.2 4.1 4.1 0 0 1 0-8.2Z"/><rect x="14.6" y="13.4" width="7" height="2.5" rx="1.25" transform="rotate(45 14.6 13.4)"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".5"><path d="M12 3v1.8M12 19.2V21M3 12h1.8M19.2 12H21M5.6 5.6l1.3 1.3M17.1 17.1l1.3 1.3M18.4 5.6l-1.3 1.3M6.9 17.1l-1.3 1.3"/></g>',
+  moon: '<path d="M19.25 15.25A7.75 7.75 0 0 1 8.75 4.75a8 8 0 1 0 10.5 10.5Z"/>',
+  grid: '<rect x="4" y="4" width="7" height="7" rx="1.75"/><rect x="13" y="4" width="7" height="7" rx="1.75"/><rect x="4" y="13" width="7" height="7" rx="1.75"/><rect x="13" y="13" width="7" height="7" rx="1.75"/>',
+  tabs: '<rect x="4" y="8" width="16" height="11.5" rx="2" opacity=".4"/><rect x="8" y="4.5" width="8" height="6" rx="1.5"/>',
+  terminal: '<rect x="3.5" y="3.5" width="17" height="17" rx="3" opacity=".35"/><path d="M7.4 8.1 11.6 12l-4.2 3.9-1.5-1.6 2.5-2.3-2.5-2.3Z"/><rect x="12.6" y="14.6" width="4.8" height="1.9" rx=".95"/>',
+  fill: '<rect x="4" y="4" width="7" height="7" rx="1.75"/><rect x="13" y="4" width="7" height="7" rx="1.75" opacity=".3"/><rect x="4" y="13" width="7" height="7" rx="1.75" opacity=".3"/><rect x="13" y="13" width="7" height="7" rx="1.75" opacity=".3"/>',
+  refresh: '<g fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M19.5 9A7.9 7.9 0 1 0 20 14.5"/></g><path d="M20.7 3.6v5.8h-5.8Z"/>',
+  edit: '<path d="M4 20l1.1-4.6L15.6 4.9a2.1 2.1 0 0 1 3 0l.5.5a2.1 2.1 0 0 1 0 3L8.6 18.9 4 20Z"/>',
+  flipH: '<rect x="11.2" y="4" width="1.6" height="16" rx=".8" opacity=".45"/><path d="M8.5 7.5 4 12l4.5 4.5Z"/><path d="M15.5 7.5 20 12l-4.5 4.5Z"/>',
+  flipV: '<rect x="4" y="11.2" width="16" height="1.6" rx=".8" opacity=".45"/><path d="M7.5 8.5 12 4l4.5 4.5Z"/><path d="M7.5 15.5 12 20l4.5-4.5Z"/>',
+  space: '<rect x="4" y="11.2" width="10.5" height="1.6" rx=".8"/><path d="M14 6.8 19.5 12 14 17.2Z"/>',
+  sparkle: '<path d="M10 3.5c.6 3.6 2.9 5.9 6.5 6.5-3.6.6-5.9 2.9-6.5 6.5-.6-3.6-2.9-5.9-6.5-6.5 3.6-.6 5.9-2.9 6.5-6.5Z"/><path d="M18 14.5c.3 1.7 1.3 2.7 3 3-1.7.3-2.7 1.3-3 3-.3-1.7-1.3-2.7-3-3 1.7-.3 2.7-1.3 3-3Z" opacity=".5"/>',
+  settings: '"""+gear+"""',
+  window: '<rect x="7" y="4" width="13" height="10" rx="2" opacity=".35"/><rect x="4" y="8" width="13" height="11.5" rx="2"/>',
+  drawer: '<rect x="3.5" y="4.5" width="6" height="15" rx="1.5"/><rect x="11.5" y="6" width="9" height="2" rx="1" opacity=".4"/><rect x="11.5" y="11" width="9" height="2" rx="1" opacity=".4"/><rect x="11.5" y="16" width="9" height="2" rx="1" opacity=".4"/>',
+  maximize: '<path d="M4.5 4.5H10v2.4H6.9V10H4.5ZM14 4.5h5.5V10h-2.4V6.9H14ZM4.5 14h2.4v3.1H10v2.4H4.5ZM17.1 14h2.4v5.5H14v-2.4h3.1Z"/>',
+  close: '<path d="M7.1 5.4 12 10.3l4.9-4.9 1.7 1.7L13.7 12l4.9 4.9-1.7 1.7L12 13.7l-4.9 4.9-1.7-1.7L10.3 12 5.4 7.1Z"/>',
+  plus: '<path d="M10.8 5h2.4v5.8H19v2.4h-5.8V19h-2.4v-5.8H5v-2.4h5.8Z"/>',
+  integration: '<rect x="7" y="3" width="2.1" height="5" rx="1"/><rect x="14.9" y="3" width="2.1" height="5" rx="1"/><path d="M6 7.5h12v1.8a6 6 0 0 1-12 0Z"/><rect x="10.95" y="14.8" width="2.1" height="5.7" rx="1" opacity=".5"/>',
+  busy: '<path d="M7 4.5h10L12 11.4Z"/><path d="M7 19.5h10L12 12.6Z" opacity=".4"/>',
 };
 function iconSvg(name, extra = '') {
-  return `<svg ${extra} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" aria-hidden="true">${ICONS[name] || ICONS.window}</svg>`;
+  return `<svg ${extra} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">${ICONS[name] || ICONS.window}</svg>`;
 }
 
 let currentTheme = 'dark';
+let _themeOverridden = false;  // この workspace だけ個別のテーマを指定しているか
 function terminalTheme(theme = currentTheme) {
   return theme === 'light'
     ? { background: '#ffffff', foreground: '#435263', cursor: '#087fa4', selectionBackground: 'rgba(8,127,164,.18)' }
@@ -1436,10 +1467,25 @@ function terminalTheme(theme = currentTheme) {
 function updateThemeButton() {
   const btn = document.getElementById('theme-toggle-btn');
   if (!btn) return;
-  const target = currentTheme === 'dark' ? 'light' : 'dark';
-  btn.innerHTML = iconSvg(target === 'light' ? 'sun' : 'moon');
-  btn.title = target === 'light' ? '白テーマへ切り替え' : '黒テーマへ切り替え';
-  btn.setAttribute('aria-label', btn.title);
+  // スライドスイッチ: ノブが現テーマ側に居る (左=白 / 右=黒)。クリックで反対側へ滑る。
+  if (!btn.dataset.wired) {
+    btn.dataset.wired = '1';
+    btn.setAttribute('role', 'switch');
+    btn.innerHTML = `<span class="ts-track">${iconSvg('sun')}${iconSvg('moon')}<span class="ts-knob"></span></span>`;
+    btn.removeAttribute('title'); // 即時チップ (data-tip) に一本化
+  }
+  btn.classList.toggle('dark', currentTheme === 'dark');
+  btn.classList.toggle('overridden', _themeOverridden);
+  btn.setAttribute('aria-checked', currentTheme === 'dark' ? 'true' : 'false');
+  const tip = (currentTheme === 'dark' ? '白テーマへ切り替え' : '黒テーマへ切り替え')
+    + ' / このワークスペースだけに効きます'
+    + (_themeOverridden ? '。右クリックで全体設定に戻す' : '');
+  btn.dataset.tip = tip;
+  btn.setAttribute('aria-label', tip);
+  if (!btn.dataset.ctxWired) {
+    btn.dataset.ctxWired = '1';
+    btn.addEventListener('contextmenu', (e) => { e.preventDefault(); if (_themeOverridden) resetWorkspaceTheme(); });
+  }
 }
 function applyTheme(theme) {
   currentTheme = theme === 'light' ? 'light' : 'dark';
@@ -1449,14 +1495,31 @@ function applyTheme(theme) {
     for (const session of embeddedTerms) session.term.options.theme = terminalTheme();
   }
 }
+// この workspace のテーマだけを切り替える (他の workspace は変わらない)
 async function toggleTheme() {
   const next = currentTheme === 'dark' ? 'light' : 'dark';
   applyTheme(next);
+  _themeOverridden = true;
   try { await ipcRenderer.invoke('set-theme', next); } catch {}
+  updateThemeButton();
+}
+// 個別指定を外して全体設定に戻す
+async function resetWorkspaceTheme() {
+  try {
+    const r = await ipcRenderer.invoke('reset-workspace-theme');
+    _themeOverridden = false;
+    if (r && r.theme) applyTheme(r.theme);
+    showToast('全体のテーマ設定に戻しました');
+  } catch {}
+  updateThemeButton();
 }
 ipcRenderer.on('theme-changed', (_event, theme) => applyTheme(theme));
 updateThemeButton();
-ipcRenderer.invoke('get-settings').then(settings => applyTheme(settings.theme)).catch(() => applyTheme('dark'));
+// テーマは workspace ごと。全体設定 (get-settings) ではなく、この workspace の
+// 実効テーマ (個別上書き > 全体設定) を聞く。
+ipcRenderer.invoke('get-workspace-theme')
+  .then(r => { _themeOverridden = !!(r && r.overridden); applyTheme(r && r.theme); })
+  .catch(() => applyTheme('dark'));
 
 const content = document.getElementById('content');
 const drawerContent = document.getElementById('drawer-content');
@@ -1595,26 +1658,40 @@ let _commandSpaces = [];
 let _commandCanMoveSpaces = process.platform !== 'win32';
 function commandDefinitions() {
   const items = [
-    { icon: 'terminal', label: 'Create embedded terminal', meta: 'TERMINAL', run: () => ipcRenderer.invoke('add-grid-terminal') },
-    { icon: 'fill', label: 'Fill empty slots with terminals', meta: 'LAYOUT', run: () => ipcRenderer.invoke('fill-grid-terminals') },
-    { icon: 'refresh', label: 'Retile all snapped windows', meta: 'LAYOUT', run: () => ipcRenderer.invoke('retile-now') },
-    { icon: 'flipH', label: 'Flip grid horizontally', meta: 'LAYOUT', run: () => ipcRenderer.invoke('flip-grid', { axis: 'h' }) },
-    { icon: 'flipV', label: 'Flip grid vertically', meta: 'LAYOUT', run: () => ipcRenderer.invoke('flip-grid', { axis: 'v' }) },
-    { icon: currentViewMode === 'grid' ? 'tabs' : 'grid', label: currentViewMode === 'grid' ? 'Switch to tab view' : 'Switch to grid view', meta: 'VIEW', run: toggleViewMode },
-    { icon: 'drawer', label: 'Open workspace inspector', meta: 'VIEW', run: () => toggleDrawer(true) },
-    { icon: 'maximize', label: 'Maximize / restore window (画面いっぱい)', meta: 'WINDOW', run: () => winCtl('maximize') },
-    { icon: currentTheme === 'dark' ? 'sun' : 'moon', label: currentTheme === 'dark' ? 'Use white theme' : 'Use black theme', meta: 'APPEARANCE', run: toggleTheme },
-    { icon: 'settings', label: 'Open preferences', meta: 'SETTINGS', run: openPreferences },
+    { icon: 'terminal', label: 'Create embedded terminal', meta: 'TERMINAL', preview: 'new-term',
+      desc: '空きスロットに内蔵ターミナルを1つ作る', run: () => ipcRenderer.invoke('add-grid-terminal') },
+    { icon: 'fill', label: 'Fill empty slots with terminals', meta: 'LAYOUT', preview: 'fill',
+      desc: '空いているスロット全部に内蔵ターミナルを一括で並べる', run: () => ipcRenderer.invoke('fill-grid-terminals') },
+    { icon: 'refresh', label: 'Retile all snapped windows', meta: 'LAYOUT', preview: 'retile',
+      desc: 'ズレた snapped ウィンドウをグリッド位置へ揃え直す', run: () => ipcRenderer.invoke('retile-now') },
+    { icon: 'flipH', label: 'Flip grid horizontally', meta: 'LAYOUT', preview: 'flip-h',
+      desc: 'グリッドの左右の並びを入れ替える', run: () => ipcRenderer.invoke('flip-grid', { axis: 'h' }) },
+    { icon: 'flipV', label: 'Flip grid vertically', meta: 'LAYOUT', preview: 'flip-v',
+      desc: 'グリッドの上下の並びを入れ替える', run: () => ipcRenderer.invoke('flip-grid', { axis: 'v' }) },
+    { icon: currentViewMode === 'grid' ? 'tabs' : 'grid', label: currentViewMode === 'grid' ? 'Switch to tab view' : 'Switch to grid view', meta: 'VIEW',
+      preview: currentViewMode === 'grid' ? 'view-tabs' : 'view-grid',
+      desc: currentViewMode === 'grid' ? '全スロットを重ねて1画面に — タブで切り替える表示へ' : 'タブ表示をやめて格子状に並べる表示へ', run: toggleViewMode },
+    { icon: 'drawer', label: 'Open workspace inspector', meta: 'VIEW', preview: 'drawer',
+      desc: '窓一覧・メモ・設定をまとめたサイドパネルを開く', run: () => toggleDrawer(true) },
+    { icon: 'maximize', label: 'Maximize / restore window (画面いっぱい)', meta: 'WINDOW', preview: 'maximize',
+      desc: 'TiN ウィンドウを画面いっぱいに広げる / 元のサイズへ戻す', run: () => winCtl('maximize') },
+    { icon: currentTheme === 'dark' ? 'sun' : 'moon', label: currentTheme === 'dark' ? 'Use white theme' : 'Use black theme', meta: 'APPEARANCE', preview: 'theme',
+      desc: (currentTheme === 'dark' ? '白ベースの配色へ切り替える' : '黒ベースの配色へ切り替える') + '（このワークスペースだけ）', run: toggleTheme },
+    { icon: 'settings', label: 'Open preferences', meta: 'SETTINGS', preview: '',
+      desc: 'ホットキーや動作モードなどの設定画面を開く', run: openPreferences },
   ];
   if (_commandCanMoveSpaces) {
     items.push(
-      { icon: 'space', label: 'Move workspace to next Space', meta: 'SPACE', run: () => ipcRenderer.invoke('push-to-space', { direction: 1 }) },
-      { icon: 'space', label: 'Move workspace to previous Space', meta: 'SPACE', run: () => ipcRenderer.invoke('push-to-space', { direction: -1 }) },
+      { icon: 'space', label: 'Move workspace to next Space', meta: 'SPACE', preview: 'space',
+        desc: 'ワークスペース全体 (TiN と snapped 窓) を隣のデスクトップへ移す', run: () => ipcRenderer.invoke('push-to-space', { direction: 1 }) },
+      { icon: 'space', label: 'Move workspace to previous Space', meta: 'SPACE', preview: 'space',
+        desc: 'ワークスペース全体 (TiN と snapped 窓) を前のデスクトップへ移す', run: () => ipcRenderer.invoke('push-to-space', { direction: -1 }) },
     );
   }
   for (const [slot, data] of Object.entries(gridSlots)) {
     items.push({
       icon: 'terminal', label: data.title || `Terminal ${Number(slot) + 1}`, meta: `SLOT ${Number(slot) + 1}`,
+      preview: 'focus', desc: 'この内蔵ターミナルを前面に出してフォーカスする',
       run: () => {
         const tab = document.querySelector(`.groupy-tab[data-kind="pty"][data-slot="${slot}"]`);
         if (tab) switchToTab(tab);
@@ -1624,6 +1701,7 @@ function commandDefinitions() {
   for (const [wn, info] of snappedExternals) {
     items.push({
       icon: 'window', label: info.title || info.app || 'Window', meta: `SLOT ${Number(info.slot || 0) + 1}`,
+      preview: 'focus', desc: `${info.app || 'アプリ'} のウィンドウを前面に出す`,
       run: () => {
         frontmostWindowNumber = Number(wn);
         activePtySlot = null;
@@ -1636,6 +1714,7 @@ function commandDefinitions() {
     items.push({
       icon: 'space', label: `Move workspace to ${space.label || `Desktop ${space.index}`}`,
       meta: space.isCurrent ? 'CURRENT SPACE' : 'SPACE',
+      preview: 'space', desc: space.isCurrent ? '今いるデスクトップ (移動なし)' : 'ワークスペース全体をこのデスクトップへ移す',
       run: () => space.isCurrent ? undefined : ipcRenderer.invoke('push-to-space-to', { targetSpaceId: space.id, targetIndex: space.index }),
     });
   }
@@ -1660,9 +1739,92 @@ function renderCommandPalette(query = '') {
     row.addEventListener('mouseenter', () => {
       _commandSelected = Number(row.dataset.commandIndex);
       host.querySelectorAll('.command-item').forEach((el, i) => el.classList.toggle('selected', i === _commandSelected));
+      updateCommandPreview();
     });
     row.addEventListener('click', () => runSelectedCommand(Number(row.dataset.commandIndex)));
   });
+  updateCommandPreview();
+}
+
+// ── コマンドプレビュー: 選択中コマンドの「何が起きるか」をミニチュア動画+説明で見せる ──
+// GIF アセットは持たず CSS アニメで描く (テーマ変数に追従・サイズ0)。
+// パレット右横に出す。横に余地が無ければ左、どちらも無ければ出さない。
+let _cpTimer = null;
+function _cpSceneHtml(kind) {
+  const CELLS4 = '<i class="cpc p1 term"></i><i class="cpc p2 term"></i><i class="cpc p3 term"></i><i class="cpc p4 term"></i>';
+  switch (kind) {
+    case 'new-term':
+      return `<i class="cpc p1 term"></i><i class="cpc p2 term"></i><i class="cpc p3 term"></i><i class="cpc p4 ghost"></i><i class="cpc p4 term appear"></i>`;
+    case 'fill':
+      return `<i class="cpc p1 term"></i><i class="cpc p2 ghost"></i><i class="cpc p3 ghost"></i><i class="cpc p4 ghost"></i>`
+        + `<i class="cpc p2 term appear d1"></i><i class="cpc p3 term appear d2"></i><i class="cpc p4 term appear d3"></i>`;
+    case 'retile':
+      return `<i class="cpc p1 ghost"></i><i class="cpc p2 ghost"></i><i class="cpc p3 ghost"></i><i class="cpc p4 ghost"></i>`
+        + `<i class="cpc p1 term askew" style="--sk: translate(4px,-3px) rotate(3deg)"></i>`
+        + `<i class="cpc p2 term askew" style="--sk: translate(-3px,4px) rotate(-2.5deg)"></i>`
+        + `<i class="cpc p3 term askew" style="--sk: translate(3px,3px) rotate(-3deg)"></i>`
+        + `<i class="cpc p4 term askew" style="--sk: translate(-4px,-3px) rotate(2deg)"></i>`;
+    case 'flip-h':
+      return `<i class="cpc p1 ghost"></i><i class="cpc p2 ghost"></i><i class="cpc p3 ghost"></i><i class="cpc p4 ghost"></i>`
+        + `<i class="cpc term sw-r"></i><i class="cpc term sw-l"></i><i class="cpc term sw-r low"></i><i class="cpc term sw-l low"></i>`
+        + `<i class="cp-arrow">⇄</i>`;
+    case 'flip-v':
+      return `<i class="cpc p1 ghost"></i><i class="cpc p2 ghost"></i><i class="cpc p3 ghost"></i><i class="cpc p4 ghost"></i>`
+        + `<i class="cpc term sw-d"></i><i class="cpc term sw-u"></i><i class="cpc term sw-d rgt"></i><i class="cpc term sw-u rgt"></i>`
+        + `<i class="cp-arrow">⇅</i>`;
+    case 'view-tabs':
+      return CELLS4 + '<i class="cpm merge"></i><i class="cpt tabsin"></i>';
+    case 'view-grid':
+      return '<i class="cpm split"></i><i class="cpt tabsout"></i>'
+        + '<i class="cpc p1 term late"></i><i class="cpc p2 term late"></i><i class="cpc p3 term late"></i><i class="cpc p4 term late"></i>';
+    case 'drawer':
+      return CELLS4 + '<i class="cpd slidein"><b></b><b></b><b></b></i>';
+    case 'maximize':
+      return '<i class="cpc term grow"><b class="cpbar"></b></i>';
+    case 'theme':
+      return CELLS4;
+    case 'space':
+      return '<i class="cpc term hop"></i><i class="cp-arrow sp">→</i><i class="cp-dot d-a"></i><i class="cp-dot d-b"></i>';
+    case 'focus':
+      return `<i class="cpc p1 term dim"></i><i class="cpc p2 term pulse"></i><i class="cpc p3 term dim"></i><i class="cpc p4 term dim"></i>`;
+    default:
+      return '';
+  }
+}
+function updateCommandPreview() {
+  clearTimeout(_cpTimer);
+  _cpTimer = setTimeout(() => {
+    const backdrop = document.getElementById('tin-command-backdrop');
+    if (!backdrop || !backdrop.classList.contains('open')) return;
+    let card = document.getElementById('tin-command-preview');
+    if (!card) {
+      card = document.createElement('div');
+      card.id = 'tin-command-preview';
+      backdrop.appendChild(card);
+    }
+    const item = _commandItems[_commandSelected];
+    const panel = backdrop.querySelector('.command-panel');
+    const row = backdrop.querySelector('.command-item.selected');
+    if (!item || !panel) { card.classList.remove('show'); return; }
+    const scene = _cpSceneHtml(item.preview);
+    card.innerHTML = (scene
+        ? `<div class="cp-scene${item.preview === 'theme' ? ' theme-anim' : ''}">${scene}</div>`
+        : `<div class="cp-scene cp-still">${iconSvg(item.icon)}</div>`)
+      + `<div class="cp-title">${escHtml(item.label)}</div>`
+      + `<div class="cp-desc">${escHtml(item.desc || '')}</div>`;
+    // 配置: パレット右 → 左 → 出さない
+    const r = panel.getBoundingClientRect();
+    const W = 224;
+    let left = -1;
+    if (window.innerWidth - r.right >= W + 24) left = r.right + 12;
+    else if (r.left >= W + 24) left = r.left - W - 12;
+    if (left < 0) { card.classList.remove('show'); return; }
+    const rowTop = row ? row.getBoundingClientRect().top : r.top;
+    const top = Math.max(r.top, Math.min(rowTop - 8, window.innerHeight - 210));
+    card.style.left = `${Math.round(left)}px`;
+    card.style.top = `${Math.round(top)}px`;
+    card.classList.add('show');
+  }, 140);
 }
 function runSelectedCommand(index = _commandSelected) {
   const item = _commandItems[index];
@@ -1697,6 +1859,8 @@ function closeCommandPalette() {
   if (!backdrop || !backdrop.classList.contains('open')) return;
   backdrop.classList.remove('open');
   backdrop.setAttribute('aria-hidden', 'true');
+  clearTimeout(_cpTimer);
+  document.getElementById('tin-command-preview')?.classList.remove('show');
   notifyOverlay(document.body.classList.contains('drawer-open'));
 }
 function setupCommandPalette() {
@@ -1721,14 +1885,58 @@ function setupCommandPalette() {
 }
 setupCommandPalette();
 
+// ── タイトルバーの即時ツールチップ ──
+// ネイティブ title は表示まで1秒以上かかり、アイコンだけでは機能が伝わらない。
+// 初回ホバーで title 属性を data-tip へ移し (ネイティブ表示を抑止)、120ms で自前チップを出す。
+(function setupTitlebarTips() {
+  const tb = document.getElementById('titlebar');
+  if (!tb) return;
+  const SEL = '.drawer-btn, .chrome-btn, .grid-opt, .titlebar-grab, #win-controls .wc, #collapse-btn';
+  let chip = null, tipTimer = null, cur = null;
+  const hide = () => {
+    clearTimeout(tipTimer); tipTimer = null; cur = null;
+    if (chip) chip.classList.remove('visible');
+  };
+  tb.addEventListener('mouseover', (e) => {
+    const el = e.target instanceof Element ? e.target.closest(SEL) : null;
+    if (!el) { hide(); return; }
+    if (el === cur) return;
+    hide(); cur = el;
+    if (el.hasAttribute('title')) { el.dataset.tip = el.getAttribute('title'); el.removeAttribute('title'); }
+    const tip = el.dataset.tip;
+    if (!tip) return;
+    tipTimer = setTimeout(() => {
+      if (!chip) { chip = document.createElement('div'); chip.id = 'tin-tooltip'; document.body.appendChild(chip); }
+      // 既存の #tin-tooltip 機構に合わせる (.visible / .tip-name / .tip-desc)。
+      // data-tip は「名前 / 補足」形式で書いてあるので最初の ' / ' で 2 段に割る。
+      const cut = tip.indexOf(' / ');
+      const name = cut > 0 ? tip.slice(0, cut) : tip;
+      const desc = cut > 0 ? tip.slice(cut + 3) : '';
+      chip.innerHTML = `<span class="tip-name">${escHtml(name)}</span>`
+        + (desc ? `<span class="tip-desc">${escHtml(desc)}</span>` : '');
+      const r = el.getBoundingClientRect();
+      chip.style.top = `${Math.round(r.bottom + 6)}px`;
+      chip.style.left = '0px';                       // 一旦置いて幅を測る
+      chip.classList.add('visible');
+      const w = chip.offsetWidth;
+      chip.style.left = `${Math.round(Math.min(Math.max(6, r.left + r.width / 2 - w / 2), window.innerWidth - w - 6))}px`;
+    }, 120);
+  });
+  tb.addEventListener('mouseleave', hide);
+  tb.addEventListener('mousedown', hide, true);
+})();
+
 // ── グリッド / Tab モード切り替え ──
 let currentViewMode = 'grid';
 function updateViewModeButton() {
   const btn = document.getElementById('view-mode-btn');
   if (!btn) return;
-  btn.innerHTML = iconSvg(currentViewMode === 'grid' ? 'grid' : 'tabs');
+  // 「押した結果 (行き先)」を見せる — テーマボタン・⌘K の項目と同じ意味論に統一。
+  // 現在モードのアイコンを出すと drawer-toggle 等の「状態表示」と混ざって読めなくなる。
+  btn.innerHTML = iconSvg(currentViewMode === 'grid' ? 'tabs' : 'grid');
   btn.classList.toggle('active-mode', currentViewMode === 'tab');
   btn.setAttribute('aria-label', currentViewMode === 'grid' ? 'グリッド表示中。タブ表示へ切り替え' : 'タブ表示中。グリッド表示へ切り替え');
+  btn.dataset.tip = currentViewMode === 'grid' ? 'タブ表示へ切り替え (全スロットを1画面に重ねる)' : 'グリッド表示へ切り替え (格子状に並べる)';
 }
 function toggleViewMode() {
   currentViewMode = currentViewMode === 'grid' ? 'tab' : 'grid';
@@ -1830,28 +2038,21 @@ ipcRenderer.on('hydrate-snapped', (_e, list) => {
   render();
 });
 
-// 復元結果バナー (再起動時のみ)
-let restoreBanner = null;
-let lastRestoreReport = null;  // 最新のレポートを保持 (render 後の再描画に使う)
-
-function renderRestoreBanner() {
-  if (!lastRestoreReport) return;
-  // 既存バナーを削除
-  const existing = document.querySelector('.restore-banner');
-  if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
-  const { restored = [], missing = [] } = lastRestoreReport;
+// 復元結果ポップ (再起動時のみ)。クリック不要・自動消滅 (詳細と再リンクは drawer 側にある)
+function showRestorePop(report) {
+  const { restored = [], missing = [] } = report || {};
   const total = restored.length + missing.length;
   if (total === 0) return;
   try {
-    const banner = document.createElement('div');
-    banner.className = 'restore-banner' + (missing.length > 0 ? ' has-missing' : '');
-    const title = missing.length > 0
+    const existing = document.querySelector('.restore-pop');
+    if (existing) existing.remove();
+    const pop = document.createElement('div');
+    pop.className = 'restore-pop' + (missing.length > 0 ? ' has-missing' : '');
+    const title = document.createElement('div');
+    title.textContent = missing.length > 0
       ? `\u26a0 復元: ${restored.length} 件 / ${missing.length} 件スキップ`
       : `\u2713 復元完了: ${restored.length} 件`;
-    const header = document.createElement('div');
-    header.className = 'rb-header';
-    header.innerHTML = `<span>${title}</span><span class="rb-close" title="Dismiss">\u00d7</span>`;
-    banner.appendChild(header);
+    pop.appendChild(title);
     if (missing.length > 0) {
       const ul = document.createElement('ul');
       for (const m of missing.slice(0, 5)) {
@@ -1865,19 +2066,17 @@ function renderRestoreBanner() {
         li.textContent = `... \u4ed6 ${missing.length - 5} 件`;
         ul.appendChild(li);
       }
-      banner.appendChild(ul);
+      pop.appendChild(ul);
     }
-    header.querySelector('.rb-close').addEventListener('click', () => {
-      if (banner.parentNode) banner.parentNode.removeChild(banner);
-      lastRestoreReport = null;
-    });
-    // content の直前 (body 内の titlebar と content の間) に挿入
-    if (content && content.parentNode) {
-      content.parentNode.insertBefore(banner, content);
-    }
-    restoreBanner = banner;
+    document.body.appendChild(pop);
+    requestAnimationFrame(() => pop.classList.add('show'));
+    // スキップありは長めに見せる (操作は要らない — 再リンクは drawer から)
+    setTimeout(() => {
+      pop.classList.remove('show');
+      setTimeout(() => pop.remove(), 250);
+    }, missing.length > 0 ? 10000 : 4000);
   } catch (e) {
-    console.warn('[tin] renderRestoreBanner failed:', e.message);
+    console.warn('[tin] showRestorePop failed:', e.message);
   }
 }
 
@@ -1968,11 +2167,12 @@ async function openPreferences() {
   panel.innerHTML = `
     <div style="font-weight:600;font-size:15px;margin-bottom:14px;">Preferences</div>
     <div style="border-top:1px solid rgba(0,0,0,0.08);margin:0 -4px 14px;padding-top:12px;">
-      <div class="pref-section-label">Appearance</div>
+      <div class="pref-section-label">Appearance（全体の既定）</div>
       <div class="appearance-options" id="pref-appearance">
         <button type="button" class="appearance-option" data-theme="dark">${iconSvg('moon')}<span>Black</span></button>
         <button type="button" class="appearance-option" data-theme="light">${iconSvg('sun')}<span>White</span></button>
       </div>
+      <div id="pref-theme-note" style="margin-top:6px;font-size:11px;line-height:1.5;"></div>
     </div>
     <label style="display:block;margin-bottom:10px;">Poll 間隔
       <select id="pref-poll" style="margin-left:8px;">
@@ -2053,6 +2253,24 @@ async function openPreferences() {
     syncAppearance();
   }));
   syncAppearance();
+  // ここは全体の既定。タイトルバーのスイッチは workspace 個別なので、
+  // 個別指定中はこの設定が今の窓に効かないことを明示する (黙って無視されると混乱する)。
+  {
+    const note = panel.querySelector('#pref-theme-note');
+    if (note) {
+      if (_themeOverridden) {
+        note.innerHTML = 'このワークスペースは個別のテーマを指定中のため、ここの変更は反映されません。'
+          + ' <a href="#" id="pref-theme-reset" style="color:inherit;">全体設定に戻す</a>';
+        note.querySelector('#pref-theme-reset').addEventListener('click', (e) => {
+          e.preventDefault();
+          resetWorkspaceTheme();
+          note.textContent = '全体設定に戻しました。';
+        });
+      } else {
+        note.textContent = '各ワークスペースのテーマはタイトルバーのスイッチで個別に変えられます。';
+      }
+    }
+  }
   if (settings.orchApi) {
     const s = panel.querySelector('#pref-orch-status');
     s.style.display = 'block';
@@ -2104,19 +2322,7 @@ async function openPreferences() {
 }
 ipcRenderer.on('open-preferences', openPreferences);
 
-ipcRenderer.on('restore-report', (_e, report) => {
-  lastRestoreReport = report;
-  renderRestoreBanner();
-  // 自動消去 (missing が無ければ 8 秒後)
-  const { missing = [] } = report || {};
-  if (missing.length === 0) {
-    setTimeout(() => {
-      const b = document.querySelector('.restore-banner');
-      if (b && b.parentNode) b.parentNode.removeChild(b);
-      lastRestoreReport = null;
-    }, 8000);
-  }
-});
+ipcRenderer.on('restore-report', (_e, report) => showRestorePop(report));
 
 // (daemon AX バナー削除済み — Contents/MacOS/ 配置で解決)
 
@@ -2970,7 +3176,7 @@ ipcRenderer.on('claude-status-nudge', () => refreshStatusColors(true));
 // AI 色判定を実行 (haiku が端末の用途を判定して色割当)。もう一度押すと解除。
 async function runAiColorize(btn) {
   if (Object.keys(aiColors).length > 0) { aiColors = {}; render(); return; }
-  if (btn) { btn.innerHTML = iconSvg('refresh'); btn.classList.add('busy'); }
+  if (btn) { btn.innerHTML = iconSvg('busy'); btn.classList.add('busy'); }
   try {
     const r = await ipcRenderer.invoke('ai-colorize');
     if (r && r.ok) { aiColors = r.colors || {}; render(); }
@@ -3606,7 +3812,7 @@ function render() {
   // ── yabai SA 状態インジケーター ──
   const saBtn = document.createElement('button');
   saBtn.className = 'grid-opt secondary-tool';
-  saBtn.innerHTML = iconSvg('settings');
+  saBtn.innerHTML = iconSvg('integration');
   saBtn.title = 'yabai SA 状態確認中...';
   saBtn.style.opacity = '0.3';
   // yabai は macOS 専用。Windows では SA インジケーターを出さない。
@@ -3691,8 +3897,10 @@ function render() {
       tab.innerHTML = `<span class="tab-icon ${iconClass}">${escHtml(iconLabel)}</span>`
         + `<span class="tab-title" title="${escHtml(info.title||'')}">${escHtml(shortTitle)}</span>`
         + statePillHtml(wn, true)
-        + (info.minConstrained
-            ? `<span class="tab-minwarn" title="このアプリは最小ウィンドウ幅が大きく、列幅に収まりきりません(Windows の仕様)。狭い列で使うなら内蔵端末(⊞ / Ctrl+Shift+T)が収まります。">↔</span>`
+        + (info.moveDenied
+            ? `<span class="tab-minwarn tab-denied" title="この窓は管理者権限(昇格)で動いているため、TiN から移動・リサイズできません(Windows の UIPI 制限)。TiN を管理者で起動すると操作できます。">⛔</span>`
+            : info.minConstrained
+            ? `<span class="tab-minwarn" title="このアプリは最小ウィンドウ幅が大きく、列幅に収まりきりません(Windows の仕様)。はみ出し分は左右に均して配置します。狭い列で使うなら内蔵端末(⊞ / Ctrl+Shift+T)が収まります。">↔</span>`
             : '')
         + `<span class="tab-close" data-wn="${wn}">×</span>`;
       tab.addEventListener('click', e => {
@@ -4314,8 +4522,10 @@ ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snapped
         if (live && live.app) existing.app = live.app;
         if (existing.slot !== entry.slot) { existing.slot = entry.slot; snappedChanged = true; }
         if (existing.minConstrained !== entry.minConstrained) { existing.minConstrained = entry.minConstrained; snappedChanged = true; }
+        if (existing.moveDenied !== entry.moveDenied) { existing.moveDenied = entry.moveDenied; snappedChanged = true; }
       } else {
-        snappedExternals.set(k, { title: entry.title, app: entry.app, slot: entry.slot, minConstrained: entry.minConstrained });
+        snappedExternals.set(k, { title: entry.title, app: entry.app, slot: entry.slot,
+          minConstrained: entry.minConstrained, moveDenied: entry.moveDenied });
         snappedChanged = true;
       }
     }
@@ -4394,6 +4604,33 @@ let _gpDragging = false;  // 分割線ドラッグ中か
   window.addEventListener('mouseleave', () => setClickthrough(false));
   // blur で OFF にしない: click-through ON でターミナルをクリックすると blur が発火し、
   // 次クリックを TiN が横取りする原因になる。ヘッダー保護は main の _ctGuardTimer が担当。
+
+  // ── 吸われたグリッドクリックの救済 ──
+  // clickthrough ON は mousemove/ポーリングの後追いなので、素早い移動→即クリックだと
+  // 間に合わず TiN がクリックを食べる (→端末が選択されず TiN が前面化するだけ)。
+  // 食べてしまった mousedown を「そのスロットの選択」と解釈し直し、タブクリックと
+  // 同じ経路 (switchToTab) で端末を前面化する。2回クリックを1回にするための救済。
+  window.addEventListener('mousedown', async (e) => {
+    if (e.button !== 0) return;
+    if (_winManip || gpEditMode || _hasOverlayActive || _gpDragging || _gpOnDivider) return;
+    const r = _cachedGridRect;
+    if (!(e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom)) return;
+    // 生きた UI 要素へのクリックは通常操作 — グリッド背景に落ちたものだけ救済する
+    const t = e.target;
+    if (t instanceof Element && t.closest(
+      'button, a, input, textarea, select, [contenteditable], .groupy-tab, #titlebar, #status,'
+      + ' .gp-col-line, .gp-row-line, #gp-toolbar')) return;
+    setClickthrough(true); // 以降のクリックは透過するよう即 ON (次クリックの吸い込み防止)
+    let tab = null;
+    if (currentViewMode === 'tab') {
+      // タブモードは全スロットが同座標 — アクティブタブの再選択 (前面化し直し) が正
+      tab = _allWindowTabs().find(x => x.classList.contains('active')) || null;
+    } else {
+      const { slot } = await ipcRenderer.invoke('resolve-grid-slot', { x: e.screenX, y: e.screenY });
+      if (slot >= 0) tab = _allWindowTabs().find(x => Number(x.dataset.slot) === slot) || null;
+    }
+    if (tab) switchToTab(tab);
+  });
 }
 
 // overlay/editMode 通知ヘルパー (main の ctGuard 補助用)
@@ -4780,12 +5017,12 @@ function openGridLayoutPopup(anchorEl) {
   // カスタムサイズ入力
   const customRow = document.createElement('div');
   customRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
-  const cLabel = document.createElement('label'); cLabel.textContent = 'Custom'; cLabel.style.cssText = 'font-size:10px;color:rgba(0,0,0,0.4);flex-shrink:0;';
+  const cLabel = document.createElement('label'); cLabel.textContent = 'Custom'; cLabel.className = 'glp-custom-label';
   const cIn = document.createElement('input'); cIn.type='number'; cIn.min='1'; cIn.max='20'; cIn.value=editCols;
-  cIn.style.cssText = 'width:34px;text-align:center;font-size:11px;border:1px solid rgba(0,0,0,0.15);border-radius:4px;padding:2px 3px;';
-  const xLbl = document.createElement('span'); xLbl.textContent='×'; xLbl.style.cssText='font-size:11px;color:rgba(0,0,0,0.35);';
+  cIn.className = 'glp-custom-input';
+  const xLbl = document.createElement('span'); xLbl.textContent='×'; xLbl.className = 'glp-custom-x';
   const rIn = document.createElement('input'); rIn.type='number'; rIn.min='1'; rIn.max='20'; rIn.value=editRows;
-  rIn.style.cssText = 'width:34px;text-align:center;font-size:11px;border:1px solid rgba(0,0,0,0.15);border-radius:4px;padding:2px 3px;';
+  rIn.className = 'glp-custom-input';
   const applyCustom = () => {
     const nc=Math.max(1,Math.min(20,parseInt(cIn.value)||1)), nr=Math.max(1,Math.min(20,parseInt(rIn.value)||1));
     if (nc===editCols && nr===editRows) return;
@@ -4809,7 +5046,7 @@ function openGridLayoutPopup(anchorEl) {
     const mk = (txt, delta, title) => {
       const b = document.createElement('button');
       b.type = 'button'; b.textContent = txt; b.title = title; b.tabIndex = -1;
-      b.style.cssText = 'display:flex;align-items:center;justify-content:center;width:16px;height:12px;flex:none;padding:0;font-size:8px;line-height:1;border:1px solid rgba(0,0,0,0.2);border-radius:3px;background:rgba(0,0,0,0.05);color:rgba(0,0,0,0.6);cursor:pointer;';
+      b.className = 'glp-stepper-btn';
       b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); stepCustom(inp, delta); });
       return b;
     };
@@ -4833,7 +5070,7 @@ function openGridLayoutPopup(anchorEl) {
 
   // ── ② セパレーター ──
   const sep = document.createElement('div');
-  sep.style.cssText = 'border-top:1px solid rgba(0,0,0,0.07);margin:2px 0;';
+  sep.className = 'glp-sep';
   popup.appendChild(sep);
 
   // ── ③ LAYOUT プリセット（左大/右大…） ──

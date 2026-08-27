@@ -5,7 +5,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { computeWinBounds } = require('../lib/win-geom');
+const { computeWinBounds, computeWinBoundsMulti, pickDisplayForRect, assessMoveResult, recenterClamped } = require('../lib/win-geom');
 
 const NO_BORDER = { l: 0, t: 0, r: 0, b: 0 };
 // 典型的な DWM の不可視縁 (左右下に 7px、上は 0)
@@ -86,4 +86,104 @@ test('スケールしても隣接ウィンドウが重ならない (グリッド
   const a = computeWinBounds({ x: 0,   y: 0, width: 800, height: 600 }, NO_BORDER, 2, false);
   const b = computeWinBounds({ x: 808, y: 0, width: 800, height: 600 }, NO_BORDER, 2, false);
   assert.strictEqual(b.x - (a.x + a.cx), 16, 'gap 8 DIP が物理 16px として保たれる');
+});
+
+// ── assessMoveResult: SetWindowPos 後のクランプ検出 (issue #43) ──
+// want は computeWinBounds(Multi) の戻り、actualRect は GetWindowRect の戻り (物理px, 不可視縁込み)
+
+function rectFor(x, y, w, h) { return { left: x, top: y, right: x + w, bottom: y + h }; }
+
+test('assess: 要求どおりのサイズなら null (クランプなし)', () => {
+  const want = computeWinBounds({ x: 100, y: 200, width: 400, height: 600 }, DWM, 2, false);
+  const r = assessMoveResult(want, rectFor(want.x, want.y, want.cx, want.cy));
+  assert.strictEqual(r, null);
+});
+
+test('assess: 文字セル量子化程度 (許容内) は null — 収まらない扱いにしない', () => {
+  const want = computeWinBounds({ x: 0, y: 0, width: 400, height: 600 }, NO_BORDER, 1, false);
+  // 半角セル幅 ~8px / 行高 ~17px 程度の切り上げは許容
+  const r = assessMoveResult(want, rectFor(want.x, want.y, want.cx + 7, want.cy + 16));
+  assert.strictEqual(r, null);
+});
+
+test('assess: 最小幅で止まった窓は超過分 dw を返す (Windows Terminal の狭い列)', () => {
+  const want = computeWinBounds({ x: 0, y: 0, width: 300, height: 600 }, DWM, 2, false); // 狭い列 300 DIP
+  // 実際は最小幅で止まり 286px 超過した想定
+  const r = assessMoveResult(want, rectFor(want.x, want.y, want.cx + 286, want.cy));
+  assert.deepStrictEqual(r, { dw: 286, dh: 0 });
+});
+
+test('assess: 要求より小さい分は超過ではない (負は 0 に丸める)', () => {
+  const want = computeWinBounds({ x: 0, y: 0, width: 800, height: 600 }, NO_BORDER, 1, false);
+  const r = assessMoveResult(want, rectFor(want.x, want.y, want.cx - 100, want.cy));
+  assert.strictEqual(r, null);
+});
+
+test('recenter: 超過分が左右均等に振られる (右にだけはみ出さない)', () => {
+  const want = computeWinBounds({ x: 100, y: 0, width: 300, height: 600 }, NO_BORDER, 1, false);
+  const actual = rectFor(want.x, want.y, want.cx + 200, want.cy);  // 幅が 200px 超過
+  const rc = recenterClamped(want, actual);
+  assert.strictEqual(rc.x, want.x - 100, '超過 200 の半分 100 だけ左へ');
+  assert.strictEqual(rc.y, want.y, '高さ超過なしなら y は不変');
+});
+
+test('recenter: 200% + DWM 縁でも中心が保たれる', () => {
+  const want = computeWinBounds({ x: 100, y: 50, width: 300, height: 400 }, DWM, 2, false);
+  const actual = rectFor(want.x, want.y, want.cx + 300, want.cy + 60);
+  const rc = recenterClamped(want, actual);
+  // 再配置後の中心 x = 要求スロットの中心 x (物理px)
+  const wantCenter = want.x + want.cx / 2;
+  const gotCenter = rc.x + (want.cx + 300) / 2;
+  assert.ok(Math.abs(gotCenter - wantCenter) <= 1, `中心ズレ ${gotCenter - wantCenter}px`);
+  assert.strictEqual(rc.y, want.y - 30, '高さ超過 60 の半分だけ上へ');
+});
+
+// ── Per-monitor DPI (issue #43-4): computeWinBoundsMulti ──
+// primary 200% (DIP 1280x800 = 物理 2560x1600) + 右に secondary 100% (物理原点 x=2560)
+const DISPLAYS = [
+  { dipX: 0,    dipY: 0, dipW: 1280, dipH: 800,  physX: 0,    physY: 0, scale: 2 },
+  { dipX: 1280, dipY: 0, dipW: 1920, dipH: 1080, physX: 2560, physY: 0, scale: 1 },
+];
+
+test('multi: primary 上の矩形は従来の単一スケールと同じ結果', () => {
+  const c = { x: 100, y: 200, width: 400, height: 300 };
+  assert.deepStrictEqual(
+    computeWinBoundsMulti(c, DWM, DISPLAYS, 2, false),
+    computeWinBounds(c, DWM, 2, false));
+});
+
+test('multi: secondary (100%) 上の矩形はそのモニタのスケールで変換される', () => {
+  // DIP x=1400 は secondary 上 → 物理 x = 2560 + (1400-1280)*1 = 2680
+  const r = computeWinBoundsMulti({ x: 1400, y: 100, width: 800, height: 600 }, NO_BORDER, DISPLAYS, 2, false);
+  assert.deepStrictEqual(r, { x: 2680, y: 100, cx: 800, cy: 600 });
+  // 単一スケール (primary の 2) だと x=2800 / 幅1600 になり位置もサイズも壊れる (回帰意図)
+  const single = computeWinBounds({ x: 1400, y: 100, width: 800, height: 600 }, NO_BORDER, 2, false);
+  assert.notStrictEqual(r.x, single.x);
+  assert.notStrictEqual(r.cx, single.cx);
+});
+
+test('multi: displays が空/null なら fallbackScale で従来動作', () => {
+  const c = { x: 100, y: 200, width: 400, height: 300 };
+  assert.deepStrictEqual(computeWinBoundsMulti(c, DWM, null, 2, false), computeWinBounds(c, DWM, 2, false));
+  assert.deepStrictEqual(computeWinBoundsMulti(c, DWM, [], 2, false), computeWinBounds(c, DWM, 2, false));
+});
+
+test('multi: モニタ跨ぎの矩形は中心が乗っているモニタのスケールを使う', () => {
+  // 中心 x = 1200+400 = 1400 (DIP) → secondary
+  const d = pickDisplayForRect({ x: 1200, y: 100, width: 800, height: 600 }, DISPLAYS);
+  assert.strictEqual(d.scale, 1);
+  // 中心 x = 1000 → primary
+  const d2 = pickDisplayForRect({ x: 600, y: 100, width: 800, height: 600 }, DISPLAYS);
+  assert.strictEqual(d2.scale, 2);
+});
+
+test('multi: どのモニタにも中心が無い場合は重なり最大のモニタへフォールバック', () => {
+  // 画面下へ大きくはみ出し、中心はどのモニタ外。secondary との重なりが大きい
+  const d = pickDisplayForRect({ x: 1300, y: 900, width: 800, height: 800 }, DISPLAYS);
+  assert.strictEqual(d.scale, 1);
+});
+
+test('multi: positionOnly はサイズ 0 (SWP_NOSIZE 前提) で位置だけモニタ別変換', () => {
+  const r = computeWinBoundsMulti({ x: 1400, y: 100, width: 800, height: 600 }, DWM, DISPLAYS, 2, true);
+  assert.deepStrictEqual(r, { x: 2680 - DWM.l, y: 100 - DWM.t, cx: 0, cy: 0 });
 });
