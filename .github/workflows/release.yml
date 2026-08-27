@@ -16,9 +16,11 @@ name: release
 #   N-API(node-addon-api)なので Node ヘッダでビルドしたものが Electron でもそのまま動く。
 #   `identity: null` で未署名。macOS ランナー上で証明書を探しに行かないよう
 #   CSC_IDENTITY_AUTO_DISCOVERY=false を明示する。
-#   **注意**: mac の自動アップデートは lib/updater.js で意図的に無効化されている
-#   (未署名アプリは Squirrel.Mac が使えない)。ここで latest-mac.yml が生成されても
-#   現状それを読む経路は無い。mac の自動更新には別方式(ditto+xattr)の実装が必要。
+#   **mac の自動更新は electron-updater を通らない**。未署名アプリは Squirrel.Mac が
+#   使えないため、lib/updater-mac.js が GitHub Releases API を直接叩き、下の
+#   `dist/*.zip`(例 TiN-1.15.0-arm64-mac.zip)を ditto で /Applications へ展開する。
+#   latest-mac.yml は生成されても読まれない。**この mac zip の添付が漏れると mac の
+#   自動更新は静かに止まる**(嘘の進捗は出さず warn ログのみ)。
 #
 # 直列化(mac は win の後):
 #   同じタグの draft release を 2 ジョブが同時に作りに行くと draft が重複するため、
