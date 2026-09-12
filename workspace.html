@@ -4641,7 +4641,26 @@ function triggerRaiseAll() {
   _raiseThrottle = now;
   ipcRenderer.send('raise-all');
 }
-document.getElementById('titlebar').addEventListener('mousedown', triggerRaiseAll);
+// ヘッダーは mousedown で raise しない。押した瞬間に snapped 窓の AXRaise が走ると
+// ウィンドウドラッグ(app-region:drag)の開始を潰してしまい、「左上の掴み代で窓を
+// 動かせない」状態になる (2026-09-05 のユーザー報告)。押下位置から動いていない
+// = 単なるクリックだったときだけ mouseup で発火させる。
+{
+  const _tb = document.getElementById('titlebar');
+  let _tbDown = null;
+  _tb.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    _tbDown = { x: e.screenX, y: e.screenY };
+  });
+  _tb.addEventListener('mouseup', (e) => {
+    if (!_tbDown) return;
+    const moved = Math.abs(e.screenX - _tbDown.x) > 3 || Math.abs(e.screenY - _tbDown.y) > 3;
+    _tbDown = null;
+    if (!moved) triggerRaiseAll();   // ドラッグではなくクリック → 従来どおり前面化
+  });
+  // ドラッグ中は mouseup が web content に届かないことがあるため取りこぼしを掃除
+  window.addEventListener('blur', () => { _tbDown = null; });
+}
 // content エリア内クリック (ただしボタン等の個別要素は除く: stopPropagation 済み)
 document.getElementById('content').addEventListener('mousedown', (e) => {
   // すでに stopPropagation されてる要素 (Snap ボタン等) はここに届かない

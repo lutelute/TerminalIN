@@ -72,6 +72,7 @@ try { ({ initAutoUpdate } = require('./lib/updater')); } catch (e) { console.war
 // ── PTY シェル設定 (クロスプラットフォーム) ──
 // Windows では SHELL/$HOME が無いため PowerShell / USERPROFILE を既定にする。
 const IS_WIN = process.platform === 'win32';
+const IS_MAC = process.platform === 'darwin';
 function getPtyShell() {
   if (IS_WIN) {
     // pwsh (PowerShell 7) があれば優先、無ければ Windows PowerShell、最後に cmd
@@ -503,6 +504,7 @@ const DEFAULT_SETTINGS = {
   defaultGridRows: 2,
   autoLaunch: false,
   stickyWindows: false,     // 全 Space 追従: GPU コンポジターに常時負荷をかけるため OFF 推奨
+  keepBehind: true,         // TiN 本体を常に端末の下に置く (mac: NSWindow level = normal-1)
   orchApi: false,           // Orchestration API (開発者向け)
   hotkeys: { ...DEFAULT_HOTKEYS },
 };
@@ -1288,6 +1290,28 @@ function moveWorkspaceToDisplay(ws, dir = 1) {
 // ── Raise all workspace windows (grid + snapped externals) ──
 let lastRaiseTime = 0;
 
+// ── z-order (重ね順) の一元管理 ──
+// 既定は「TiN は端末の下」。mac は NSWindow level を normal-1 に落とす
+// (Electron の relativeLevel)。level が normal 未満の窓は、どのアプリを activate
+// しても通常ウィンドウより上に来られないので、TiN が端末を覆うことが構造的に無くなる
+// (= 「前面に出過ぎ」の根治。show()/focus() の呼び順に依存しない)。
+// 透過窓なのでグリッド線・ヘッダー・スロットの隙間はそのまま見える。
+// Windows は「下に固定する」API が無いため従来どおり通常 z-order (TOPMOST OFF)。
+// 例外: 編集モード / オーバーレイ(設定・ドロワー・ピッカー等の DOM)表示中だけは
+// 端末に隠れると操作できないため一時的に最前面へ上げ、閉じたら元に戻す。
+function applyStackLevel(ws) {
+  if (!ws || !ws.win || ws.win.isDestroyed()) return;
+  const wantTop = !!(ws._editMode || ws._hasOverlay);
+  const want = wantTop ? 'top' : (appSettings.keepBehind !== false ? 'behind' : 'normal');
+  if (ws._stackLevel === want) return;   // 変化時のみ呼ぶ (50ms ループから叩かれるため)
+  try {
+    if (want === 'top') { ws.win.setAlwaysOnTop(true, 'floating'); ws.win.moveTop(); }
+    else if (want === 'behind' && IS_MAC) ws.win.setAlwaysOnTop(true, 'normal', -1);
+    else ws.win.setAlwaysOnTop(false);
+    ws._stackLevel = want;
+  } catch (e) { console.warn('[tin] applyStackLevel failed:', e?.message || e); }
+}
+
 async function raiseAllWorkspaceWindows(ws, force = false) {
   if (!ws) return;
   const now = Date.now();
@@ -1301,7 +1325,9 @@ async function raiseAllWorkspaceWindows(ws, force = false) {
 
   // z-order (下→上): TiN → grid terminals → snapped externals
   // TiN を先に show
-  if (ws.win && !ws.win.isDestroyed()) {
+  if (ws.win && !ws.win.isDestroyed() && !ws.win.isVisible()) {
+    // 表示済みの窓に show() を撃つと mac では毎回 order front される (= TiN が
+    // 端末の前にせり出す)。非表示/最小化からの復帰時だけ show する。
     ws.win.show();
   }
 
@@ -3431,10 +3457,7 @@ function createWorkspace(name, savedState) {
       // Windows: alwaysOnTop を editMode/overlay 状態に常時同期する。
       // ハンドラ側で解除イベントが取りこぼされても TOPMOST が固着しない安全弁
       // (固着すると TiN が snapped 窓を覆い続けクリックスルーが壊れる)。
-      if (IS_WIN) {
-        const wantTop = !!(ws._editMode || ws._hasOverlay);
-        try { if (ws.win.isAlwaysOnTop() !== wantTop) ws.win.setAlwaysOnTop(wantTop); } catch {}
-      }
+      applyStackLevel(ws);
       // did-finish-load 前は OFF に固定 (getBounds が不確定なため誤判定を防ぐ)
       if (!_ctReady) {
         _setCT(false);
@@ -3545,7 +3568,11 @@ app.on('browser-window-focus', (_event, focusedWin) => {
     // だけ snapped を前面に集める。
     // Windows: 編集モード中は TiN を最前面に保つため snapped の再前面化を抑制
     // (mac は従来通り常に raise — 挙動を変えない)
-    if (!isGridWin && !(IS_WIN && ws._editMode)) raiseAllWorkspaceWindows(ws);
+    // mac の keepBehind 中は TiN が構造的に端末の下に居るので暗黙 raise は不要。
+    // むしろヘッダーを掴んだ瞬間に 13 窓の AXRaise が走り、ドラッグ開始を潰していた
+    // (= 「左上の掴むところが掴めない」)。明示操作 (force=true) の raise は残す。
+    const skipRaise = (IS_WIN && ws._editMode) || (IS_MAC && appSettings.keepBehind !== false);
+    if (!isGridWin && !skipRaise) raiseAllWorkspaceWindows(ws);
     scheduleSyncSnapped(200);
   }
 });
@@ -3571,13 +3598,9 @@ ipcMain.on('set-overlay-active', (event, active) => {
   }
   // Windows: ポップアップ/ピッカー(TiN DOM)が手前の snapped 窓に覆われてクリック
   // できないため、overlay 表示中は TiN を最前面に固定する。編集モード中は維持。
+  applyStackLevel(ws);
   if (!IS_WIN || !ws.win || ws.win.isDestroyed()) return;
-  if (active) {
-    try { ws.win.setAlwaysOnTop(true); ws.win.moveTop(); } catch {}
-  } else if (!ws._editMode) {
-    try { ws.win.setAlwaysOnTop(false); } catch {}
-    raiseAllWorkspaceWindows(ws, true).catch(() => {});
-  }
+  if (!active && !ws._editMode) raiseAllWorkspaceWindows(ws, true).catch(() => {});
 });
 // 列/行の分割線(掴みゾーン)上にカーソルがある間は clickthrough を OFF に保ち、
 // 編集モードに入らなくても幅をドラッグ調整できるようにする(分割線はセル間ギャップに
@@ -3601,19 +3624,13 @@ ipcMain.on('set-edit-mode', (event, active) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return;
   ws._editMode = !!active;
-  // Windows: 通常 z-order は snapped 窓が TiN より前面のため、編集線(TiN DOM)が
-  // 窓に隠れて掴めない。編集中は TiN を最前面に上げる(透明なので窓は透けて見え、
-  // 編集線が手前に来て操作可能になる)。終了時に通常 z-order へ戻す。
+  // 通常 z-order では snapped 窓が TiN より前面のため、編集線(TiN DOM)が窓に隠れて
+  // 掴めない。編集中だけ TiN を最前面に上げる(透明なので窓は透けて見え、編集線が
+  // 手前に来て操作可能になる)。終了時に元の重ね順へ戻す。focus() は呼ばない
+  // (browser-window-focus が snapped を再前面化するため)。
+  applyStackLevel(ws);
   if (!IS_WIN || !ws.win || ws.win.isDestroyed()) return;
-  if (active) {
-    // 編集中は TiN を最前面に固定 (snapped 窓が手前にあると編集線を掴めないため)。
-    // setAlwaysOnTop で確実に上に保つ。透明なので窓は透けて見える。
-    // focus() は呼ばない (browser-window-focus が snapped を再前面化するため)。
-    try { ws.win.setAlwaysOnTop(true); ws.win.moveTop(); } catch {}
-  } else {
-    try { ws.win.setAlwaysOnTop(false); } catch {}
-    raiseAllWorkspaceWindows(ws, true).catch(() => {});
-  }
+  if (!active) raiseAllWorkspaceWindows(ws, true).catch(() => {});
 });
 
 // 統合ウィンドウ方式では raise-all-from-overlay / set-overlay-clickthrough は不要 (no-op)
@@ -4699,6 +4716,14 @@ app.whenReady().then(async () => {
         const win = BrowserWindow.getFocusedWindow();
         if (win) win.webContents.send('toggle-compact');
       }},
+      // TiN 本体の重ね順。既定 ON = 端末の下に潜り、前面にせり出さない。
+      // OFF にすると従来どおり通常 z-order (困ったときの逃げ道として UI から戻せる)。
+      { label: 'TiN を端末の下に置く', type: 'checkbox', checked: appSettings.keepBehind !== false,
+        click: (item) => {
+          appSettings.keepBehind = !!item.checked;
+          saveSettings();
+          for (const [, w] of workspaces) applyStackLevel(w);
+        }},
       { label: 'Appearance', submenu: [
         { label: 'Black', type: 'radio', checked: appSettings.theme !== 'light', click: () => setAppTheme('dark') },
         { label: 'White', type: 'radio', checked: appSettings.theme === 'light', click: () => setAppTheme('light') },
