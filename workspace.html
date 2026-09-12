@@ -3262,16 +3262,28 @@ ipcRenderer.on('claude-status-nudge', () => refreshStatusColors(true));
 
 // AI 色判定を実行 (haiku が端末の用途を判定して色割当)。もう一度押すと解除。
 async function runAiColorize(btn) {
-  if (Object.keys(aiColors).length > 0) { aiColors = {}; render(); return; }
-  if (btn) { btn.innerHTML = iconSvg('busy'); btn.classList.add('busy'); }
+  const restore = () => { if (btn) { btn.innerHTML = iconSvg('sparkle') + '<span class="tb-label">AI色</span>'; btn.classList.remove('busy'); } };
+  if (Object.keys(aiColors).length > 0) { aiColors = {}; render(); showToast('AI色を解除しました'); return; }
+  if (btn) { btn.innerHTML = iconSvg('busy') + '<span class="tb-label">判定中</span>'; btn.classList.add('busy'); }
+  // haiku 呼び出しは実測 20 秒前後かかる。無言だと「効いていない」ように見えるので
+  // 開始・成功・失敗を必ずトーストで出す (statusEl だけだと気づけない)。
+  showToast('AI色: 判定中… (20秒ほどかかります)');
   try {
     const r = await ipcRenderer.invoke('ai-colorize');
-    if (r && r.ok) { aiColors = r.colors || {}; render(); }
-    else if (statusEl) statusEl.textContent = 'AI色: ' + ((r && r.error) || '失敗');
+    if (r && r.ok) {
+      aiColors = r.colors || {};
+      render();
+      showToast(`AI色: ${Object.keys(aiColors).length} 窓を色分けしました`);
+    } else {
+      const msg = 'AI色: ' + ((r && r.error) || '失敗');
+      if (statusEl) statusEl.textContent = msg;
+      showToast(msg, 'error');
+    }
   } catch (e) {
     if (statusEl) statusEl.textContent = 'AI色エラー: ' + e.message;
+    showToast('AI色エラー: ' + e.message, 'error');
   } finally {
-    if (btn) { btn.innerHTML = iconSvg('sparkle'); btn.classList.remove('busy'); }
+    restore();
   }
 }
 
