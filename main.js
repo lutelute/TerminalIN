@@ -4195,6 +4195,12 @@ function uninstallClaudeHooks() {
 // 「· Composing…」等)。'ing…' 単独の広範マッチだと応答本文の "Loading…" 等に誤反応し、
 // busy が最優先確定のため実際の許可待ち(perm)をマスクする → 記号付き行頭に限定する。
 const BUSY_SPINNER_RE = /(^|[\r\n])\s*[·✢✳✶✻✽✦∗*+]\s?\S+ing…/;
+// Claude Code は端末タイトルに状態記号を付ける: 待機は ✳、実行中は ◐◑◒◓ の回転
+// (codex は ⠀-⣿ の braille)。窓タイトル(4秒 poll のスナップショット)とタブ title
+// (今取得した値)では記号の位相がずれるため、生文字列比較はほぼ必ず外れる。
+// → 比較前に両側から記号を落とす。落とし忘れると「色が全く付かない」(2026-09-05 の不具合)。
+const TITLE_GLYPH_RE = /[\s✳✶✻✴✽✢◐◑◒◓◴◵◶◷⠀-⣿]+/g;
+function stripTitleGlyphs(s) { return String(s || '').replace(TITLE_GLYPH_RE, ' ').trim(); }
 let _statusBusy = false;
 let _statusCache = null;
 let _statusCacheAt = 0;
@@ -4234,7 +4240,7 @@ async function getClaudeStatuses() {
     // 判定は JS 側(下)で行い、レコードは RS(0x1e)/US(0x1f) 区切りで受け取る。
     // ※ tell application "Terminal" は未起動だと Apple Event が Terminal を自動起動
     //   してしまう(quit しても 6 秒以内に復活)ため、is running を先に確認して回避。
-    const script = 'set rs to character id 30\nset us to character id 31\nif application "Terminal" is not running then return ""\ntell application "Terminal"\nset tl to tty of every tab of every window\nset cl to custom title of every tab of every window\nset pl to «property pcnt» of every tab of every window\nend tell\nset out to ""\nrepeat with wi from 1 to count tl\ntry\nset wt to item wi of tl\nset wc to item wi of cl\nset wp to item wi of pl\nrepeat with ti from 1 to count wt\ntry\nset t1 to item ti of wt\nset c1 to item ti of wc\nset p1 to item ti of wp\nif t1 is missing value then set t1 to ""\nif c1 is missing value then set c1 to ""\nif p1 is missing value then set p1 to ""\nset out to out & (t1 as string) & us & (c1 as string) & us & (p1 as string) & rs\nend try\nend repeat\nend try\nend repeat\nreturn out';
+    const script = 'set rs to character id 30\nset us to character id 31\nif application "Terminal" is not running then return ""\ntell application "Terminal"\nset wl to id of every window\nset tl to tty of every tab of every window\nset cl to custom title of every tab of every window\nset el to selected of every tab of every window\nset pl to «property pcnt» of every tab of every window\nend tell\nset out to ""\nrepeat with wi from 1 to count tl\ntry\nset wi1 to item wi of wl\nset wt to item wi of tl\nset wc to item wi of cl\nset we to item wi of el\nset wp to item wi of pl\nrepeat with ti from 1 to count wt\ntry\nset t1 to item ti of wt\nset c1 to item ti of wc\nset e1 to item ti of we\nset p1 to item ti of wp\nif t1 is missing value then set t1 to ""\nif c1 is missing value then set c1 to ""\nif p1 is missing value then set p1 to ""\nset out to out & (wi1 as string) & us & (t1 as string) & us & (c1 as string) & us & (e1 as string) & us & (p1 as string) & rs\nend try\nend repeat\nend try\nend repeat\nreturn out';
     const { stdout: term } = await execFileAsync('osascript', ['-e', script], { timeout: 10000, maxBuffer: 8 * 1024 * 1024 });
     // ── 判定(JS 側) ──
     // 窓は画面の最後22行(桁数に依存しない)。フッター/メニュー/入力ボックス/
@@ -4248,16 +4254,22 @@ async function getClaudeStatuses() {
     const list = [];
     for (const rec of term.split('\x1e')) {
       const f = rec.split('\x1f');
-      if (f.length < 3) continue;
-      const tty = f[0].replace('/dev/', '').trim();
-      const title = f[1].trim();
-      if (!ttys.has(tty) || !title) continue;
-      const tail = f[2].split('\n').slice(-22).join('\n');
+      if (f.length < 5) continue;
+      // f = [window id, tty, custom title, selected, contents]
+      // Terminal.app の AppleScript `id of window` は CGWindowList の windowNumber と
+      // 同じ値 (実測 2026-09-05)。これで snapped 窓との対応をタイトル文字列に頼らず
+      // 確定できる。custom title 空のタブも tty さえ取れれば対象にする。
+      const winId = parseInt(f[0], 10) || 0;
+      const tty = f[1].replace('/dev/', '').trim();
+      const title = f[2].trim();
+      const selected = /^true$/i.test(f[3].trim());
+      if (!ttys.has(tty)) continue;
+      const tail = f[4].split('\n').slice(-22).join('\n');
       let state = 'live';
       if (tail.includes('esc to interrupt') || BUSY_SPINNER_RE.test(tail)) state = 'busy';
       else if ((tail.includes('❯ 1.') && tail.includes(' 2. ')) || (tail.includes('❯ 2.') && tail.includes(' 1. '))
         || (tail.includes('❯ 3.') && tail.includes(' 1. '))) state = 'perm';
-      list.push({ tty, title, state });
+      list.push({ tty, title, state, winId, selected });
     }
     _statusCacheAt = Date.now();
     return (_statusCache = { tabs: list, ttys });
@@ -4325,7 +4337,7 @@ function classifyClaudeState(m, title) {
   if (m.state === 'busy') return 'busy';
   if (hkValid) return hk.state;
   if (m.state === 'perm') return 'perm';
-  if (/[⠀-⣿]/.test(title)) return 'busy';
+  if (/[⠀-⣿◐◑◒◓◴◵◶◷]/.test(title)) return 'busy';
   return 'input';
 }
 
@@ -4344,10 +4356,20 @@ ipcMain.handle('status-colorize', async (event) => {
   const colors = {}, states = {}, labels = {};
   for (const [wn, info] of ws.snappedExternals) {
     const t = info.title || '';
-    const m = tabs.find(s => {
-      const task = s.title.replace(/^[\s✳✶✦✻✴⠀-⣿]+/, '').trim();
-      return task.length >= 4 && t.includes(task.slice(0, 16));
-    });
+    // ① window id の完全一致 (Terminal.app)。文字列に依存しないので確実。
+    //    1 窓に複数タブがあるときは画面に見えている選択中タブを優先する。
+    let m = null;
+    const inWin = tabs.filter(s => s.winId && s.winId === wn);
+    if (inWin.length) m = inWin.find(s => s.selected) || inWin[0];
+    // ② フォールバック: タイトル部分一致 (id が取れない場合)。回転する状態記号は
+    //    両側から剥がしてから比べる。短いタスク名(「再開」等)も拾えるよう 2 文字から。
+    if (!m) {
+      const task = stripTitleGlyphs(t);
+      m = tabs.find(s => {
+        const key = stripTitleGlyphs(s.title);
+        return key.length >= 2 && task.includes(key.slice(0, 16));
+      });
+    }
     if (!m) continue;                                // claude 非稼働 → 状態なし
     const st = classifyClaudeState(m, t);
     colors[wn] = CLAUDE_STATE_META[st].color;
