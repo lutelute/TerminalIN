@@ -72,6 +72,7 @@ try { ({ initAutoUpdate } = require('./lib/updater')); } catch (e) { console.war
 // ── PTY シェル設定 (クロスプラットフォーム) ──
 // Windows では SHELL/$HOME が無いため PowerShell / USERPROFILE を既定にする。
 const IS_WIN = process.platform === 'win32';
+const IS_MAC = process.platform === 'darwin';
 function getPtyShell() {
   if (IS_WIN) {
     // pwsh (PowerShell 7) があれば優先、無ければ Windows PowerShell、最後に cmd
@@ -467,7 +468,7 @@ const WORKSPACES_FORMAT_VERSION = 1;
 // 保存済みセッションが古すぎる場合は復元しない閾値 (24時間)
 const WORKSPACES_STALE_MS = 24 * 60 * 60 * 1000;
 // Groupy コンテナモード定数
-const TITLEBAR_H = 46;        // TiN ヘッダー高さ (hiddenInset 1行 — workspace.html #titlebar と一致させる)
+const TITLEBAR_H = 36;        // TiN ヘッダー高さ (hiddenInset 1行 — workspace.html #titlebar と一致させる)
 const NATIVE_TITLEBAR_H = 28; // macOS ネイティブタイトルバー高さ (参考値)
 // 外部アプリは TiN ヘッダーの直下に配置 — タイトルバーを完全に表示する
 const GROUPY_Y_OFFSET = TITLEBAR_H; // 外部アプリは TiN ヘッダーの下から (高さに追従)
@@ -503,6 +504,7 @@ const DEFAULT_SETTINGS = {
   defaultGridRows: 2,
   autoLaunch: false,
   stickyWindows: false,     // 全 Space 追従: GPU コンポジターに常時負荷をかけるため OFF 推奨
+  keepBehind: true,         // TiN 本体を常に端末の下に置く (mac: NSWindow level = normal-1)
   orchApi: false,           // Orchestration API (開発者向け)
   hotkeys: { ...DEFAULT_HOTKEYS },
 };
@@ -1288,6 +1290,57 @@ function moveWorkspaceToDisplay(ws, dir = 1) {
 // ── Raise all workspace windows (grid + snapped externals) ──
 let lastRaiseTime = 0;
 
+// ── z-order (重ね順) の一元管理 ──
+// TiN 本体は通常レベルに置く。以前は mac で NSWindow level を normal-1 に落としていたが、
+// normal-1 は「スナップした端末の下」ではなく「全アプリの全窓の下」で、端末をクリック
+// するたびに上部バーが PowerPoint や Vivaldi の後ろへ沈み、操作も snap もできなくなった
+// (2026-09-14 のユーザー報告)。「端末は TiN の上」は raiseGroupAboveTin で並べ直して作る。
+// 例外: 編集モード / オーバーレイ(設定・ドロワー・ピッカー等の DOM)表示中は端末に
+// 隠れると操作できないため最前面 ('top') へ上げ、閉じたら通常レベルに戻す。
+function applyStackLevel(ws) {
+  if (!ws || !ws.win || ws.win.isDestroyed()) return;
+  const want = (ws._editMode || ws._hasOverlay) ? 'top' : 'normal';
+  if (ws._stackLevel === want) return;   // 変化時のみ呼ぶ (50ms ループから叩かれるため)
+  try {
+    if (want === 'top') { ws.win.setAlwaysOnTop(true, 'floating'); ws.win.moveTop(); }
+    else ws.win.setAlwaysOnTop(false);
+    ws._stackLevel = want;
+    if (want === 'normal') ws._needsGroupRaise = true;   // 'top' の間に端末を覆っていた
+  } catch (e) { console.warn('[tin] applyStackLevel failed:', e?.message || e); }
+}
+
+// ── スナップ端末を TiN の上に集める (mac / keepBehind) ──
+// 端末が前面に来たとき (= ユーザーが端末を触った) に [端末] > [TiN] > [他アプリ] へ並べ直す:
+// TiN を moveTop (activate しない) してから、スナップ端末を AXRaise する。いま前面の
+// 端末を最後に上げるのは、AXRaise が main 窓 (キーボードの行き先) を動かすため。
+// AXRaise はアクティブなアプリの窓より上には行けない (2026-09-14 実測) ので、TiN が
+// アクティブな間は何もしない。端末をドラッグ中 (ボタン押下中) も触らない。
+function raiseGroupAboveTin(ws, activeWn) {
+  if (!IS_MAC || appSettings.keepBehind === false) return false;
+  if (!ws || !ws.win || ws.win.isDestroyed() || ws.win.isFocused()) return false;
+  if (ws._editMode || ws._hasOverlay) return false;
+  if (axHelper?.isMouseButtonDown?.()) return false;
+  try { ws.win.moveTop(); } catch {}
+  for (const [, gw] of ws.gridWindows) {
+    try { if (gw.win && !gw.win.isDestroyed()) gw.win.moveTop(); } catch {}
+  }
+  ws._needsGroupRaise = false;
+  // moveTop はウィンドウサーバーで非同期に反映される。同じ tick で AXRaise すると、
+  // 上げ終わった端末の上に後から TiN が被さる (実測: 12 窓中 2〜4 窓しか上に残らない)。
+  // 反映を待ってから上げる。
+  setTimeout(() => {
+    if (!ws.win || ws.win.isDestroyed() || ws.win.isFocused() || !axHelper?.raiseWindows) return;
+    const infos = [...ws.snappedExternals.values()]
+      .sort((a, b) => (a.windowNumber === activeWn) - (b.windowNumber === activeWn));
+    const cmds = infos.map(i => ({ windowNumber: i.windowNumber, pid: i.pid, app: i.app, title: i.title }));
+    try {
+      const n = axHelper.raiseWindows(cmds);
+      if (n < cmds.length) console.log(`[tin] group-raise: ${n}/${cmds.length} raised`);
+    } catch (e) { console.warn('[tin] group-raise failed:', e?.message || e); }
+  }, 80);
+  return true;
+}
+
 async function raiseAllWorkspaceWindows(ws, force = false) {
   if (!ws) return;
   const now = Date.now();
@@ -1301,7 +1354,9 @@ async function raiseAllWorkspaceWindows(ws, force = false) {
 
   // z-order (下→上): TiN → grid terminals → snapped externals
   // TiN を先に show
-  if (ws.win && !ws.win.isDestroyed()) {
+  if (ws.win && !ws.win.isDestroyed() && !ws.win.isVisible()) {
+    // 表示済みの窓に show() を撃つと mac では毎回 order front される (= TiN が
+    // 端末の前にせり出す)。非表示/最小化からの復帰時だけ show する。
     ws.win.show();
   }
 
@@ -2072,9 +2127,31 @@ ipcMain.handle('get-grid-state', (event) => {
 // ── Global Hotkeys ──────────────────────────────────────────────────────────
 
 // フロントウィンドウを対象 workspace の次の空きスロットにスナップ
+// TiN 本体 (ワークスペース窓) の CGWindowID。getWindowIdFromHandle は呼ぶたびに
+// ログを吐くので ws ごとにキャッシュする。
+function tinMainWindowIds() {
+  const ids = [];
+  if (!IS_MAC || !axHelper?.getWindowIdFromHandle) return ids;
+  for (const [, ws] of workspaces) {
+    if (!ws.win || ws.win.isDestroyed()) continue;
+    if (!ws._cgWid) {
+      try { ws._cgWid = axHelper.getWindowIdFromHandle(ws.win.getNativeWindowHandle().readBigUInt64LE(0)) || 0; } catch {}
+    }
+    if (ws._cgWid) ids.push(ws._cgWid);
+  }
+  return ids;
+}
+// 最前面の窓 (TiN 本体を除く)。TiN 本体も通常レベルの窓なので、除外しないと
+// TiN を操作した直後は TiN 自身を拾って snap が空振りする。
+// grid 端末 (内蔵ターミナル窓) は従来どおり対象に残す。
+function getFrontmostExternalWindowNumber() {
+  if (!axHelper?.getFrontmostWindowNumber) return 0;
+  return axHelper.getFrontmostWindowNumber(tinMainWindowIds()) || 0;
+}
+
 async function snapFrontmostWindow(ws) {
   if (!axHelper) return;
-  const wn = axHelper.getFrontmostWindowNumber();
+  const wn = getFrontmostExternalWindowNumber();
   if (!wn) return;
   if (isExternalSnapped(wn)) return; // 既にスナップ済み
   const allWins = axHelper.listWindows();
@@ -2108,7 +2185,7 @@ async function snapFrontmostWindow(ws) {
 // フロントウィンドウをスナップ解除
 async function unsnapFrontmostWindow(ws) {
   if (!axHelper) return;
-  const wn = axHelper.getFrontmostWindowNumber();
+  const wn = getFrontmostExternalWindowNumber();
   if (!wn) return;
   const info = ws.snappedExternals.get(wn);
   if (!info) return;
@@ -2839,7 +2916,7 @@ function createWorkspace(name, savedState) {
     x: winX,
     y: winY,
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 12, y: 17 },  // 46px バーの垂直センター (macOS)
+    trafficLightPosition: { x: 12, y: 12 },  // 36px バーの垂直センター (macOS)
     autoHideMenuBar: IS_WIN,  // Windows: 冗長なメニューバーを隠す (Alt で表示・アクセラレータは維持)
     transparent: true,        // グリッドパネル部分を透過させスナップウィンドウを表示
     backgroundColor: '#00000000',
@@ -3431,10 +3508,7 @@ function createWorkspace(name, savedState) {
       // Windows: alwaysOnTop を editMode/overlay 状態に常時同期する。
       // ハンドラ側で解除イベントが取りこぼされても TOPMOST が固着しない安全弁
       // (固着すると TiN が snapped 窓を覆い続けクリックスルーが壊れる)。
-      if (IS_WIN) {
-        const wantTop = !!(ws._editMode || ws._hasOverlay);
-        try { if (ws.win.isAlwaysOnTop() !== wantTop) ws.win.setAlwaysOnTop(wantTop); } catch {}
-      }
+      applyStackLevel(ws);
       // did-finish-load 前は OFF に固定 (getBounds が不確定なため誤判定を防ぐ)
       if (!_ctReady) {
         _setCT(false);
@@ -3545,8 +3619,20 @@ app.on('browser-window-focus', (_event, focusedWin) => {
     // だけ snapped を前面に集める。
     // Windows: 編集モード中は TiN を最前面に保つため snapped の再前面化を抑制
     // (mac は従来通り常に raise — 挙動を変えない)
-    if (!isGridWin && !(IS_WIN && ws._editMode)) raiseAllWorkspaceWindows(ws);
+    // mac の keepBehind 中は TiN が構造的に端末の下に居るので暗黙 raise は不要。
+    // むしろヘッダーを掴んだ瞬間に 13 窓の AXRaise が走り、ドラッグ開始を潰していた
+    // (= 「左上の掴むところが掴めない」)。明示操作 (force=true) の raise は残す。
+    const skipRaise = (IS_WIN && ws._editMode) || (IS_MAC && appSettings.keepBehind !== false);
+    if (!isGridWin && !skipRaise) raiseAllWorkspaceWindows(ws);
+    // TiN 本体がアクティブになると端末より上に来る。次に端末へ戻ったとき並べ直す。
+    if (!isGridWin) ws._needsGroupRaise = true;
     scheduleSyncSnapped(200);
+  }
+});
+// TiN から端末へ移ったら、poll (250ms) を待たずに並べ直す。
+app.on('browser-window-blur', (_event, blurredWin) => {
+  for (const [, w] of workspaces) {
+    if (w.win === blurredWin) { setTimeout(checkFrontmost, 120); break; }
   }
 });
 
@@ -3571,13 +3657,9 @@ ipcMain.on('set-overlay-active', (event, active) => {
   }
   // Windows: ポップアップ/ピッカー(TiN DOM)が手前の snapped 窓に覆われてクリック
   // できないため、overlay 表示中は TiN を最前面に固定する。編集モード中は維持。
+  applyStackLevel(ws);
   if (!IS_WIN || !ws.win || ws.win.isDestroyed()) return;
-  if (active) {
-    try { ws.win.setAlwaysOnTop(true); ws.win.moveTop(); } catch {}
-  } else if (!ws._editMode) {
-    try { ws.win.setAlwaysOnTop(false); } catch {}
-    raiseAllWorkspaceWindows(ws, true).catch(() => {});
-  }
+  if (!active && !ws._editMode) raiseAllWorkspaceWindows(ws, true).catch(() => {});
 });
 // 列/行の分割線(掴みゾーン)上にカーソルがある間は clickthrough を OFF に保ち、
 // 編集モードに入らなくても幅をドラッグ調整できるようにする(分割線はセル間ギャップに
@@ -3601,19 +3683,13 @@ ipcMain.on('set-edit-mode', (event, active) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return;
   ws._editMode = !!active;
-  // Windows: 通常 z-order は snapped 窓が TiN より前面のため、編集線(TiN DOM)が
-  // 窓に隠れて掴めない。編集中は TiN を最前面に上げる(透明なので窓は透けて見え、
-  // 編集線が手前に来て操作可能になる)。終了時に通常 z-order へ戻す。
+  // 通常 z-order では snapped 窓が TiN より前面のため、編集線(TiN DOM)が窓に隠れて
+  // 掴めない。編集中だけ TiN を最前面に上げる(透明なので窓は透けて見え、編集線が
+  // 手前に来て操作可能になる)。終了時に元の重ね順へ戻す。focus() は呼ばない
+  // (browser-window-focus が snapped を再前面化するため)。
+  applyStackLevel(ws);
   if (!IS_WIN || !ws.win || ws.win.isDestroyed()) return;
-  if (active) {
-    // 編集中は TiN を最前面に固定 (snapped 窓が手前にあると編集線を掴めないため)。
-    // setAlwaysOnTop で確実に上に保つ。透明なので窓は透けて見える。
-    // focus() は呼ばない (browser-window-focus が snapped を再前面化するため)。
-    try { ws.win.setAlwaysOnTop(true); ws.win.moveTop(); } catch {}
-  } else {
-    try { ws.win.setAlwaysOnTop(false); } catch {}
-    raiseAllWorkspaceWindows(ws, true).catch(() => {});
-  }
+  if (!active) raiseAllWorkspaceWindows(ws, true).catch(() => {});
 });
 
 // 統合ウィンドウ方式では raise-all-from-overlay / set-overlay-clickthrough は不要 (no-op)
@@ -4178,6 +4254,12 @@ function uninstallClaudeHooks() {
 // 「· Composing…」等)。'ing…' 単独の広範マッチだと応答本文の "Loading…" 等に誤反応し、
 // busy が最優先確定のため実際の許可待ち(perm)をマスクする → 記号付き行頭に限定する。
 const BUSY_SPINNER_RE = /(^|[\r\n])\s*[·✢✳✶✻✽✦∗*+]\s?\S+ing…/;
+// Claude Code は端末タイトルに状態記号を付ける: 待機は ✳、実行中は ◐◑◒◓ の回転
+// (codex は ⠀-⣿ の braille)。窓タイトル(4秒 poll のスナップショット)とタブ title
+// (今取得した値)では記号の位相がずれるため、生文字列比較はほぼ必ず外れる。
+// → 比較前に両側から記号を落とす。落とし忘れると「色が全く付かない」(2026-09-05 の不具合)。
+const TITLE_GLYPH_RE = /[\s✳✶✻✴✽✢◐◑◒◓◴◵◶◷⠀-⣿]+/g;
+function stripTitleGlyphs(s) { return String(s || '').replace(TITLE_GLYPH_RE, ' ').trim(); }
 let _statusBusy = false;
 let _statusCache = null;
 let _statusCacheAt = 0;
@@ -4217,7 +4299,7 @@ async function getClaudeStatuses() {
     // 判定は JS 側(下)で行い、レコードは RS(0x1e)/US(0x1f) 区切りで受け取る。
     // ※ tell application "Terminal" は未起動だと Apple Event が Terminal を自動起動
     //   してしまう(quit しても 6 秒以内に復活)ため、is running を先に確認して回避。
-    const script = 'set rs to character id 30\nset us to character id 31\nif application "Terminal" is not running then return ""\ntell application "Terminal"\nset tl to tty of every tab of every window\nset cl to custom title of every tab of every window\nset pl to «property pcnt» of every tab of every window\nend tell\nset out to ""\nrepeat with wi from 1 to count tl\ntry\nset wt to item wi of tl\nset wc to item wi of cl\nset wp to item wi of pl\nrepeat with ti from 1 to count wt\ntry\nset t1 to item ti of wt\nset c1 to item ti of wc\nset p1 to item ti of wp\nif t1 is missing value then set t1 to ""\nif c1 is missing value then set c1 to ""\nif p1 is missing value then set p1 to ""\nset out to out & (t1 as string) & us & (c1 as string) & us & (p1 as string) & rs\nend try\nend repeat\nend try\nend repeat\nreturn out';
+    const script = 'set rs to character id 30\nset us to character id 31\nif application "Terminal" is not running then return ""\ntell application "Terminal"\nset wl to id of every window\nset tl to tty of every tab of every window\nset cl to custom title of every tab of every window\nset el to selected of every tab of every window\nset pl to «property pcnt» of every tab of every window\nend tell\nset out to ""\nrepeat with wi from 1 to count tl\ntry\nset wi1 to item wi of wl\nset wt to item wi of tl\nset wc to item wi of cl\nset we to item wi of el\nset wp to item wi of pl\nrepeat with ti from 1 to count wt\ntry\nset t1 to item ti of wt\nset c1 to item ti of wc\nset e1 to item ti of we\nset p1 to item ti of wp\nif t1 is missing value then set t1 to ""\nif c1 is missing value then set c1 to ""\nif p1 is missing value then set p1 to ""\nset out to out & (wi1 as string) & us & (t1 as string) & us & (c1 as string) & us & (e1 as string) & us & (p1 as string) & rs\nend try\nend repeat\nend try\nend repeat\nreturn out';
     const { stdout: term } = await execFileAsync('osascript', ['-e', script], { timeout: 10000, maxBuffer: 8 * 1024 * 1024 });
     // ── 判定(JS 側) ──
     // 窓は画面の最後22行(桁数に依存しない)。フッター/メニュー/入力ボックス/
@@ -4231,16 +4313,22 @@ async function getClaudeStatuses() {
     const list = [];
     for (const rec of term.split('\x1e')) {
       const f = rec.split('\x1f');
-      if (f.length < 3) continue;
-      const tty = f[0].replace('/dev/', '').trim();
-      const title = f[1].trim();
-      if (!ttys.has(tty) || !title) continue;
-      const tail = f[2].split('\n').slice(-22).join('\n');
+      if (f.length < 5) continue;
+      // f = [window id, tty, custom title, selected, contents]
+      // Terminal.app の AppleScript `id of window` は CGWindowList の windowNumber と
+      // 同じ値 (実測 2026-09-05)。これで snapped 窓との対応をタイトル文字列に頼らず
+      // 確定できる。custom title 空のタブも tty さえ取れれば対象にする。
+      const winId = parseInt(f[0], 10) || 0;
+      const tty = f[1].replace('/dev/', '').trim();
+      const title = f[2].trim();
+      const selected = /^true$/i.test(f[3].trim());
+      if (!ttys.has(tty)) continue;
+      const tail = f[4].split('\n').slice(-22).join('\n');
       let state = 'live';
       if (tail.includes('esc to interrupt') || BUSY_SPINNER_RE.test(tail)) state = 'busy';
       else if ((tail.includes('❯ 1.') && tail.includes(' 2. ')) || (tail.includes('❯ 2.') && tail.includes(' 1. '))
         || (tail.includes('❯ 3.') && tail.includes(' 1. '))) state = 'perm';
-      list.push({ tty, title, state });
+      list.push({ tty, title, state, winId, selected });
     }
     _statusCacheAt = Date.now();
     return (_statusCache = { tabs: list, ttys });
@@ -4308,7 +4396,7 @@ function classifyClaudeState(m, title) {
   if (m.state === 'busy') return 'busy';
   if (hkValid) return hk.state;
   if (m.state === 'perm') return 'perm';
-  if (/[⠀-⣿]/.test(title)) return 'busy';
+  if (/[⠀-⣿◐◑◒◓◴◵◶◷]/.test(title)) return 'busy';
   return 'input';
 }
 
@@ -4327,10 +4415,20 @@ ipcMain.handle('status-colorize', async (event) => {
   const colors = {}, states = {}, labels = {};
   for (const [wn, info] of ws.snappedExternals) {
     const t = info.title || '';
-    const m = tabs.find(s => {
-      const task = s.title.replace(/^[\s✳✶✦✻✴⠀-⣿]+/, '').trim();
-      return task.length >= 4 && t.includes(task.slice(0, 16));
-    });
+    // ① window id の完全一致 (Terminal.app)。文字列に依存しないので確実。
+    //    1 窓に複数タブがあるときは画面に見えている選択中タブを優先する。
+    let m = null;
+    const inWin = tabs.filter(s => s.winId && s.winId === wn);
+    if (inWin.length) m = inWin.find(s => s.selected) || inWin[0];
+    // ② フォールバック: タイトル部分一致 (id が取れない場合)。回転する状態記号は
+    //    両側から剥がしてから比べる。短いタスク名(「再開」等)も拾えるよう 2 文字から。
+    if (!m) {
+      const task = stripTitleGlyphs(t);
+      m = tabs.find(s => {
+        const key = stripTitleGlyphs(s.title);
+        return key.length >= 2 && task.includes(key.slice(0, 16));
+      });
+    }
     if (!m) continue;                                // claude 非稼働 → 状態なし
     const st = classifyClaudeState(m, t);
     colors[wn] = CLAUDE_STATE_META[st].color;
@@ -4424,21 +4522,31 @@ app.isQuitting = false;
 // 500ms × 1ms = 0.2% 未満の CPU 使用率で済む。
 let _lastFrontmost = 0;
 let _frontmostInterval = null;
-function startFrontmostPoll() {
-  if (!axHelper || !axHelper.getFrontmostWindowNumber) return;
-  if (_frontmostInterval) return;
-  _frontmostInterval = setInterval(() => {
-    try {
-      const wn = axHelper.getFrontmostWindowNumber() || 0;
-      if (wn === _lastFrontmost) return;
+function checkFrontmost() {
+  try {
+    const wn = getFrontmostExternalWindowNumber();
+    const prev = _lastFrontmost;
+    if (wn !== prev) {
       _lastFrontmost = wn;
       for (const [, ws] of workspaces) {
         if (ws.win && !ws.win.isDestroyed()) {
           ws.win.webContents.send('frontmost-update', wn);
         }
       }
-    } catch {}
-  }, 1000); // 1000ms: mousedown で即時更新するので視覚的な遅れなし
+    }
+    // 前面の窓がスナップ端末なら、その workspace の端末を TiN の上に集める。
+    // 端末同士の切り替え (A→B) では TiN は既に端末の直下なので何もしない。
+    const owner = wn ? isExternalSnapped(wn) : null;
+    if (owner && (owner._needsGroupRaise || isExternalSnapped(prev) !== owner)) {
+      if (!raiseGroupAboveTin(owner, wn)) owner._needsGroupRaise = true;   // ドラッグ中などは次回
+    }
+  } catch {}
+}
+function startFrontmostPoll() {
+  if (!axHelper || !axHelper.getFrontmostWindowNumber) return;
+  if (_frontmostInterval) return;
+  // 250ms: CGWindowList 1 回 ~1ms。端末クリック後に上部バーが沈んだまま見える時間を短くする。
+  _frontmostInterval = setInterval(checkFrontmost, 250);
 }
 
 app.whenReady().then(async () => {
@@ -4699,6 +4807,14 @@ app.whenReady().then(async () => {
         const win = BrowserWindow.getFocusedWindow();
         if (win) win.webContents.send('toggle-compact');
       }},
+      // TiN 本体の重ね順。既定 ON = 端末の下に潜り、前面にせり出さない。
+      // OFF にすると従来どおり通常 z-order (困ったときの逃げ道として UI から戻せる)。
+      { label: 'TiN を端末の下に置く', type: 'checkbox', checked: appSettings.keepBehind !== false,
+        click: (item) => {
+          appSettings.keepBehind = !!item.checked;
+          saveSettings();
+          for (const [, w] of workspaces) applyStackLevel(w);
+        }},
       { label: 'Appearance', submenu: [
         { label: 'Black', type: 'radio', checked: appSettings.theme !== 'light', click: () => setAppTheme('dark') },
         { label: 'White', type: 'radio', checked: appSettings.theme === 'light', click: () => setAppTheme('light') },
@@ -4746,6 +4862,11 @@ app.whenReady().then(async () => {
     for (const wsData of persisted.workspaces) {
       createWorkspace(wsData.name, wsData);
     }
+    // 窓は生成と同時に表示されるので、放っておくと最後に作ったワークスペースがキーになる。
+    // 普段使わない別ワークスペースが最前面に残ると、そこの上部バーの All Snap を押して
+    // 端末が意図しないワークスペースに入る (2026-09-14 実害)。先頭のワークスペースを前にする。
+    const firstWs = [...workspaces.values()][0];
+    if (IS_MAC && firstWs?.win && !firstWs.win.isDestroyed()) firstWs.win.focus();
   } else {
     createWorkspace();
   }
@@ -4865,7 +4986,7 @@ function startRestServer() {
       const ws = (body.workspaceId ? workspaces.get(body.workspaceId) : null) || [...workspaces.values()][0];
       if (!ws) return restReply(res, 404, { ok: false, error: 'no workspace' });
       let targetWn = body.windowNumber;
-      if (!targetWn && axHelper) targetWn = axHelper.getFrontmostWindowNumber();
+      if (!targetWn && axHelper) targetWn = getFrontmostExternalWindowNumber();
       if (!targetWn) return restReply(res, 400, { ok: false, error: 'no window' });
       if (isExternalSnapped(targetWn)) return restReply(res, 200, { ok: true, note: 'already snapped' });
       const allWins = axHelper ? axHelper.listWindows() : [];
@@ -4899,7 +5020,7 @@ function startRestServer() {
     if (route === 'POST /api/unsnap') {
       const body = await parseBody(req);
       let wn = body.windowNumber;
-      if (!wn && axHelper) wn = axHelper.getFrontmostWindowNumber();
+      if (!wn && axHelper) wn = getFrontmostExternalWindowNumber();
       if (!wn) return restReply(res, 400, { ok: false, error: 'no window' });
       let found = false;
       for (const [, ws] of workspaces) {

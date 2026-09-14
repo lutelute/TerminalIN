@@ -950,9 +950,34 @@ static napi_value IsAXTrusted(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// ── マウス左ボタンが押されているか ──
+// ウィンドウのレベル/重ね順をドラッグの途中で変えないための判定に使う。
+// pressedMouseButtons はアプリがアクティブでなくてもグローバルな押下状態を返す。
+static napi_value IsMouseButtonDown(napi_env env, napi_callback_info info) {
+    napi_value result;
+    napi_get_boolean(env, ([NSEvent pressedMouseButtons] & 1) != 0, &result);
+    return result;
+}
+
 // ── 最前面ウィンドウの CGWindowNumber を取得 ──
 // z-order 上位の layer=0 normal window を返す。一致なければ 0。
+// 省略可能な第1引数: 飛ばす CGWindowID の配列。TiN 本体はフォーカス中に通常レベルへ
+// 上がるので、除外しないと「最前面 = TiN 自身」になり snap/unsnap が空振りする。
 static napi_value GetFrontmostWindowNumber(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+    NSMutableSet<NSNumber *> *skip = [NSMutableSet set];
+    bool isArr = false;
+    if (argc >= 1 && napi_is_array(env, args[0], &isArr) == napi_ok && isArr) {
+        uint32_t len = 0;
+        napi_get_array_length(env, args[0], &len);
+        for (uint32_t i = 0; i < len; i++) {
+            napi_value el; int32_t v = 0;
+            if (napi_get_element(env, args[0], i, &el) == napi_ok &&
+                napi_get_value_int32(env, el, &v) == napi_ok && v > 0) [skip addObject:@(v)];
+        }
+    }
     CFArrayRef windowList = CGWindowListCopyWindowInfo(
         kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
         kCGNullWindowID);
@@ -967,6 +992,7 @@ static napi_value GetFrontmostWindowNumber(napi_env env, napi_callback_info info
             CGFloat h = [bounds[@"Height"] floatValue];
             if (w <= 50 || h <= 50) continue;
             NSNumber *wn = win[(__bridge NSString *)kCGWindowNumber];
+            if (wn && [skip containsObject:@([wn intValue])]) continue;
             if (wn) { result = [wn intValue]; break; }
         }
         CFRelease(windowList);
@@ -1180,6 +1206,9 @@ static napi_value Init(napi_env env, napi_value exports) {
 
     napi_create_function(env, NULL, 0, IsAXTrusted, NULL, &fn);
     napi_set_named_property(env, exports, "isAXTrusted", fn);
+
+    napi_create_function(env, NULL, 0, IsMouseButtonDown, NULL, &fn);
+    napi_set_named_property(env, exports, "isMouseButtonDown", fn);
 
     napi_create_function(env, NULL, 0, MoveToSpace, NULL, &fn);
     napi_set_named_property(env, exports, "moveToSpace", fn);

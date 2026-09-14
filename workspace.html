@@ -355,7 +355,7 @@
   /* 1行構成 (高さは main.js の TITLEBAR_H と一致させること) */
   /* 高さは main.js TITLEBAR_H と一致させること (clickthrough のヘッダー保護判定に使う) */
   #titlebar {
-    height: 46px;
+    height: 36px;
     -webkit-app-region: drag;
     display: flex; align-items: center; gap: 4px;
     padding: 0 8px 0 72px;
@@ -441,6 +441,11 @@
     transition: color 0.1s, background 0.1s;
   }
   .groupy-tab-add:hover { color: rgba(0,0,0,0.6); background: rgba(0,0,0,0.06); }
+  /* ラベル付きボタン: アイコンだけだと押すまで何が起きるか分からない
+     (内蔵ターミナルが不意に出てくる)。文字を併記して誤爆を防ぐ。 */
+  .groupy-tab-add.labeled { width: auto; padding: 0 7px; gap: 4px; }
+  .groupy-tab-add .tb-label { font-size: 10.5px; font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
+  .groupy-tab-add svg { flex-shrink: 0; }
   #title {
     font-size: 14px; font-weight: 700; color: rgba(30,30,60,0.85);
     cursor: text; user-select: none;
@@ -2528,7 +2533,7 @@ function showToast(msg, kind = 'info') {
   t.textContent = msg;
   const bg = kind === 'error' ? 'rgba(220,38,38,0.92)' : 'rgba(28,28,30,0.92)';
   t.style.cssText = `
-    position:fixed; bottom:18px; left:50%; transform:translateX(-50%) translateY(8px);
+    position:fixed; top:8px; left:50%; transform:translateX(-50%) translateY(-8px);
     background:${bg}; color:#fff; padding:8px 14px; border-radius:8px; font-size:12px;
     z-index:10001; box-shadow:0 8px 24px rgba(0,0,0,0.35); opacity:0;
     transition:opacity .14s ease, transform .18s ease; pointer-events:none;
@@ -2536,7 +2541,7 @@ function showToast(msg, kind = 'info') {
   document.body.appendChild(t);
   requestAnimationFrame(() => { t.style.opacity = '1'; t.style.transform = 'translateX(-50%) translateY(0)'; });
   setTimeout(() => {
-    t.style.opacity = '0'; t.style.transform = 'translateX(-50%) translateY(8px)';
+    t.style.opacity = '0'; t.style.transform = 'translateX(-50%) translateY(-8px)';
     setTimeout(() => t.remove(), 250);
   }, 2200);
 }
@@ -3257,16 +3262,28 @@ ipcRenderer.on('claude-status-nudge', () => refreshStatusColors(true));
 
 // AI 色判定を実行 (haiku が端末の用途を判定して色割当)。もう一度押すと解除。
 async function runAiColorize(btn) {
-  if (Object.keys(aiColors).length > 0) { aiColors = {}; render(); return; }
-  if (btn) { btn.innerHTML = iconSvg('busy'); btn.classList.add('busy'); }
+  const restore = () => { if (btn) { btn.innerHTML = iconSvg('sparkle') + '<span class="tb-label">AI色</span>'; btn.classList.remove('busy'); } };
+  if (Object.keys(aiColors).length > 0) { aiColors = {}; render(); showToast('AI色を解除しました'); return; }
+  if (btn) { btn.innerHTML = iconSvg('busy') + '<span class="tb-label">判定中</span>'; btn.classList.add('busy'); }
+  // haiku 呼び出しは実測 20 秒前後かかる。無言だと「効いていない」ように見えるので
+  // 開始・成功・失敗を必ずトーストで出す (statusEl だけだと気づけない)。
+  showToast('AI色: 判定中… (20秒ほどかかります)');
   try {
     const r = await ipcRenderer.invoke('ai-colorize');
-    if (r && r.ok) { aiColors = r.colors || {}; render(); }
-    else if (statusEl) statusEl.textContent = 'AI色: ' + ((r && r.error) || '失敗');
+    if (r && r.ok) {
+      aiColors = r.colors || {};
+      render();
+      showToast(`AI色: ${Object.keys(aiColors).length} 窓を色分けしました`);
+    } else {
+      const msg = 'AI色: ' + ((r && r.error) || '失敗');
+      if (statusEl) statusEl.textContent = msg;
+      showToast(msg, 'error');
+    }
   } catch (e) {
     if (statusEl) statusEl.textContent = 'AI色エラー: ' + e.message;
+    showToast('AI色エラー: ' + e.message, 'error');
   } finally {
-    if (btn) { btn.innerHTML = iconSvg('sparkle'); btn.classList.remove('busy'); }
+    restore();
   }
 }
 
@@ -4012,8 +4029,9 @@ function render() {
     // + ボタン (新しい PTY ターミナル)
     const addTabBtn = document.createElement('div');
     addTabBtn.className = 'groupy-tab-add';
-    addTabBtn.title = '内蔵ターミナルを 1 つ追加';
-    addTabBtn.innerHTML = iconSvg('plus');
+    addTabBtn.title = '内蔵ターミナルを 1 つ追加 (黒い端末パネルが空きスロットに出ます)';
+    addTabBtn.classList.add('labeled');
+    addTabBtn.innerHTML = iconSvg('plus') + '<span class="tb-label">端末</span>';
     addTabBtn.addEventListener('click', () => ipcRenderer.invoke('add-grid-terminal'));
     ctrlHost.appendChild(addTabBtn);
     // 空きスロットを全部 内蔵ターミナルで埋めるボタン (内蔵端末は任意幅に fit するので狭い列でも収まる)。
@@ -4021,14 +4039,16 @@ function render() {
     const fillTermBtn = document.createElement('div');
     fillTermBtn.className = 'groupy-tab-add';
     fillTermBtn.title = '空きスロットを全部 内蔵ターミナルで埋める';
-    fillTermBtn.innerHTML = iconSvg('fill');
+    fillTermBtn.classList.add('labeled');
+    fillTermBtn.innerHTML = iconSvg('fill') + '<span class="tb-label">全部埋める</span>';
     fillTermBtn.addEventListener('click', () => ipcRenderer.invoke('fill-grid-terminals'));
     ctrlHost.appendChild(fillTermBtn);
     // AI 色判定ボタン (haiku が端末の用途を判定して色分け / 再押下で解除)
     const aiColorBtn = document.createElement('div');
     aiColorBtn.className = 'groupy-tab-add';
     aiColorBtn.title = 'AI が端末の用途を判定して色分け (もう一度押すと解除)';
-    aiColorBtn.innerHTML = iconSvg('sparkle');
+    aiColorBtn.classList.add('labeled');
+    aiColorBtn.innerHTML = iconSvg('sparkle') + '<span class="tb-label">AI色</span>';
     aiColorBtn.addEventListener('click', () => runAiColorize(aiColorBtn));
     ctrlHost.appendChild(aiColorBtn);
     ctrlHost.appendChild(selector);
@@ -4641,7 +4661,26 @@ function triggerRaiseAll() {
   _raiseThrottle = now;
   ipcRenderer.send('raise-all');
 }
-document.getElementById('titlebar').addEventListener('mousedown', triggerRaiseAll);
+// ヘッダーは mousedown で raise しない。押した瞬間に snapped 窓の AXRaise が走ると
+// ウィンドウドラッグ(app-region:drag)の開始を潰してしまい、「左上の掴み代で窓を
+// 動かせない」状態になる (2026-09-05 のユーザー報告)。押下位置から動いていない
+// = 単なるクリックだったときだけ mouseup で発火させる。
+{
+  const _tb = document.getElementById('titlebar');
+  let _tbDown = null;
+  _tb.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    _tbDown = { x: e.screenX, y: e.screenY };
+  });
+  _tb.addEventListener('mouseup', (e) => {
+    if (!_tbDown) return;
+    const moved = Math.abs(e.screenX - _tbDown.x) > 3 || Math.abs(e.screenY - _tbDown.y) > 3;
+    _tbDown = null;
+    if (!moved) triggerRaiseAll();   // ドラッグではなくクリック → 従来どおり前面化
+  });
+  // ドラッグ中は mouseup が web content に届かないことがあるため取りこぼしを掃除
+  window.addEventListener('blur', () => { _tbDown = null; });
+}
 // content エリア内クリック (ただしボタン等の個別要素は除く: stopPropagation 済み)
 document.getElementById('content').addEventListener('mousedown', (e) => {
   // すでに stopPropagation されてる要素 (Snap ボタン等) はここに届かない

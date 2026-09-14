@@ -9,7 +9,7 @@
      main.js の TITLEBAR_H / GROUPY_Y_OFFSET と必ず一致させること —
      食い違うと外部窓がヘッダー下にめり込む/隙間が空き、clickthrough の
      ヘッダー保護帯もズレてグリッド上端が操作不能になる。 */
-  --tin-header-h: 46px;
+  --tin-header-h: 36px;
 }
 
 body[data-theme="dark"] {

@@ -108,7 +108,9 @@ function resolveClaude() {
 // ── Claude CLI 呼び出し (クロスプラットフォーム) ──
 // model: 'haiku'(既定・速い) | 'sonnet'(賢い)。timeoutMs で長文生成にも対応。
 // プロンプトは stdin で渡す(`cat file | claude` のシェルパイプを廃し Windows でも動く)。
-function callClaude(prompt, model = 'haiku', timeoutMs = 30000) {
+// timeoutMs: 実測で 10 窓の色判定に 20 秒かかる (2026-09-05)。30 秒だと変動で
+// 頻繁に SIGTERM に当たり「AI 色判定が効かない」ように見えるため余裕を持たせる。
+function callClaude(prompt, model = 'haiku', timeoutMs = 90000) {
   return new Promise((resolve, reject) => {
     const os = require('os');
     const safeModel = /^[a-z0-9.\-]+$/i.test(model) ? model : 'haiku';  // 引数注入防止
@@ -124,7 +126,10 @@ function callClaude(prompt, model = 'haiku', timeoutMs = 30000) {
     let stdout = '', stderr = '';
     child.stdout.on('data', d => { stdout += d; });
     child.stderr.on('data', d => { stderr += d; });
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
+      // spawn の timeout は SIGTERM を撃つ → code=null。「exit code null」では原因が
+      // 分からないので、タイムアウトだと分かる文言にして UI に出す。
+      if (signal) return reject(new Error(`claude CLI が ${Math.round(timeoutMs / 1000)} 秒以内に応答せず中断 (${signal})`));
       if (code !== 0) return reject(new Error(stderr.trim() || `exit code ${code}`));
       resolve(stdout.trim());
     });
