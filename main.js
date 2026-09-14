@@ -1291,38 +1291,54 @@ function moveWorkspaceToDisplay(ws, dir = 1) {
 let lastRaiseTime = 0;
 
 // ── z-order (重ね順) の一元管理 ──
-// 既定は「TiN は端末の下」。mac は NSWindow level を normal-1 に落とす
-// (Electron の relativeLevel)。level が normal 未満の窓は、どのアプリを activate
-// しても通常ウィンドウより上に来られないので、TiN が端末を覆うことが構造的に無くなる
-// (= 「前面に出過ぎ」の根治。show()/focus() の呼び順に依存しない)。
-// 透過窓なのでグリッド線・ヘッダー・スロットの隙間はそのまま見える。
-// Windows は「下に固定する」API が無いため従来どおり通常 z-order (TOPMOST OFF)。
-// 例外:
-//  - 編集モード / オーバーレイ(設定・ドロワー・ピッカー等の DOM)表示中は
-//    端末に隠れると操作できないため最前面 ('top') へ上げ、閉じたら元に戻す。
-//  - TiN 本体にフォーカスがある間は通常レベルで前面 ('front') に出す。normal-1 は
-//    「端末の下」ではなく「全アプリの全窓の下」なので、固定したままだと Dock /
-//    Cmd+Tab で呼んでも上部バーが PowerPoint や Vivaldi の窓に隠れたまま出てこない
-//    (2026-09-14 のユーザー報告)。端末や他アプリをクリックしてフォーカスが外れたら
-//    normal-1 に戻る。
+// TiN 本体は通常レベルに置く。以前は mac で NSWindow level を normal-1 に落としていたが、
+// normal-1 は「スナップした端末の下」ではなく「全アプリの全窓の下」で、端末をクリック
+// するたびに上部バーが PowerPoint や Vivaldi の後ろへ沈み、操作も snap もできなくなった
+// (2026-09-14 のユーザー報告)。「端末は TiN の上」は raiseGroupAboveTin で並べ直して作る。
+// 例外: 編集モード / オーバーレイ(設定・ドロワー・ピッカー等の DOM)表示中は端末に
+// 隠れると操作できないため最前面 ('top') へ上げ、閉じたら通常レベルに戻す。
 function applyStackLevel(ws) {
   if (!ws || !ws.win || ws.win.isDestroyed()) return;
-  let want;
-  if (ws._editMode || ws._hasOverlay) want = 'top';
-  else if (!IS_MAC || appSettings.keepBehind === false) want = 'normal';
-  else want = ws.win.isFocused() ? 'front' : 'behind';
+  const want = (ws._editMode || ws._hasOverlay) ? 'top' : 'normal';
   if (ws._stackLevel === want) return;   // 変化時のみ呼ぶ (50ms ループから叩かれるため)
-  // ヘッダーを掴んだ瞬間にも focus は来る。ドラッグの途中で自窓のレベルと重ね順を
-  // 変えるとドラッグ開始を潰しかねない (9/5 に AXRaise で実際に潰した) ので、
-  // ボタンが離れるまで待つ。次のループ (≤120ms) で再評価される。
-  if (want === 'front' && ws._stackLevel === 'behind' && axHelper?.isMouseButtonDown?.()) return;
   try {
     if (want === 'top') { ws.win.setAlwaysOnTop(true, 'floating'); ws.win.moveTop(); }
-    else if (want === 'behind') ws.win.setAlwaysOnTop(true, 'normal', -1);
-    else if (want === 'front') { ws.win.setAlwaysOnTop(false); ws.win.moveTop(); }
     else ws.win.setAlwaysOnTop(false);
     ws._stackLevel = want;
+    if (want === 'normal') ws._needsGroupRaise = true;   // 'top' の間に端末を覆っていた
   } catch (e) { console.warn('[tin] applyStackLevel failed:', e?.message || e); }
+}
+
+// ── スナップ端末を TiN の上に集める (mac / keepBehind) ──
+// 端末が前面に来たとき (= ユーザーが端末を触った) に [端末] > [TiN] > [他アプリ] へ並べ直す:
+// TiN を moveTop (activate しない) してから、スナップ端末を AXRaise する。いま前面の
+// 端末を最後に上げるのは、AXRaise が main 窓 (キーボードの行き先) を動かすため。
+// AXRaise はアクティブなアプリの窓より上には行けない (2026-09-14 実測) ので、TiN が
+// アクティブな間は何もしない。端末をドラッグ中 (ボタン押下中) も触らない。
+function raiseGroupAboveTin(ws, activeWn) {
+  if (!IS_MAC || appSettings.keepBehind === false) return false;
+  if (!ws || !ws.win || ws.win.isDestroyed() || ws.win.isFocused()) return false;
+  if (ws._editMode || ws._hasOverlay) return false;
+  if (axHelper?.isMouseButtonDown?.()) return false;
+  try { ws.win.moveTop(); } catch {}
+  for (const [, gw] of ws.gridWindows) {
+    try { if (gw.win && !gw.win.isDestroyed()) gw.win.moveTop(); } catch {}
+  }
+  ws._needsGroupRaise = false;
+  // moveTop はウィンドウサーバーで非同期に反映される。同じ tick で AXRaise すると、
+  // 上げ終わった端末の上に後から TiN が被さる (実測: 12 窓中 2〜4 窓しか上に残らない)。
+  // 反映を待ってから上げる。
+  setTimeout(() => {
+    if (!ws.win || ws.win.isDestroyed() || ws.win.isFocused() || !axHelper?.raiseWindows) return;
+    const infos = [...ws.snappedExternals.values()]
+      .sort((a, b) => (a.windowNumber === activeWn) - (b.windowNumber === activeWn));
+    const cmds = infos.map(i => ({ windowNumber: i.windowNumber, pid: i.pid, app: i.app, title: i.title }));
+    try {
+      const n = axHelper.raiseWindows(cmds);
+      if (n < cmds.length) console.log(`[tin] group-raise: ${n}/${cmds.length} raised`);
+    } catch (e) { console.warn('[tin] group-raise failed:', e?.message || e); }
+  }, 80);
+  return true;
 }
 
 async function raiseAllWorkspaceWindows(ws, force = false) {
@@ -2111,9 +2127,31 @@ ipcMain.handle('get-grid-state', (event) => {
 // ── Global Hotkeys ──────────────────────────────────────────────────────────
 
 // フロントウィンドウを対象 workspace の次の空きスロットにスナップ
+// TiN 本体 (ワークスペース窓) の CGWindowID。getWindowIdFromHandle は呼ぶたびに
+// ログを吐くので ws ごとにキャッシュする。
+function tinMainWindowIds() {
+  const ids = [];
+  if (!IS_MAC || !axHelper?.getWindowIdFromHandle) return ids;
+  for (const [, ws] of workspaces) {
+    if (!ws.win || ws.win.isDestroyed()) continue;
+    if (!ws._cgWid) {
+      try { ws._cgWid = axHelper.getWindowIdFromHandle(ws.win.getNativeWindowHandle().readBigUInt64LE(0)) || 0; } catch {}
+    }
+    if (ws._cgWid) ids.push(ws._cgWid);
+  }
+  return ids;
+}
+// 最前面の窓 (TiN 本体を除く)。TiN 本体も通常レベルの窓なので、除外しないと
+// TiN を操作した直後は TiN 自身を拾って snap が空振りする。
+// grid 端末 (内蔵ターミナル窓) は従来どおり対象に残す。
+function getFrontmostExternalWindowNumber() {
+  if (!axHelper?.getFrontmostWindowNumber) return 0;
+  return axHelper.getFrontmostWindowNumber(tinMainWindowIds()) || 0;
+}
+
 async function snapFrontmostWindow(ws) {
   if (!axHelper) return;
-  const wn = axHelper.getFrontmostWindowNumber();
+  const wn = getFrontmostExternalWindowNumber();
   if (!wn) return;
   if (isExternalSnapped(wn)) return; // 既にスナップ済み
   const allWins = axHelper.listWindows();
@@ -2147,7 +2185,7 @@ async function snapFrontmostWindow(ws) {
 // フロントウィンドウをスナップ解除
 async function unsnapFrontmostWindow(ws) {
   if (!axHelper) return;
-  const wn = axHelper.getFrontmostWindowNumber();
+  const wn = getFrontmostExternalWindowNumber();
   if (!wn) return;
   const info = ws.snappedExternals.get(wn);
   if (!info) return;
@@ -3586,15 +3624,15 @@ app.on('browser-window-focus', (_event, focusedWin) => {
     // (= 「左上の掴むところが掴めない」)。明示操作 (force=true) の raise は残す。
     const skipRaise = (IS_WIN && ws._editMode) || (IS_MAC && appSettings.keepBehind !== false);
     if (!isGridWin && !skipRaise) raiseAllWorkspaceWindows(ws);
-    applyStackLevel(ws);   // 本体に focus → 'front' (ボタン押下中なら離れてから)
+    // TiN 本体がアクティブになると端末より上に来る。次に端末へ戻ったとき並べ直す。
+    if (!isGridWin) ws._needsGroupRaise = true;
     scheduleSyncSnapped(200);
   }
 });
-// focus が外れたら (端末や他アプリをクリック) 端末の下へ戻す。50ms ループでも拾えるが
-// 端末クリック直後に TiN が上に残る時間を無くすため即時に反映する。
+// TiN から端末へ移ったら、poll (250ms) を待たずに並べ直す。
 app.on('browser-window-blur', (_event, blurredWin) => {
   for (const [, w] of workspaces) {
-    if (w.win === blurredWin) { applyStackLevel(w); break; }
+    if (w.win === blurredWin) { setTimeout(checkFrontmost, 120); break; }
   }
 });
 
@@ -4484,21 +4522,31 @@ app.isQuitting = false;
 // 500ms × 1ms = 0.2% 未満の CPU 使用率で済む。
 let _lastFrontmost = 0;
 let _frontmostInterval = null;
-function startFrontmostPoll() {
-  if (!axHelper || !axHelper.getFrontmostWindowNumber) return;
-  if (_frontmostInterval) return;
-  _frontmostInterval = setInterval(() => {
-    try {
-      const wn = axHelper.getFrontmostWindowNumber() || 0;
-      if (wn === _lastFrontmost) return;
+function checkFrontmost() {
+  try {
+    const wn = getFrontmostExternalWindowNumber();
+    const prev = _lastFrontmost;
+    if (wn !== prev) {
       _lastFrontmost = wn;
       for (const [, ws] of workspaces) {
         if (ws.win && !ws.win.isDestroyed()) {
           ws.win.webContents.send('frontmost-update', wn);
         }
       }
-    } catch {}
-  }, 1000); // 1000ms: mousedown で即時更新するので視覚的な遅れなし
+    }
+    // 前面の窓がスナップ端末なら、その workspace の端末を TiN の上に集める。
+    // 端末同士の切り替え (A→B) では TiN は既に端末の直下なので何もしない。
+    const owner = wn ? isExternalSnapped(wn) : null;
+    if (owner && (owner._needsGroupRaise || isExternalSnapped(prev) !== owner)) {
+      if (!raiseGroupAboveTin(owner, wn)) owner._needsGroupRaise = true;   // ドラッグ中などは次回
+    }
+  } catch {}
+}
+function startFrontmostPoll() {
+  if (!axHelper || !axHelper.getFrontmostWindowNumber) return;
+  if (_frontmostInterval) return;
+  // 250ms: CGWindowList 1 回 ~1ms。端末クリック後に上部バーが沈んだまま見える時間を短くする。
+  _frontmostInterval = setInterval(checkFrontmost, 250);
 }
 
 app.whenReady().then(async () => {
@@ -4814,6 +4862,11 @@ app.whenReady().then(async () => {
     for (const wsData of persisted.workspaces) {
       createWorkspace(wsData.name, wsData);
     }
+    // 窓は生成と同時に表示されるので、放っておくと最後に作ったワークスペースがキーになる。
+    // 普段使わない別ワークスペースが最前面に残ると、そこの上部バーの All Snap を押して
+    // 端末が意図しないワークスペースに入る (2026-09-14 実害)。先頭のワークスペースを前にする。
+    const firstWs = [...workspaces.values()][0];
+    if (IS_MAC && firstWs?.win && !firstWs.win.isDestroyed()) firstWs.win.focus();
   } else {
     createWorkspace();
   }
@@ -4933,7 +4986,7 @@ function startRestServer() {
       const ws = (body.workspaceId ? workspaces.get(body.workspaceId) : null) || [...workspaces.values()][0];
       if (!ws) return restReply(res, 404, { ok: false, error: 'no workspace' });
       let targetWn = body.windowNumber;
-      if (!targetWn && axHelper) targetWn = axHelper.getFrontmostWindowNumber();
+      if (!targetWn && axHelper) targetWn = getFrontmostExternalWindowNumber();
       if (!targetWn) return restReply(res, 400, { ok: false, error: 'no window' });
       if (isExternalSnapped(targetWn)) return restReply(res, 200, { ok: true, note: 'already snapped' });
       const allWins = axHelper ? axHelper.listWindows() : [];
@@ -4967,7 +5020,7 @@ function startRestServer() {
     if (route === 'POST /api/unsnap') {
       const body = await parseBody(req);
       let wn = body.windowNumber;
-      if (!wn && axHelper) wn = axHelper.getFrontmostWindowNumber();
+      if (!wn && axHelper) wn = getFrontmostExternalWindowNumber();
       if (!wn) return restReply(res, 400, { ok: false, error: 'no window' });
       let found = false;
       for (const [, ws] of workspaces) {
