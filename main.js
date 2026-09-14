@@ -1297,16 +1297,29 @@ let lastRaiseTime = 0;
 // (= 「前面に出過ぎ」の根治。show()/focus() の呼び順に依存しない)。
 // 透過窓なのでグリッド線・ヘッダー・スロットの隙間はそのまま見える。
 // Windows は「下に固定する」API が無いため従来どおり通常 z-order (TOPMOST OFF)。
-// 例外: 編集モード / オーバーレイ(設定・ドロワー・ピッカー等の DOM)表示中だけは
-// 端末に隠れると操作できないため一時的に最前面へ上げ、閉じたら元に戻す。
+// 例外:
+//  - 編集モード / オーバーレイ(設定・ドロワー・ピッカー等の DOM)表示中は
+//    端末に隠れると操作できないため最前面 ('top') へ上げ、閉じたら元に戻す。
+//  - TiN 本体にフォーカスがある間は通常レベルで前面 ('front') に出す。normal-1 は
+//    「端末の下」ではなく「全アプリの全窓の下」なので、固定したままだと Dock /
+//    Cmd+Tab で呼んでも上部バーが PowerPoint や Vivaldi の窓に隠れたまま出てこない
+//    (2026-09-14 のユーザー報告)。端末や他アプリをクリックしてフォーカスが外れたら
+//    normal-1 に戻る。
 function applyStackLevel(ws) {
   if (!ws || !ws.win || ws.win.isDestroyed()) return;
-  const wantTop = !!(ws._editMode || ws._hasOverlay);
-  const want = wantTop ? 'top' : (appSettings.keepBehind !== false ? 'behind' : 'normal');
+  let want;
+  if (ws._editMode || ws._hasOverlay) want = 'top';
+  else if (!IS_MAC || appSettings.keepBehind === false) want = 'normal';
+  else want = ws.win.isFocused() ? 'front' : 'behind';
   if (ws._stackLevel === want) return;   // 変化時のみ呼ぶ (50ms ループから叩かれるため)
+  // ヘッダーを掴んだ瞬間にも focus は来る。ドラッグの途中で自窓のレベルと重ね順を
+  // 変えるとドラッグ開始を潰しかねない (9/5 に AXRaise で実際に潰した) ので、
+  // ボタンが離れるまで待つ。次のループ (≤120ms) で再評価される。
+  if (want === 'front' && ws._stackLevel === 'behind' && axHelper?.isMouseButtonDown?.()) return;
   try {
     if (want === 'top') { ws.win.setAlwaysOnTop(true, 'floating'); ws.win.moveTop(); }
-    else if (want === 'behind' && IS_MAC) ws.win.setAlwaysOnTop(true, 'normal', -1);
+    else if (want === 'behind') ws.win.setAlwaysOnTop(true, 'normal', -1);
+    else if (want === 'front') { ws.win.setAlwaysOnTop(false); ws.win.moveTop(); }
     else ws.win.setAlwaysOnTop(false);
     ws._stackLevel = want;
   } catch (e) { console.warn('[tin] applyStackLevel failed:', e?.message || e); }
@@ -3573,7 +3586,15 @@ app.on('browser-window-focus', (_event, focusedWin) => {
     // (= 「左上の掴むところが掴めない」)。明示操作 (force=true) の raise は残す。
     const skipRaise = (IS_WIN && ws._editMode) || (IS_MAC && appSettings.keepBehind !== false);
     if (!isGridWin && !skipRaise) raiseAllWorkspaceWindows(ws);
+    applyStackLevel(ws);   // 本体に focus → 'front' (ボタン押下中なら離れてから)
     scheduleSyncSnapped(200);
+  }
+});
+// focus が外れたら (端末や他アプリをクリック) 端末の下へ戻す。50ms ループでも拾えるが
+// 端末クリック直後に TiN が上に残る時間を無くすため即時に反映する。
+app.on('browser-window-blur', (_event, blurredWin) => {
+  for (const [, w] of workspaces) {
+    if (w.win === blurredWin) { applyStackLevel(w); break; }
   }
 });
 

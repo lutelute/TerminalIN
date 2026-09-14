@@ -950,6 +950,15 @@ static napi_value IsAXTrusted(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// ── マウス左ボタンが押されているか ──
+// ウィンドウのレベル/重ね順をドラッグの途中で変えないための判定に使う。
+// pressedMouseButtons はアプリがアクティブでなくてもグローバルな押下状態を返す。
+static napi_value IsMouseButtonDown(napi_env env, napi_callback_info info) {
+    napi_value result;
+    napi_get_boolean(env, ([NSEvent pressedMouseButtons] & 1) != 0, &result);
+    return result;
+}
+
 // ── 最前面ウィンドウの CGWindowNumber を取得 ──
 // z-order 上位の layer=0 normal window を返す。一致なければ 0。
 static napi_value GetFrontmostWindowNumber(napi_env env, napi_callback_info info) {
@@ -1180,6 +1189,9 @@ static napi_value Init(napi_env env, napi_value exports) {
 
     napi_create_function(env, NULL, 0, IsAXTrusted, NULL, &fn);
     napi_set_named_property(env, exports, "isAXTrusted", fn);
+
+    napi_create_function(env, NULL, 0, IsMouseButtonDown, NULL, &fn);
+    napi_set_named_property(env, exports, "isMouseButtonDown", fn);
 
     napi_create_function(env, NULL, 0, MoveToSpace, NULL, &fn);
     napi_set_named_property(env, exports, "moveToSpace", fn);
