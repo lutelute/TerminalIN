@@ -2044,7 +2044,11 @@ ipcRenderer.on('hydrate-snapped', (_e, list) => {
     if (!incoming.has(k) && !_snapPending.has(k)) snappedExternals.delete(k);
   }
   for (const [k, entry] of incoming) {
-    snappedExternals.set(k, { title: entry.title, app: entry.app, slot: entry.slot });
+    // はみ出し・移動不可の印 (poll の snappedList だけが運ぶ) は残す。消すと、poll は「変化なし」で
+    // 送り直さないので印が戻らない
+    const prev = snappedExternals.get(k) || {};
+    snappedExternals.set(k, { title: entry.title, app: entry.app, slot: entry.slot,
+      minConstrained: prev.minConstrained, moveDenied: prev.moveDenied, minSize: prev.minSize || '' });
   }
   render();
 });
@@ -3062,6 +3066,13 @@ const TERMINAL_APPS = new Set([
 ]);
 function isTerminalApp(appName) {
   return !!appName && TERMINAL_APPS.has(appName);
+}
+// はみ出しの印 (↔) の説明。mac は読み戻しで分かった下限 (minSize '500×375') を添える
+function minWarnText(info) {
+  if (IS_WIN) return 'このアプリは最小ウィンドウ幅が大きく、列幅に収まりきりません(Windows の仕様)。はみ出し分は左右に均して配置します。狭い列で使うなら内蔵端末(⊞ / Ctrl+Shift+T)が収まります。';
+  const [w, h] = String(info.minSize || '').split('×');
+  const size = w && h && w !== '-' && h !== '-' ? ` ${w}×${h} より` : w && w !== '-' ? ` 幅 ${w} より` : h && h !== '-' ? ` 高さ ${h} より` : '';
+  return `このアプリ (${info.app || ''}) の窓は${size}小さくできないので、マスの左上に合わせて置き、はみ出した分は隣のマスに重なります。格子を粗くすると収まります。狭いマスで使うなら内蔵端末(⊞)が収まります。`;
 }
 function isTiNApp(appName) {
   // Windows ソース起動だと 'electron' になるが win-helper が 'TiN' に統一済み
@@ -4096,7 +4107,7 @@ function render() {
         + (info.moveDenied
             ? `<span class="tab-minwarn tab-denied" title="この窓は管理者権限(昇格)で動いているため、TiN から移動・リサイズできません(Windows の UIPI 制限)。TiN を管理者で起動すると操作できます。">⛔</span>`
             : info.minConstrained
-            ? `<span class="tab-minwarn" title="このアプリは最小ウィンドウ幅が大きく、列幅に収まりきりません(Windows の仕様)。はみ出し分は左右に均して配置します。狭い列で使うなら内蔵端末(⊞ / Ctrl+Shift+T)が収まります。">↔</span>`
+            ? `<span class="tab-minwarn" title="${escHtml(minWarnText(info))}">↔</span>`
             : '')
         + `<span class="tab-close" data-wn="${wn}">×</span>`;
       tab.addEventListener('click', e => {
@@ -4722,9 +4733,10 @@ ipcRenderer.on('external-windows', (_e, windows, otherSnapped, gridInfo, snapped
         if (existing.slot !== entry.slot) { existing.slot = entry.slot; snappedChanged = true; }
         if (existing.minConstrained !== entry.minConstrained) { existing.minConstrained = entry.minConstrained; snappedChanged = true; }
         if (existing.moveDenied !== entry.moveDenied) { existing.moveDenied = entry.moveDenied; snappedChanged = true; }
+        if ((existing.minSize || '') !== (entry.minSize || '')) { existing.minSize = entry.minSize || ''; snappedChanged = true; }
       } else {
         snappedExternals.set(k, { title: entry.title, app: entry.app, slot: entry.slot,
-          minConstrained: entry.minConstrained, moveDenied: entry.moveDenied });
+          minConstrained: entry.minConstrained, moveDenied: entry.moveDenied, minSize: entry.minSize || '' });
         snappedChanged = true;
       }
     }

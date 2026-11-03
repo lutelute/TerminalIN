@@ -34,7 +34,7 @@
 
 | # | 機能名 | 内容 | 実装場所 |
 |---|--------|------|----------|
-| 16 | **Push to Space (next/prev)** | 上部バーの「‹ デスクトップ N/M ›」で TiN と繋いだ端末をまとめて隣のデスクトップへ。macOS では外部の端末を Mission Control の縮小表示の合成ドラッグで運ぶ（その画面に見えている同じアプリの窓が全部 TiN の端末なら、山のアイコンを掴んで 1 回で全部。混ざっていれば 1 枚ずつ）。縮小表示で見分けられない窓だけ「タイトルバーを掴んで切替キー」。TiN 本体・内蔵端末は SLS で直接送る | `main.js` `carryWorkspaceToSpace` / `lib/space-carry.js` |
+| 16 | **Push to Space (next/prev)** | 上部バーの「‹ デスクトップ N/M ›」で TiN と繋いだ端末をまとめて隣のデスクトップへ。macOS では外部の端末を Mission Control の縮小表示の合成ドラッグで運ぶ（同じアプリの窓が 1 つの山になるので、山のアイコンを掴んで 1 回で全部。その画面に TiN に繋いでいない同じアプリの窓があれば、運ぶ間だけ最小化して山を TiN の端末だけにし、運んだあと元のデスクトップで戻す。しまえないときは 1 枚ずつ）。縮小表示で見分けられない窓だけ「タイトルバーを掴んで切替キー」。TiN 本体・内蔵端末は SLS で直接送る | `main.js` `carryWorkspaceToSpace` / `lib/space-carry.js` |
 | 17 | **Push to Space (target)** | 真ん中の「デスクトップ N/M」から行き先を選んで移す（フルスクリーンのアプリのデスクトップは選べない） | `main.js` `push-to-space-to` |
 | 18 | **Get Spaces** | デスクトップ一覧と各 Space の ID・フォーカス状態を取得 | `main.js` `get-spaces` (1737) |
 | 19 | **yabai SA Check** | yabai Scripting Addition の動作確認 | `main.js` `checkYabaiSA` (46) |
@@ -167,7 +167,9 @@
 | 80 | **Move to Space ID** | CGS プライベート API で直接 Space 移動（fallback） | `MoveWindowsToSpaceId` (739) |
 | 81 | **Move to Active Space** | 別 Space のウィンドウを現デスクトップへ呼び寄せ | `MoveWindowsToActiveSpace` (807) |
 
-デスクトップ移動（III）用: `mcSnapshot`（Mission Control の縮小表示とスペースバーを Dock の AX から読む）/ `mcPressSpace` / `mcToggle`、合成入力 `postMouse` / `postHotkey`（修飾キーの flagsChanged も送る）、`hitTestPoint`（素通しの窓を飛ばす）/ `getWindowBounds` / `getActiveSpaceId` / `getSpaceHotkeys` / `getCursorPosition` / `warpCursor`
+窓の配置 (mac, 2026-11-04 再設計): `moveWindows(cmds, positionOnly, detail)` は書いたあとに AX から読み戻した実際の枠を返せる (detail)。`moveWindowsAsync` は同じ処理を専用の直列キューで動かして Promise で返す (遅いアプリで main を止めない・位置が前後しない)。AXEnhancedUserInterface が有効なアプリ (Finder で実測) は書く間だけ切る。普通のアプリの AX には待ち時間 0.5 秒の上限 (Dock = Mission Control には付けない)。`main.js` `batchMove` は読み戻しを `lib/placement.js` で分類し、ずれた窓は 1 回だけ書き直し、アプリの下限で小さくできない窓 (Chrome 500×375 など) はマスの左上に合わせたまま、タブに「↔」(下限の大きさを説明に添える) を出す。Windows の `getMoveIssues` (#43) と同じ通り道。ドラッグ中の追従 (`fireAndForgetMove`) は窓ごとに最新だけ送る。これらと一覧取得 (poll)・上げる・運搬の排他は `lib/window-ops.js` (`windowOps`) に集めた
+
+デスクトップ移動（III）用: `mcSnapshot`（Mission Control の縮小表示とスペースバーを Dock の AX から読む）/ `mcPressSpace` / `mcToggle` / `setWindowsMinimized`（窓番号だけで照合して最小化・解除）、合成入力 `postMouse` / `postHotkey`（修飾キーの flagsChanged も送る）、`hitTestPoint`（素通しの窓を飛ばす）/ `getWindowBounds` / `getActiveSpaceId` / `getSpaceHotkeys` / `getCursorPosition` / `warpCursor`
 
 ## XV. UI 状態・インタラクション
 
