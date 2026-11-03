@@ -815,6 +815,8 @@
   }
   .space-picker-item:hover { background: rgba(0,0,0,0.06); color: rgba(0,0,0,0.8); }
   .space-picker-item.current { font-weight: 700; color: rgba(0,0,0,0.75); }
+  .space-picker-item.fullscreen { opacity: .4; cursor: default; }
+  .space-picker-item.fullscreen:hover { background: transparent; }
   .space-picker-item .sp-num {
     font-size: 9px; opacity: 0.45; min-width: 18px;
   }
@@ -1448,6 +1450,8 @@ const ICONS = {
   flipH: '<rect x="11.2" y="4" width="1.6" height="16" rx=".8" opacity=".45"/><path d="M8.5 7.5 4 12l4.5 4.5Z"/><path d="M15.5 7.5 20 12l-4.5 4.5Z"/>',
   flipV: '<rect x="4" y="11.2" width="16" height="1.6" rx=".8" opacity=".45"/><path d="M7.5 8.5 12 4l4.5 4.5Z"/><path d="M7.5 15.5 12 20l4.5-4.5Z"/>',
   space: '<rect x="4" y="11.2" width="10.5" height="1.6" rx=".8"/><path d="M14 6.8 19.5 12 14 17.2Z"/>',
+  deskPrev: '<path d="M14.5 6 8.5 12l6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
+  deskNext: '<path d="M9.5 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
   sparkle: '<path d="M10 3.5c.6 3.6 2.9 5.9 6.5 6.5-3.6.6-5.9 2.9-6.5 6.5-.6-3.6-2.9-5.9-6.5-6.5 3.6-.6 5.9-2.9 6.5-6.5Z"/><path d="M18 14.5c.3 1.7 1.3 2.7 3 3-1.7.3-2.7 1.3-3 3-.3-1.7-1.3-2.7-3-3 1.7-.3 2.7-1.3 3-3Z" opacity=".5"/>',
   settings: '"""+gear+"""',
   window: '<rect x="7" y="4" width="13" height="10" rx="2" opacity=".35"/><rect x="4" y="8" width="13" height="11.5" rx="2"/>',
@@ -1690,9 +1694,9 @@ function commandDefinitions() {
   if (_commandCanMoveSpaces) {
     items.push(
       { icon: 'space', label: 'Move workspace to next Space', meta: 'SPACE', preview: 'space',
-        desc: 'ワークスペース全体 (TiN と snapped 窓) を隣のデスクトップへ移す', run: () => ipcRenderer.invoke('push-to-space', { direction: 1 }) },
+        desc: 'ワークスペース全体 (TiN と snapped 窓) を隣のデスクトップへ移す', run: () => moveWorkspaceSpace('push-to-space', { direction: 1 }) },
       { icon: 'space', label: 'Move workspace to previous Space', meta: 'SPACE', preview: 'space',
-        desc: 'ワークスペース全体 (TiN と snapped 窓) を前のデスクトップへ移す', run: () => ipcRenderer.invoke('push-to-space', { direction: -1 }) },
+        desc: 'ワークスペース全体 (TiN と snapped 窓) を前のデスクトップへ移す', run: () => moveWorkspaceSpace('push-to-space', { direction: -1 }) },
     );
   }
   for (const [slot, data] of Object.entries(gridSlots)) {
@@ -1719,10 +1723,10 @@ function commandDefinitions() {
   }
   for (const space of _commandSpaces) {
     items.push({
-      icon: 'space', label: `Move workspace to ${space.label || `Desktop ${space.index}`}`,
+      icon: 'space', label: `Move workspace to ${space.label || (space.isFullscreen ? 'full-screen app' : `Desktop ${space.index}`)}`,
       meta: space.isCurrent ? 'CURRENT SPACE' : 'SPACE',
-      preview: 'space', desc: space.isCurrent ? '今いるデスクトップ (移動なし)' : 'ワークスペース全体をこのデスクトップへ移す',
-      run: () => space.isCurrent ? undefined : ipcRenderer.invoke('push-to-space-to', { targetSpaceId: space.id, targetIndex: space.index }),
+      preview: 'space', desc: space.isCurrent ? '今いるデスクトップ (移動なし)' : space.isFullscreen ? 'フルスクリーンのアプリ (移せない)' : 'ワークスペース全体をこのデスクトップへ移す',
+      run: () => (space.isCurrent || space.isFullscreen) ? undefined : moveWorkspaceSpace('push-to-space-to', { targetSpaceId: space.id, targetIndex: space.index }),
     });
   }
   return items;
@@ -2528,7 +2532,7 @@ function updateTabOverflow(scrollToActive = false) {
   row.classList.toggle('fade-right', overflowing && row.scrollLeft + row.clientWidth < row.scrollWidth - 2);
 }
 
-function showToast(msg, kind = 'info') {
+function showToast(msg, kind = 'info', ms = 2200) {
   const t = document.createElement('div');
   t.textContent = msg;
   const bg = kind === 'error' ? 'rgba(220,38,38,0.92)' : 'rgba(28,28,30,0.92)';
@@ -2543,7 +2547,89 @@ function showToast(msg, kind = 'info') {
   setTimeout(() => {
     t.style.opacity = '0'; t.style.transform = 'translateX(-50%) translateY(-8px)';
     setTimeout(() => t.remove(), 250);
-  }, 2200);
+  }, ms);
+}
+
+// ── TiN ごと端末を別デスクトップへ (mac は「掴んで運ぶ」— main の carryWorkspaceToSpace) ──
+// 運んでいる間は合成のマウスとキーで画面が行き来するので、触らないでもらう表示を出す。
+let _spaceCarryBanner = null;
+ipcRenderer.on('space-carry-progress', (_e, p) => {
+  if (p.phase === 'end') { if (_spaceCarryBanner) { _spaceCarryBanner.remove(); _spaceCarryBanner = null; } return; }
+  if (!_spaceCarryBanner) {
+    _spaceCarryBanner = document.createElement('div');
+    _spaceCarryBanner.style.cssText = `
+      position:fixed; top:44px; left:50%; transform:translateX(-50%); z-index:10002;
+      background:rgba(28,28,30,0.94); color:#fff; padding:10px 16px; border-radius:10px;
+      font-size:12px; line-height:1.5; box-shadow:0 8px 24px rgba(0,0,0,0.35); pointer-events:none; text-align:center;`;
+    document.body.appendChild(_spaceCarryBanner);
+  }
+  const total = p.total || 0;
+  const step = p.phase === 'carry' ? `端末 ${Math.min((p.done || 0) + 1, total)} / ${total}` : '準備中';
+  _spaceCarryBanner.textContent = `別のデスクトップへ移動中… ${total ? step : ''}  終わるまでマウスとキーボードに触らないでください`;
+});
+async function moveWorkspaceSpace(channel, args) {
+  let r;
+  try { r = await ipcRenderer.invoke(channel, args); } catch (e) { r = { ok: false, message: String(e && e.message || e) }; }
+  reportSpaceCarry(r);
+  refreshDeskLabel(true);
+  return r;
+}
+// TiN を自分で別デスクトップへ動かした・整列を押したときの呼び寄せ結果 (main の gatherSnappedToTin)
+ipcRenderer.on('space-carry-result', (_e, r) => { reportSpaceCarry(r); refreshDeskLabel(true); });
+
+// 上部バーの「‹ デスクトップ N/M ›」の番号。TiN が居るデスクトップ (get-spaces の isTin)。
+// render() のたびに上部バーは作り直されるので、値はここに持って要素を書き換える。
+var _deskInfo = null;   // { index, total, hasPrev, hasNext }  (var: render が先に走っても TDZ にしない)
+var _deskInfoAt = 0;
+function deskLabelText() {
+  return _deskInfo ? `デスクトップ ${_deskInfo.index}/${_deskInfo.total}` : 'デスクトップ';
+}
+function applyDeskInfo() {
+  const label = document.getElementById('space-label-btn');
+  if (label) label.textContent = deskLabelText();
+  const prev = document.getElementById('space-prev-btn');
+  const next = document.getElementById('space-next-btn');
+  if (prev) {
+    prev.disabled = !!_deskInfo && !_deskInfo.hasPrev;
+    prev.title = prev.disabled ? '左に移せるデスクトップがありません' : '繋いだ端末ごと、左のデスクトップへ移す';
+  }
+  if (next) {
+    next.disabled = !!_deskInfo && !_deskInfo.hasNext;
+    next.title = next.disabled ? '右に移せるデスクトップがありません（Mission Control の「+」で足せます）' : '繋いだ端末ごと、右のデスクトップへ移す';
+  }
+}
+function refreshDeskLabel(force) {
+  const now = Date.now();
+  if (!force && now - _deskInfoAt < 2000) return;
+  _deskInfoAt = now;
+  ipcRenderer.invoke('get-spaces').then(spaces => {
+    if (!Array.isArray(spaces) || !spaces.length) return;
+    let i = spaces.findIndex(s => s.isTin);
+    if (i < 0) i = spaces.findIndex(s => s.isCurrent);
+    if (i < 0) { _deskInfo = null; applyDeskInfo(); return; }
+    // フルスクリーンのアプリのデスクトップへは運べない (飛ばして先の通常デスクトップへは行ける)
+    _deskInfo = {
+      index: spaces[i].index, total: spaces.length,
+      hasPrev: spaces.slice(0, i).some(s => !s.isFullscreen),
+      hasNext: spaces.slice(i + 1).some(s => !s.isFullscreen),
+    };
+    applyDeskInfo();
+  }).catch(() => {});
+}
+window.addEventListener('focus', () => refreshDeskLabel(true));
+// Mission Control でデスクトップを足しても TiN には知らせが来ないので、見えている間は 3 秒ごとに読み直す
+setInterval(() => { if (!document.hidden) refreshDeskLabel(); }, 3000);
+function reportSpaceCarry(r) {
+  if (!r || r.nothing) return;
+  if (r.ok) {
+    const n = (r.moved || []).length;
+    showToast(`デスクトップを移しました${n ? `（端末 ${n} 枚）` : ''}`);
+  } else if (r.failed && r.failed.length) {
+    const short = (t) => (t || '').split(' — ')[0].slice(0, 24) || '窓';
+    showToast(`${r.failed.length} 枚は運べませんでした: ` + r.failed.map(f => `${short(f.title)}（${f.reasonText || f.reason}）`).join('、'), 'error', 6000);
+  } else if (r.message) {
+    showToast(r.message, 'error', 5000);
+  }
 }
 
 // ── 自動アップデート通知 (Windows) ──
@@ -3838,24 +3924,30 @@ function render() {
   flipVBtn.title = 'Flip ⇅ — グリッドの並びを上下反転（行高の比率もミラー）';
   flipVBtn.addEventListener('click', () => ipcRenderer.invoke('flip-grid', { axis: 'v' }));
   selector.appendChild(flipVBtn);
+  // ── デスクトップ移動「‹ デスクトップ 2/3 ›」──
+  // 以前は secondary-tool で隠れていて ⌘K からしか呼べなかった。文字付きで常に見せる。
+  // 番号は TiN が居るデスクトップ (refreshDeskLabel が get-spaces から取って書き換える)。
+  const spaceGroup = document.createElement('div');
+  spaceGroup.className = 'space-ctl';
   const prevSpaceBtn = document.createElement('button');
-  prevSpaceBtn.className = 'grid-opt secondary-tool';
-  prevSpaceBtn.innerHTML = iconSvg('space', 'style="transform:rotate(180deg)"');
-  prevSpaceBtn.title = 'Space ◄ — TiN + スナップ済みウィンドウをまとめて前のデスクトップへ';
-  prevSpaceBtn.addEventListener('click', () => ipcRenderer.invoke('push-to-space', { direction: -1 }));
-  selector.appendChild(prevSpaceBtn);
+  prevSpaceBtn.className = 'grid-opt space-opt space-arrow';
+  prevSpaceBtn.id = 'space-prev-btn';
+  prevSpaceBtn.innerHTML = iconSvg('deskPrev');
+  prevSpaceBtn.title = '繋いだ端末ごと、左のデスクトップへ移す';
+  prevSpaceBtn.addEventListener('click', () => moveWorkspaceSpace('push-to-space', { direction: -1 }));
   const nextSpaceBtn = document.createElement('button');
-  nextSpaceBtn.className = 'grid-opt secondary-tool';
-  nextSpaceBtn.innerHTML = iconSvg('space');
-  nextSpaceBtn.title = 'Space ► — TiN + スナップ済みウィンドウをまとめて次のデスクトップへ';
-  nextSpaceBtn.addEventListener('click', () => ipcRenderer.invoke('push-to-space', { direction: +1 }));
-  selector.appendChild(nextSpaceBtn);
+  nextSpaceBtn.className = 'grid-opt space-opt space-arrow';
+  nextSpaceBtn.id = 'space-next-btn';
+  nextSpaceBtn.innerHTML = iconSvg('deskNext');
+  nextSpaceBtn.title = '繋いだ端末ごと、右のデスクトップへ移す';
+  nextSpaceBtn.addEventListener('click', () => moveWorkspaceSpace('push-to-space', { direction: +1 }));
 
-  // ── Space ピッカーボタン (↗) ──
+  // ── デスクトップを選んで移す (真ん中の「デスクトップ N」) ──
   const spacePickerBtn = document.createElement('button');
-  spacePickerBtn.className = 'grid-opt secondary-tool';
-  spacePickerBtn.innerHTML = iconSvg('space', 'style="transform:rotate(-45deg)"');
-  spacePickerBtn.title = 'Space ↗ — デスクトップを選んでまとめて移動';
+  spacePickerBtn.className = 'grid-opt space-opt space-label';
+  spacePickerBtn.id = 'space-label-btn';
+  spacePickerBtn.textContent = deskLabelText();
+  spacePickerBtn.title = 'デスクトップを選んで、繋いだ端末ごと移す';
   let _spacePickerPopup = null;
   function closeSpacePicker() {
     if (_spacePickerPopup) { _spacePickerPopup.remove(); _spacePickerPopup = null; }
@@ -3873,17 +3965,18 @@ function render() {
     _spacePickerPopup.className = 'space-picker-popup';
     spaces.forEach(sp => {
       const item = document.createElement('button');
-      item.className = 'space-picker-item' + (sp.isCurrent ? ' current' : '');
+      item.className = 'space-picker-item' + (sp.isCurrent ? ' current' : '') + (sp.isFullscreen ? ' fullscreen' : '');
+      if (sp.isFullscreen) { item.disabled = true; item.title = 'フルスクリーンのアプリのデスクトップへは移せません'; }
       const num = document.createElement('span');
       num.className = 'sp-num';
       num.textContent = sp.index;
       item.appendChild(num);
-      item.appendChild(document.createTextNode(sp.label || `Desktop ${sp.index}`));
+      item.appendChild(document.createTextNode(sp.label || (sp.isFullscreen ? 'フルスクリーン' : `Desktop ${sp.index}`)));
       if (sp.isCurrent) item.appendChild(Object.assign(document.createElement('span'), { textContent: ' ✓', style: 'opacity:.4;font-size:9px' }));
       item.addEventListener('click', async () => {
         closeSpacePicker();
         spacePickerBtn.disabled = true;
-        await ipcRenderer.invoke('push-to-space-to', { targetSpaceId: sp.id, targetIndex: sp.index });
+        await moveWorkspaceSpace('push-to-space-to', { targetSpaceId: sp.id, targetIndex: sp.index });
         spacePickerBtn.disabled = false;
       });
       _spacePickerPopup.appendChild(item);
@@ -3896,15 +3989,19 @@ function render() {
     document.body.appendChild(_spacePickerPopup);
     setTimeout(() => document.addEventListener('mousedown', _spacePickerOutside), 0);
   });
-  selector.appendChild(spacePickerBtn);
+  spaceGroup.append(prevSpaceBtn, spacePickerBtn, nextSpaceBtn);
+  // デスクトップを足した・消した直後でも、押そうとした時点の並びで ‹ › を判定する
+  spaceGroup.addEventListener('mouseenter', () => refreshDeskLabel(true));
+  selector.appendChild(spaceGroup);
+  applyDeskInfo();
+  refreshDeskLabel();
   // #12/#14: Windows は VirtualDesktopAccessor.dll がロードできた時だけ Space UI を出す。
   // DLL 無し(既定)では capability OFF → 動かない Space ボタンを隠す。
-  // mac は常時表示(yabai/CGS)。capability は main の 'space-capability' で判定。
+  // mac は常時表示。capability は main の 'space-capability' で判定。
   if (process.platform === 'win32') {
-    const _spaceBtns = [prevSpaceBtn, nextSpaceBtn, spacePickerBtn];
-    _spaceBtns.forEach(b => { b.style.display = 'none'; });
+    spaceGroup.style.display = 'none';
     ipcRenderer.invoke('space-capability')
-      .then(cap => { if (cap) _spaceBtns.forEach(b => { b.style.display = ''; }); })
+      .then(cap => { if (cap) spaceGroup.style.display = ''; })
       .catch(() => {});
   }
 

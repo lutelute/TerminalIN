@@ -755,6 +755,10 @@ static napi_value GetSpacesList(napi_env env, napi_callback_info info) {
 
     uint32_t idx = 0;
     for (NSDictionary *d in (__bridge NSArray *)displays) {
+        NSString *displayId = d[@"Display Identifier"] ?: @"";
+        // そのディスプレイで今見えているデスクトップ (isCurrent はキーボードの行き先の 1 つだけ)
+        NSDictionary *curSpace = d[@"Current Space"];
+        uint64_t visibleId = [(curSpace[@"id64"] ?: curSpace[@"ManagedSpaceID"]) unsignedLongLongValue];
         for (NSDictionary *s in d[@"Spaces"]) {
             NSNumber *sid = s[@"id64"] ?: s[@"ManagedSpaceID"];
             if (!sid) continue;
@@ -768,6 +772,13 @@ static napi_value GetSpacesList(napi_env env, napi_callback_info info) {
             napi_set_named_property(env, entry, "index", v);
             napi_get_boolean(env, spaceId == activeSpace, &v);
             napi_set_named_property(env, entry, "isCurrent", v);
+            // type: 0 = 通常のデスクトップ, 4 = フルスクリーンのアプリ (窓を運び込めない)
+            napi_create_int32(env, [s[@"type"] intValue], &v);
+            napi_set_named_property(env, entry, "type", v);
+            napi_create_string_utf8(env, [displayId UTF8String], NAPI_AUTO_LENGTH, &v);
+            napi_set_named_property(env, entry, "display", v);
+            napi_get_boolean(env, spaceId == visibleId, &v);
+            napi_set_named_property(env, entry, "isVisible", v);
             napi_set_element(env, result, idx++, entry);
         }
     }
@@ -1178,8 +1189,447 @@ static napi_value GetWindowNumbersByPid(napi_env env, napi_callback_info info) {
 }
 
 // ── Module init ──
+// ── 外部の窓を別デスクトップへ「運ぶ」ための部品 (lib/space-carry.js が順に呼ぶ) ──
+// macOS 26 では他アプリの窓を Space 間で動かす private API が全て塞がれている
+// (SLSMoveWindowsToManagedSpace / 互換 ID / Add+Remove、2026-11-03 実測)。
+// 残る手は人の操作の再現 = 「タイトルバーを掴んだまま、デスクトップ切替のショートカットを押す」。
+// ここでは 1 操作ずつの部品だけを出し、順番と待ち時間は JS 側で組み立てる
+// (main thread を usleep で長く止めないため)。
+
+// getActiveSpaceId() → 今見えているデスクトップの Space ID
+static napi_value GetActiveSpaceId(napi_env env, napi_callback_info info) {
+    int cid = spaceCid();
+    napi_value v;
+    napi_create_int64(env, (int64_t)spaceGetActive(cid), &v);
+    return v;
+}
+
+typedef CGError (*PFN_SLSGetWindowTags)(int cid, uint32_t wid, uint64_t *tags, int size);
+static PFN_SLSGetWindowTags pfnGetTags() {
+    static PFN_SLSGetWindowTags f = NULL;
+    static bool done = false;
+    if (!done) {
+        done = true;
+        void *h = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY);
+        if (h) f = (PFN_SLSGetWindowTags)dlsym(h, "SLSGetWindowTags");
+    }
+    return f;
+}
+
+// hitTestPoint(x, y) → { wn, pid, layer, app } | null
+// その点をクリックしたら受け取る窓 (前から順に見て、クリックを素通しする窓は飛ばす)。
+// 素通しの判定は窓タグの bit 9 (ignoresMouseEvents)。例: Seclitary の全画面の透明な帯。
+// 合成のマウスを押す前に「掴むのは本当に運びたい窓か」を確かめるために使う。
+static napi_value HitTestPoint(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+    double x = 0, y = 0;
+    napi_get_value_double(env, args[0], &x);
+    napi_get_value_double(env, args[1], &y);
+    CGPoint p = CGPointMake(x, y);
+
+    napi_value result;
+    napi_get_null(env, &result);
+    CFArrayRef list = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+    if (!list) return result;
+    int cid = spaceCid();
+    PFN_SLSGetWindowTags getTags = pfnGetTags();
+    for (NSDictionary *w in (__bridge NSArray *)list) {
+        int layer = [w[(__bridge NSString *)kCGWindowLayer] intValue];
+        if (layer >= kCGCursorWindowLevel) continue;   // カーソル・システムの最上位は対象外
+        CGRect r;
+        if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)w[(__bridge NSString *)kCGWindowBounds], &r)) continue;
+        if (!CGRectContainsPoint(r, p)) continue;
+        if ([w[(__bridge NSString *)kCGWindowAlpha] doubleValue] <= 0.0) continue;
+        uint32_t wid = [w[(__bridge NSString *)kCGWindowNumber] unsignedIntValue];
+        if (getTags) {
+            uint64_t tags = 0;
+            if (getTags(cid, wid, &tags, 64) == kCGErrorSuccess && ((tags >> 9) & 1)) continue;
+        }
+        napi_value obj, v;
+        napi_create_object(env, &obj);
+        napi_create_int32(env, (int32_t)wid, &v);
+        napi_set_named_property(env, obj, "wn", v);
+        napi_create_int32(env, [w[(__bridge NSString *)kCGWindowOwnerPID] intValue], &v);
+        napi_set_named_property(env, obj, "pid", v);
+        napi_create_int32(env, layer, &v);
+        napi_set_named_property(env, obj, "layer", v);
+        NSString *owner = w[(__bridge NSString *)kCGWindowOwnerName] ?: @"";
+        napi_create_string_utf8(env, [owner UTF8String], NAPI_AUTO_LENGTH, &v);
+        napi_set_named_property(env, obj, "app", v);
+        result = obj;
+        break;
+    }
+    CFRelease(list);
+    return result;
+}
+
+// getWindowBounds(windowNumbers[]) → [{ wn, x, y, width, height }]
+// 別 Space の窓でも取れる (CGWindowListCreateDescriptionFromArray)。
+static napi_value GetWindowBounds(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+    uint32_t length = 0;
+    napi_get_array_length(env, args[0], &length);
+    NSMutableArray *ids = [NSMutableArray array];
+    for (uint32_t i = 0; i < length; i++) {
+        napi_value item; int32_t wn = 0;
+        napi_get_element(env, args[0], i, &item);
+        napi_get_value_int32(env, item, &wn);
+        [ids addObject:@(wn)];
+    }
+    napi_value result;
+    napi_create_array(env, &result);
+    if (!ids.count) return result;
+    // CGWindowListCreateDescriptionFromArray は CGWindowID の CFArray を要求する (CFNumber 不可)
+    CFMutableArrayRef arr = CFArrayCreateMutable(NULL, ids.count, NULL);
+    for (NSNumber *n in ids) CFArrayAppendValue(arr, (const void *)(uintptr_t)[n unsignedIntValue]);
+    CFArrayRef desc = CGWindowListCreateDescriptionFromArray(arr);
+    CFRelease(arr);
+    if (!desc) return result;
+    uint32_t idx = 0;
+    for (NSDictionary *w in (__bridge NSArray *)desc) {
+        CGRect r;
+        if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)w[(__bridge NSString *)kCGWindowBounds], &r)) continue;
+        napi_value obj, v;
+        napi_create_object(env, &obj);
+        napi_create_int32(env, [w[(__bridge NSString *)kCGWindowNumber] intValue], &v);
+        napi_set_named_property(env, obj, "wn", v);
+        napi_create_double(env, r.origin.x, &v);    napi_set_named_property(env, obj, "x", v);
+        napi_create_double(env, r.origin.y, &v);    napi_set_named_property(env, obj, "y", v);
+        napi_create_double(env, r.size.width, &v);  napi_set_named_property(env, obj, "width", v);
+        napi_create_double(env, r.size.height, &v); napi_set_named_property(env, obj, "height", v);
+        napi_set_element(env, result, idx++, obj);
+    }
+    CFRelease(desc);
+    return result;
+}
+
+// postMouse(kind, x, y) — kind: "move" | "down" | "drag" | "up" (左ボタン)
+static napi_value PostMouse(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+    char kind[8] = "";
+    size_t len = 0;
+    napi_get_value_string_utf8(env, args[0], kind, sizeof(kind), &len);
+    double x = 0, y = 0;
+    napi_get_value_double(env, args[1], &x);
+    napi_get_value_double(env, args[2], &y);
+    CGEventType t = kCGEventMouseMoved;
+    if (!strcmp(kind, "down")) t = kCGEventLeftMouseDown;
+    else if (!strcmp(kind, "drag")) t = kCGEventLeftMouseDragged;
+    else if (!strcmp(kind, "up")) t = kCGEventLeftMouseUp;
+    CGEventSourceRef src = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+    CGEventRef e = CGEventCreateMouseEvent(src, t, CGPointMake(x, y), kCGMouseButtonLeft);
+    bool ok = e != NULL;
+    if (e) {
+        if (t == kCGEventLeftMouseDown || t == kCGEventLeftMouseUp || t == kCGEventLeftMouseDragged)
+            CGEventSetIntegerValueField(e, kCGMouseEventClickState, 1);
+        CGEventPost(kCGHIDEventTap, e);
+        CFRelease(e);
+    }
+    if (src) CFRelease(src);
+    napi_value v;
+    napi_get_boolean(env, ok, &v);
+    return v;
+}
+
+// getSpaceHotkeys() → { left: {enabled, keyCode, modifiers}, right: {...} }
+// システム設定 > キーボード > ショートカット > Mission Control の
+// 「左/右の操作スペースに移動」(AppleSymbolicHotKeys 79 / 81)。ユーザーが割り当てを
+// 変えていればその割り当てを返す。項目が無ければ既定 (Ctrl+←/→、有効)。
+static napi_value GetSpaceHotkeys(napi_env env, napi_callback_info info) {
+    NSDictionary *all = (__bridge_transfer NSDictionary *)CFPreferencesCopyAppValue(
+        CFSTR("AppleSymbolicHotKeys"), CFSTR("com.apple.symbolichotkeys"));
+    napi_value result;
+    napi_create_object(env, &result);
+    const char *names[2] = { "left", "right" };
+    NSString *keys[2] = { @"79", @"81" };
+    int defaultCodes[2] = { 123, 124 };
+    for (int i = 0; i < 2; i++) {
+        bool enabled = true;
+        int keyCode = defaultCodes[i];
+        int64_t mods = 0x840000;   // Control | Fn (矢印キーは Fn 付きで届く)
+        NSDictionary *hk = [all isKindOfClass:[NSDictionary class]] ? all[keys[i]] : nil;
+        if ([hk isKindOfClass:[NSDictionary class]]) {
+            if (hk[@"enabled"]) enabled = [hk[@"enabled"] boolValue];
+            NSArray *params = hk[@"value"][@"parameters"];
+            if ([params isKindOfClass:[NSArray class]] && params.count >= 3) {
+                keyCode = [params[1] intValue];
+                mods = [params[2] longLongValue];
+            }
+        }
+        napi_value obj, v;
+        napi_create_object(env, &obj);
+        napi_get_boolean(env, enabled, &v);         napi_set_named_property(env, obj, "enabled", v);
+        napi_create_int32(env, keyCode, &v);        napi_set_named_property(env, obj, "keyCode", v);
+        napi_create_int64(env, mods, &v);           napi_set_named_property(env, obj, "modifiers", v);
+        napi_set_named_property(env, result, names[i], obj);
+    }
+    return result;
+}
+
+// postHotkey(keyCode, modifiers) — 実キーボードと同じ並びで送る:
+// 修飾キーを押す (flagsChanged) → キー down/up → 修飾キーを離す (flagsChanged)。
+// 修飾キーの「離した」を送らないと、Dock が Control を押しっぱなしと見て、その後の
+// 合成ドラッグで窓が動かなくなる (2026-11-03 実測。これが「運べたり運べなかったり」の正体)。
+static napi_value PostHotkey(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+    int32_t keyCode = 0;
+    int64_t mods = 0;
+    napi_get_value_int32(env, args[0], &keyCode);
+    napi_get_value_int64(env, args[1], &mods);
+
+    struct Mod { CGEventFlags flag; CGKeyCode key; };
+    const Mod order[4] = {
+        { kCGEventFlagMaskControl,   59 },
+        { kCGEventFlagMaskAlternate, 58 },
+        { kCGEventFlagMaskShift,     56 },
+        { kCGEventFlagMaskCommand,   55 },
+    };
+    CGEventSourceRef src = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+    CGEventFlags held = 0;
+    for (int i = 0; i < 4; i++) {
+        if (!(mods & order[i].flag)) continue;
+        held |= order[i].flag;
+        CGEventRef e = CGEventCreateKeyboardEvent(src, order[i].key, true);
+        CGEventSetType(e, kCGEventFlagsChanged);
+        CGEventSetFlags(e, held);
+        CGEventPost(kCGHIDEventTap, e); CFRelease(e);
+        usleep(12000);
+    }
+    CGEventFlags keyFlags = held | (CGEventFlags)(mods & kCGEventFlagMaskSecondaryFn);
+    if (keyCode >= 123 && keyCode <= 126) keyFlags |= kCGEventFlagMaskNumericPad | kCGEventFlagMaskSecondaryFn;
+    CGEventRef d = CGEventCreateKeyboardEvent(src, (CGKeyCode)keyCode, true);
+    CGEventSetFlags(d, keyFlags); CGEventPost(kCGHIDEventTap, d); CFRelease(d);
+    usleep(20000);
+    CGEventRef u = CGEventCreateKeyboardEvent(src, (CGKeyCode)keyCode, false);
+    CGEventSetFlags(u, keyFlags); CGEventPost(kCGHIDEventTap, u); CFRelease(u);
+    for (int i = 3; i >= 0; i--) {
+        if (!(mods & order[i].flag)) continue;
+        usleep(12000);
+        held &= ~order[i].flag;
+        CGEventRef e = CGEventCreateKeyboardEvent(src, order[i].key, false);
+        CGEventSetType(e, kCGEventFlagsChanged);
+        CGEventSetFlags(e, held);
+        CGEventPost(kCGHIDEventTap, e); CFRelease(e);
+    }
+    if (src) CFRelease(src);
+    napi_value v;
+    napi_get_undefined(env, &v);
+    return v;
+}
+
+// getCursorPosition() → {x, y} / warpCursor(x, y)
+static napi_value GetCursorPosition(napi_env env, napi_callback_info info) {
+    CGEventRef e = CGEventCreate(NULL);
+    CGPoint p = e ? CGEventGetLocation(e) : CGPointZero;
+    if (e) CFRelease(e);
+    napi_value obj, v;
+    napi_create_object(env, &obj);
+    napi_create_double(env, p.x, &v); napi_set_named_property(env, obj, "x", v);
+    napi_create_double(env, p.y, &v); napi_set_named_property(env, obj, "y", v);
+    return obj;
+}
+static napi_value WarpCursor(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+    double x = 0, y = 0;
+    napi_get_value_double(env, args[0], &x);
+    napi_get_value_double(env, args[1], &y);
+    CGWarpMouseCursorPosition(CGPointMake(x, y));
+    // warp 直後はハードウェアのマウス移動が一瞬無視されるので、すぐ繋ぎ直す
+    CGAssociateMouseAndMouseCursorPosition(true);
+    napi_value v;
+    napi_get_undefined(env, &v);
+    return v;
+}
+
+// ── Mission Control (Dock の AX) ──
+// Mission Control を開いている間、Dock は窓の縮小表示 (mc.windows の AXButton、題名・位置付き) と
+// スペースバー (mc.spaces.list の AXButton、並びは SLSCopyManagedDisplaySpaces と同じ) を AX に出す。
+// 縮小表示を合成ドラッグでスペースバーのデスクトップへ落とすと、画面を切り替えずに他のアプリの窓を
+// 別のデスクトップへ移せる (2026-11-03 実測、macOS 26.7.2)。
+// 縮小表示の並びは手前から奥 (アプリごとに重ねる設定のとき、重なりの手前が先)。
+static id mcAttr(AXUIElementRef e, CFStringRef a) {
+    CFTypeRef v = NULL;
+    if (AXUIElementCopyAttributeValue(e, a, &v) != kAXErrorSuccess || !v) return nil;
+    return CFBridgingRelease(v);
+}
+static CGRect mcFrame(AXUIElementRef e) {
+    CGPoint p = CGPointZero; CGSize s = CGSizeZero; id v;
+    if ((v = mcAttr(e, kAXPositionAttribute))) AXValueGetValue((__bridge AXValueRef)v, (AXValueType)kAXValueCGPointType, &p);
+    if ((v = mcAttr(e, kAXSizeAttribute))) AXValueGetValue((__bridge AXValueRef)v, (AXValueType)kAXValueCGSizeType, &s);
+    return CGRectMake(p.x, p.y, s.width, s.height);
+}
+static NSArray *mcChildren(AXUIElementRef e) {
+    id kids = mcAttr(e, kAXChildrenAttribute);
+    return [kids isKindOfClass:[NSArray class]] ? kids : @[];
+}
+// 子要素は親の配列が持っているだけなので、見つけた要素は id (strong) で返して寿命を延ばす
+static id mcFindById(id e, NSString *ident, int depth) {
+    NSString *mine = mcAttr((__bridge AXUIElementRef)e, CFSTR("AXIdentifier"));
+    if ([mine isKindOfClass:[NSString class]] && [mine isEqualToString:ident]) return e;
+    if (depth <= 0) return nil;
+    for (id k in mcChildren((__bridge AXUIElementRef)e)) {
+        id r = mcFindById(k, ident, depth - 1);
+        if (r) return r;
+    }
+    return nil;
+}
+static pid_t dockPid() {
+    for (NSRunningApplication *a in [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.dock"])
+        return a.processIdentifier;
+    return 0;
+}
+// 表示中の Mission Control の画面ごとの要素 (mc.display の AXUIElement)。開いていなければ空。
+static NSArray *mcDisplays(AXUIElementRef app) {
+    NSMutableArray *out = [NSMutableArray array];
+    id mc = mcFindById((__bridge id)app, @"mc", 2);
+    if (!mc) return out;
+    for (id k in mcChildren((__bridge AXUIElementRef)mc)) {
+        NSString *ident = mcAttr((__bridge AXUIElementRef)k, CFSTR("AXIdentifier"));
+        if ([ident isKindOfClass:[NSString class]] && [ident isEqualToString:@"mc.display"]) [out addObject:k];
+    }
+    return out;
+}
+static void mcSetFrame(napi_env env, napi_value obj, CGRect r) {
+    napi_value v;
+    napi_create_double(env, r.origin.x, &v);    napi_set_named_property(env, obj, "x", v);
+    napi_create_double(env, r.origin.y, &v);    napi_set_named_property(env, obj, "y", v);
+    napi_create_double(env, r.size.width, &v);  napi_set_named_property(env, obj, "w", v);
+    napi_create_double(env, r.size.height, &v); napi_set_named_property(env, obj, "h", v);
+}
+
+// mcSnapshot() → null (Mission Control が開いていない) |
+//   [{ x, y, w, h, windows: [{title, x, y, w, h}], spaces: [{title, x, y, w, h}] }]  (画面ごと)
+static napi_value McSnapshot(napi_env env, napi_callback_info info) {
+    napi_value result;
+    napi_get_null(env, &result);
+    pid_t pid = dockPid();
+    if (!pid) return result;
+    AXUIElementRef app = AXUIElementCreateApplication(pid);
+    NSArray *displays = mcDisplays(app);
+    if (displays.count) {
+        napi_create_array(env, &result);
+        uint32_t di = 0;
+        for (id d in displays) {
+            AXUIElementRef disp = (__bridge AXUIElementRef)d;
+            napi_value dobj, wins, sps;
+            napi_create_object(env, &dobj);
+            mcSetFrame(env, dobj, mcFrame(disp));
+            napi_create_array(env, &wins);
+            napi_create_array(env, &sps);
+            uint32_t wi = 0, si = 0;
+            id winGroup = mcFindById(d, @"mc.windows", 2);
+            if (winGroup) for (id b in mcChildren((__bridge AXUIElementRef)winGroup)) {
+                AXUIElementRef be = (__bridge AXUIElementRef)b;
+                NSString *role = mcAttr(be, kAXRoleAttribute);
+                if (![role isKindOfClass:[NSString class]] || ![role isEqualToString:@"AXButton"]) continue;
+                NSString *title = mcAttr(be, kAXTitleAttribute);
+                napi_value o, v;
+                napi_create_object(env, &o);
+                napi_create_string_utf8(env, [title isKindOfClass:[NSString class]] ? title.UTF8String : "", NAPI_AUTO_LENGTH, &v);
+                napi_set_named_property(env, o, "title", v);
+                mcSetFrame(env, o, mcFrame(be));
+                napi_set_element(env, wins, wi++, o);
+            }
+            id list = mcFindById(d, @"mc.spaces.list", 3);
+            if (list) for (id b in mcChildren((__bridge AXUIElementRef)list)) {
+                AXUIElementRef be = (__bridge AXUIElementRef)b;
+                NSString *title = mcAttr(be, kAXTitleAttribute);
+                napi_value o, v;
+                napi_create_object(env, &o);
+                napi_create_string_utf8(env, [title isKindOfClass:[NSString class]] ? title.UTF8String : "", NAPI_AUTO_LENGTH, &v);
+                napi_set_named_property(env, o, "title", v);
+                mcSetFrame(env, o, mcFrame(be));
+                napi_set_element(env, sps, si++, o);
+            }
+            napi_set_named_property(env, dobj, "windows", wins);
+            napi_set_named_property(env, dobj, "spaces", sps);
+            napi_set_element(env, result, di++, dobj);
+        }
+    }
+    CFRelease(app);
+    return result;
+}
+
+// mcPressSpace(displayIndex, spaceIndex) → bool
+// スペースバーのデスクトップを押す = Mission Control を閉じてそのデスクトップへ切り替わる。
+static napi_value McPressSpace(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+    int32_t di = 0, si = 0;
+    napi_get_value_int32(env, args[0], &di);
+    napi_get_value_int32(env, args[1], &si);
+    bool ok = false;
+    pid_t pid = dockPid();
+    if (pid) {
+        AXUIElementRef app = AXUIElementCreateApplication(pid);
+        NSArray *displays = mcDisplays(app);
+        if (di >= 0 && di < (int32_t)displays.count) {
+            id list = mcFindById(displays[di], @"mc.spaces.list", 3);
+            NSArray *btns = list ? mcChildren((__bridge AXUIElementRef)list) : @[];
+            if (si >= 0 && si < (int32_t)btns.count)
+                ok = AXUIElementPerformAction((__bridge AXUIElementRef)btns[si], kAXPressAction) == kAXErrorSuccess;
+        }
+        CFRelease(app);
+    }
+    napi_value v;
+    napi_get_boolean(env, ok, &v);
+    return v;
+}
+
+// mcToggle() → bool — Mission Control を開く/閉じる (Dock への通知。キー割り当てに依らない)
+typedef void (*PFN_CoreDockSendNotification)(CFStringRef, int);
+static napi_value McToggle(napi_env env, napi_callback_info info) {
+    static PFN_CoreDockSendNotification fn = NULL;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        void *h = dlopen("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", RTLD_LAZY);
+        if (h) fn = (PFN_CoreDockSendNotification)dlsym(h, "CoreDockSendNotification");
+        if (!fn) fn = (PFN_CoreDockSendNotification)dlsym(RTLD_DEFAULT, "CoreDockSendNotification");
+    }
+    if (fn) fn(CFSTR("com.apple.expose.awake"), 0);
+    napi_value v;
+    napi_get_boolean(env, fn != NULL, &v);
+    return v;
+}
+
 static napi_value Init(napi_env env, napi_value exports) {
     napi_value fn;
+
+    napi_create_function(env, NULL, 0, GetActiveSpaceId, NULL, &fn);
+    napi_set_named_property(env, exports, "getActiveSpaceId", fn);
+    napi_create_function(env, NULL, 0, HitTestPoint, NULL, &fn);
+    napi_set_named_property(env, exports, "hitTestPoint", fn);
+    napi_create_function(env, NULL, 0, GetWindowBounds, NULL, &fn);
+    napi_set_named_property(env, exports, "getWindowBounds", fn);
+    napi_create_function(env, NULL, 0, PostMouse, NULL, &fn);
+    napi_set_named_property(env, exports, "postMouse", fn);
+    napi_create_function(env, NULL, 0, GetSpaceHotkeys, NULL, &fn);
+    napi_set_named_property(env, exports, "getSpaceHotkeys", fn);
+    napi_create_function(env, NULL, 0, PostHotkey, NULL, &fn);
+    napi_set_named_property(env, exports, "postHotkey", fn);
+    napi_create_function(env, NULL, 0, GetCursorPosition, NULL, &fn);
+    napi_set_named_property(env, exports, "getCursorPosition", fn);
+    napi_create_function(env, NULL, 0, WarpCursor, NULL, &fn);
+    napi_set_named_property(env, exports, "warpCursor", fn);
+    napi_create_function(env, NULL, 0, McSnapshot, NULL, &fn);
+    napi_set_named_property(env, exports, "mcSnapshot", fn);
+    napi_create_function(env, NULL, 0, McPressSpace, NULL, &fn);
+    napi_set_named_property(env, exports, "mcPressSpace", fn);
+    napi_create_function(env, NULL, 0, McToggle, NULL, &fn);
+    napi_set_named_property(env, exports, "mcToggle", fn);
     napi_create_function(env, NULL, 0, ListWindows, NULL, &fn);
     napi_set_named_property(env, exports, "listWindows", fn);
 

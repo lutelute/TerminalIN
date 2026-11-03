@@ -280,6 +280,32 @@ body.drawer-open #drawer-toggle-btn::after { opacity: 1; }
 
 #titlebar-controls .secondary-tool { display: none !important; }
 
+/* デスクトップ移動「‹ デスクトップ 2/3 ›」。矢印と番号をひと続きの枠で見せる */
+#titlebar-controls .space-ctl {
+  display: inline-flex;
+  align-items: center;
+  height: 27px;
+  margin: 0 2px;
+  border: 1px solid var(--tin-line);
+  border-radius: 2px;
+}
+#titlebar-controls .space-ctl .grid-opt {
+  height: 25px !important;
+  min-width: 22px !important;
+  padding: 0 4px !important;
+}
+#titlebar-controls .space-ctl .space-label {
+  padding: 0 6px !important;
+  color: var(--tin-text-2) !important;
+  font: 600 10px/1 var(--tin-mono) !important;
+  white-space: nowrap;
+}
+#titlebar-controls .space-ctl .grid-opt:disabled {
+  opacity: .3;
+  cursor: default;
+  background: transparent !important;
+}
+
 #view-mode-btn.active-mode,
 #view-mode-btn:hover { color: var(--tin-cyan) !important; }
 
@@ -921,7 +947,8 @@ body[data-theme="light"] #tin-hotkey-help { background: rgba(224, 230, 235, .72)
 
 @media (max-width: 820px) {
   #command-btn { display: none !important; }
-  #titlebar-controls .grid-opt:not(.grid-size-cycle) { display: none !important; }
+  #titlebar-controls .grid-opt:not(.grid-size-cycle):not(.space-opt) { display: none !important; }
+  #titlebar-controls .space-ctl .space-label { font-size: 9px !important; }
   #title { max-width: 88px; }
 }
 
