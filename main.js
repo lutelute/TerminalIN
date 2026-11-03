@@ -2485,6 +2485,8 @@ async function runCarry(ws, label, hotkeys, groups, ownWns, target) {
       }, {
         plan: g.plan, hotkeys, externals: g.externals, ownWns: gi === groups.length - 1 ? ownWns : [],
         displayFrame: carryDisplayFrame(ws),
+        // 同じアプリの関係ない窓を運ぶ間だけしまってよいアプリ (しまう→戻すが確実と確かめたターミナル系だけ)
+        hideApps: TERMINAL_APPS,
       });
       sum.moved.push(...r.moved);
       sum.failed.push(...r.failed);

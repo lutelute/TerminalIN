@@ -47,6 +47,12 @@ static void initSkyLight() {
         pfnSLSCopySpacesForWindows = (PFN_SLSCopySpacesForWindows)dlsym(h, "CGSCopySpacesForWindows");
 }
 
+// 普通のアプリの AX 要素の待ち時間 (既定 6 秒) を短くする。応答しないアプリ (しまった直後の Finder は
+// 1.6〜3 秒止まった) が 1 つあるだけで、窓の一覧 (poll で 3 秒ごと) や配置のたびに TiN の main が固まっていた。
+// 待ち時間は要素ごとなので、アプリの要素と、そこから取った窓の要素の両方に付ける。
+// Dock (Mission Control) には付けない (縮小表示の読み取りが 0.5 秒を超えることがあり、運ぶのが崩れた)。
+static const float AX_APP_TIMEOUT = 0.5f;
+
 static NSSet *terminalApps = nil;
 
 static void ensureTerminalApps() {
@@ -1605,6 +1611,92 @@ static napi_value McToggle(napi_env env, napi_callback_info info) {
     return v;
 }
 
+// しまった窓の AX 要素 (windowNumber → AXUIElement)。戻すときはこれを直接使う。
+// Finder は最小化した窓を窓番号で引けなくなる (AXWindowID も _AXUIElementGetWindow も合わない) うえ、
+// しまった直後は窓一覧そのものが取れないことがある (2026-11-03 実機)。
+static NSMutableDictionary<NSNumber*, id> *gMinimizedAX = nil;
+
+static napi_value SetWindowsMinimized(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, NULL, NULL);
+    bool minimized = true, detail = false;
+    if (argc >= 2) napi_get_value_bool(env, args[1], &minimized);
+    if (argc >= 3) napi_get_value_bool(env, args[2], &detail);
+    // detail=true のときは窓ごとの結果の配列を返す: 0=変えた / -1=アプリの窓一覧が取れない /
+    //   -2=窓が見つからない / それ以外=AXError
+    napi_value codes;
+    napi_create_array(env, &codes);
+
+    uint32_t length = 0;
+    napi_get_array_length(env, args[0], &length);
+    int changed = 0;
+    NSMutableDictionary<NSNumber*, NSArray*> *winsOfPid = [NSMutableDictionary new];
+
+    for (uint32_t i = 0; i < length; i++) {
+        napi_value item, v;
+        napi_get_element(env, args[0], i, &item);
+        int32_t pid = 0, windowNumber = 0;
+        if (napi_get_named_property(env, item, "pid", &v) == napi_ok) napi_get_value_int32(env, v, &pid);
+        if (napi_get_named_property(env, item, "windowNumber", &v) == napi_ok) napi_get_value_int32(env, v, &windowNumber);
+        int code = -2;
+        if (pid <= 0 || windowNumber <= 0) { napi_value cv; napi_create_int32(env, code, &cv); napi_set_element(env, codes, i, cv); continue; }
+        if (!gMinimizedAX) gMinimizedAX = [NSMutableDictionary new];
+        id kept = gMinimizedAX[@(windowNumber)];
+        if (!minimized && kept) {
+            AXError err = AXUIElementSetAttributeValue((__bridge AXUIElementRef)kept, kAXMinimizedAttribute, kCFBooleanFalse);
+            if (err == kAXErrorSuccess || err == kAXErrorInvalidUIElement) [gMinimizedAX removeObjectForKey:@(windowNumber)];
+            if (err == kAXErrorSuccess) {
+                changed++;
+                napi_value cv; napi_create_int32(env, 0, &cv); napi_set_element(env, codes, i, cv);
+                continue;
+            }
+        }
+
+        NSArray *wins = winsOfPid[@(pid)];
+        if (!wins) {
+            AXUIElementRef app = AXUIElementCreateApplication((pid_t)pid);
+            if (app) AXUIElementSetMessagingTimeout(app, AX_APP_TIMEOUT);
+            CFTypeRef wRef = NULL;
+            if (app && AXUIElementCopyAttributeValue(app, kAXWindowsAttribute, &wRef) == kAXErrorSuccess && wRef) {
+                wins = CFBridgingRelease(wRef);
+            } else {
+                wins = @[];
+            }
+            if (app) CFRelease(app);
+            winsOfPid[@(pid)] = wins;
+        }
+        if (!wins.count) code = -1;
+        for (id w in wins) {
+            AXUIElementRef win = (__bridge AXUIElementRef)w;
+            CGWindowID wid = 0;
+            CFTypeRef widRef = NULL;
+            if (AXUIElementCopyAttributeValue(win, CFSTR("AXWindowID"), &widRef) == kAXErrorSuccess && widRef) {
+                if (CFGetTypeID(widRef) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)widRef, kCFNumberSInt32Type, &wid);
+                CFRelease(widRef);
+            }
+            if (wid != (CGWindowID)windowNumber) {
+                wid = 0;
+                if (_AXUIElementGetWindow(win, &wid) != kAXErrorSuccess || wid != (CGWindowID)windowNumber) continue;
+            }
+            AXError err = AXUIElementSetAttributeValue(win, kAXMinimizedAttribute, minimized ? kCFBooleanTrue : kCFBooleanFalse);
+            code = (err == kAXErrorSuccess) ? 0 : (int)err;
+            if (err == kAXErrorSuccess) {
+                changed++;
+                if (minimized) gMinimizedAX[@(windowNumber)] = w;
+                else [gMinimizedAX removeObjectForKey:@(windowNumber)];
+            }
+            break;
+        }
+        napi_value cv; napi_create_int32(env, code, &cv); napi_set_element(env, codes, i, cv);
+    }
+
+    if (detail) return codes;
+    napi_value result;
+    napi_create_int32(env, changed, &result);
+    return result;
+}
+
 static napi_value Init(napi_env env, napi_value exports) {
     napi_value fn;
 
@@ -1630,6 +1722,8 @@ static napi_value Init(napi_env env, napi_value exports) {
     napi_set_named_property(env, exports, "mcPressSpace", fn);
     napi_create_function(env, NULL, 0, McToggle, NULL, &fn);
     napi_set_named_property(env, exports, "mcToggle", fn);
+    napi_create_function(env, NULL, 0, SetWindowsMinimized, NULL, &fn);
+    napi_set_named_property(env, exports, "setWindowsMinimized", fn);
     napi_create_function(env, NULL, 0, ListWindows, NULL, &fn);
     napi_set_named_property(env, exports, "listWindows", fn);
 

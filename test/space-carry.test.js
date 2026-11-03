@@ -8,7 +8,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { planCarry, grabCandidates, carryToSpace, chooseMcGrab, chooseMcGroupGrab, mcClusters, mcIconPoint, pickMcDisplay, mcTitleKey } = require('../lib/space-carry');
+const { planCarry, grabCandidates, carryToSpace, chooseMcGrab, chooseMcGroupGrab, planMcHide, mcClusters, mcIconPoint, pickMcDisplay, mcTitleKey } = require('../lib/space-carry');
 
 const D = 'disp-1';
 const SPACES = [
@@ -214,7 +214,7 @@ function fakeMc(opts = {}) {
   const f = fakeAx(opts);
   const { ax, st, byWn } = f;
   const order = SPACES.filter(s => s.display === D).map(s => s.id);
-  const mc = { open: false, expanded: false, held: null, toggles: 0, overlays: opts.overlays || [] };
+  const mc = { open: false, expanded: false, held: null, toggles: 0, drops: 0, overlays: opts.overlays || [] };
   // thumbs: wn → 縮小表示の枠 (指定が無ければ横に並べる)。z は小さいほど手前
   const thumbOf = (w, i) => (opts.thumbs && opts.thumbs[w.wn]) || { x: 100 + i * 200, y: 300, w: 180, h: 120 };
   const barBtn = (k) => mc.expanded ? { x: 300 + k * 170, y: 46, w: 139, h: 90 } : { x: 500 + k * 120, y: -32, w: 88, h: 24 };
@@ -236,6 +236,23 @@ function fakeMc(opts = {}) {
     for (const o of mc.overlays) if (inR(o, x, y)) return { wn: 91, app: 'KeyCastr', layer: 1000 };
     return { wn: 20, app: 'Dock', layer: 20 };
   };
+  // 最小化: しまった窓はどのデスクトップにも出ず (縮小表示にも出ない)、解除するとしまったデスクトップへ戻る。
+  // stuckMinimize に挙げた窓はしまえない (しまう前のまま見えている)
+  if (!opts.noMinimize) ax.setWindowsMinimized = (cmds, m) => {
+    let n = 0;
+    for (const c of cmds) {
+      const w = byWn.get(c.windowNumber);
+      if (!w || (opts.stuckMinimize || []).includes(w.wn)) continue;
+      if (m && !w.minimized) { w.minimized = true; w.minSpace = w.space; w.space = 0; n++; }
+      else if (!m && w.minimized) {
+        w.minimized = false; w.space = w.minSpace; n++;
+        // 実機: 別のデスクトップから解くと、窓は元のデスクトップへ戻り、画面もそこへ引き戻される
+        if (!mc.open && st.active !== w.minSpace) { st.active = w.minSpace; st.log.push(`pulled back ${w.minSpace}`); }
+      }
+    }
+    st.log.push(`${m ? 'hide' : 'unhide'} ${cmds.map(c => c.windowNumber).join('+')}`);
+    return n;
+  };
   const basePost = ax.postMouse;
   ax.postMouse = (kind, x, y) => {
     if (!mc.open) return basePost(kind, x, y);
@@ -250,7 +267,13 @@ function fakeMc(opts = {}) {
     if (kind === 'drag' && y < 20) mc.expanded = true;
     if (kind === 'up') {
       const k = order.findIndex((_, i) => inR(barBtn(i), x, y));
-      if (mc.held && k >= 0 && SPACES.find(s => s.id === order[k]).type === 0) for (const wn of mc.held) byWn.get(wn).space = order[k];
+      if (mc.held && k >= 0 && SPACES.find(s => s.id === order[k]).type === 0) {
+        for (const wn of mc.held) byWn.get(wn).space = order[k];
+        // 実機で起きた「1 枚のつもりが関係ない窓まで移った」の再現 (最初のドロップだけ)
+        if (opts.strayOnDrop && !mc.strayDone) { mc.strayDone = true; for (const wn of opts.strayOnDrop) byWn.get(wn).space = order[k]; }
+      }
+      // 実機で起きた「落としたあと (並べ直しの途中に背景を押して) Mission Control が閉じる」の再現
+      if (opts.closeAfterDrops && opts.closeAfterDrops.includes(++mc.drops)) { mc.open = false; st.log.push('mc closed by itself'); }
       mc.held = null;
     }
   };
@@ -258,7 +281,7 @@ function fakeMc(opts = {}) {
 }
 const liveFrom = (byWn) => () => new Map([...byWn.values()].map(w => [w.wn, w.title || `t${w.wn}`]));
 // 元のデスクトップで今見えている窓 (main の axHelper.listWindows に相当)
-const visibleFrom = (byWn, st) => () => [...byWn.values()].filter(w => w.space === st.active).map(w => ({ windowNumber: w.wn, app: w.app || 'Terminal', title: w.title || `t${w.wn}` }));
+const visibleFrom = (byWn, st) => () => [...byWn.values()].filter(w => w.space === st.active).map(w => ({ windowNumber: w.wn, pid: w.pid, app: w.app || 'Terminal', title: w.title || `t${w.wn}`, x: w.frame.x, y: w.frame.y, width: w.frame.width, height: w.frame.height }));
 const STACK = { 1: { x: 400, y: 200, w: 130, h: 120 }, 2: { x: 404, y: 204, w: 130, h: 120 }, 3: { x: 408, y: 208, w: 130, h: 120 } };
 
 test('Mission Control: 3 枚を画面を切り替えずに運び、TiN を送ってから行き先を押して終わる', async () => {
@@ -384,10 +407,10 @@ test('Mission Control: 山の窓が全部 TiN の端末なら、アイコンを�
   assert.deepStrictEqual(st.log.filter(l => l.startsWith('grab')), ['grab group 1+2+3'], st.log.join(','));
 });
 
-test('Mission Control: 山に TiN に繋いでいない窓があれば山ごとは使わず、アイコンも掴まない (関係ない窓は動かない)', async () => {
+test('Mission Control: (最小化できないとき) 山に TiN に繋いでいない窓があれば山ごとは使わず、アイコンも掴まない (関係ない窓は動かない)', async () => {
   const wins = [term(1, 0), term(2, 400), term(7, 800, { title: 'not-mine' })];
   const thumbs = { 1: STACK[1], 2: STACK[2], 7: STACK[3] };
-  const { ax, st, byWn } = fakeMc({ windows: wins, own: [], thumbs });
+  const { ax, st, byWn } = fakeMc({ windows: wins, own: [], thumbs, noMinimize: true });
   const plan = planCarry(SPACES, 3, { direction: 1 });
   const r = await carryToSpace({ ...deps(ax), liveTitles: liveFrom(byWn), sourceWindows: visibleFrom(byWn, st) },
     { plan, hotkeys: HK, externals: [ext(wins[0]), ext(wins[1])], ownWns: [] });
@@ -396,10 +419,10 @@ test('Mission Control: 山に TiN に繋いでいない窓があれば山ごと�
   assert.ok(!r.failed.some(f => f.reason === 'stray'));
 });
 
-test('Mission Control: 同じアプリの見えている窓に関係ない窓があれば (山が別でも) 山ごとは使わない', async () => {
+test('Mission Control: (最小化できないとき) 同じアプリの見えている窓に関係ない窓があれば (山が別でも) 山ごとは使わない', async () => {
   const wins = [term(1, 0), term(2, 400), term(7, 800, { title: 'not-mine' })];   // 7 は離れた所に居る
   const thumbs = { 1: STACK[1], 2: STACK[2], 7: { x: 1000, y: 600, w: 130, h: 120 } };
-  const { ax, st, byWn } = fakeMc({ windows: wins, own: [], thumbs });
+  const { ax, st, byWn } = fakeMc({ windows: wins, own: [], thumbs, noMinimize: true });
   const plan = planCarry(SPACES, 3, { direction: 1 });
   const r = await carryToSpace({ ...deps(ax), liveTitles: liveFrom(byWn), sourceWindows: visibleFrom(byWn, st) },
     { plan, hotkeys: HK, externals: [ext(wins[0]), ext(wins[1])], ownWns: [] });
@@ -433,4 +456,162 @@ test('Mission Control: アプリが 2 つ (Terminal と iTerm) なら山ごと�
   assert.strictEqual(r.ok, true, JSON.stringify(r));
   assert.ok(wins.every(w => byWn.get(w.wn).space === 10));
   assert.deepStrictEqual(st.log.filter(l => l.startsWith('grab')).map(l => l.split(' ').slice(0, 2).join(' ')), ['grab group', 'grab group'], st.log.join(','));
+});
+
+// ── 同じアプリの関係ない窓が混ざっているとき: 一時的にしまって山ごと運ぶ ──
+// 7 枚の山に関係ない窓 1 枚が混ざっている (利用者の実際の画面でよくある形)
+const MIXED = () => {
+  const wins = [], thumbs = {};
+  for (let i = 1; i <= 7; i++) { wins.push(term(i, 0)); thumbs[i] = { x: 300 + i * 3, y: 300 + i * 3, w: 130, h: 120 }; }
+  wins.push(term(8, 0, { title: 'not-mine' })); thumbs[8] = { x: 312, y: 312, w: 130, h: 120 };
+  return { wins, thumbs, ours: wins.slice(0, 7) };
+};
+
+test('Mission Control: 山に関係ない窓が混ざっていたら一時的にしまい、山ごと 1 回で運んでから元のデスクトップへ戻す', async () => {
+  const { wins, thumbs, ours } = MIXED();
+  const { ax, st, byWn, ownSpace } = fakeMc({ windows: wins, own: [900], thumbs });
+  const plan = planCarry(SPACES, 3, { direction: 1 });
+  const r = await carryToSpace({ ...deps(ax), liveTitles: liveFrom(byWn), sourceWindows: visibleFrom(byWn, st) },
+    { plan, hotkeys: HK, externals: ours.map(ext), ownWns: [900] });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.ok(ours.every(w => byWn.get(w.wn).space === 10));
+  assert.strictEqual(ownSpace.get(900), 10);
+  const w8 = byWn.get(8);
+  assert.strictEqual(w8.space, 3, '関係ない窓は元のデスクトップ: ' + st.log.join(','));
+  assert.strictEqual(w8.minimized, false, 'しまった窓は戻す');
+  assert.deepStrictEqual(st.log.filter(l => l.startsWith('grab')), ['grab group 1+2+3+4+5+6+7'], st.log.join(','));
+  assert.ok(st.log.indexOf('hide 8') < st.log.indexOf('mc open'), 'しまってから開く: ' + st.log.join(','));
+  // 戻すのは Mission Control を閉じたあと、元のデスクトップで。そのあと切替キーで行き先へ (押すと画面が引き戻される)
+  assert.ok(st.log.lastIndexOf('mc close') < st.log.indexOf('unhide 8'), st.log.join(','));
+  assert.ok(st.log.indexOf('unhide 8') < st.log.indexOf('switch 10'), st.log.join(','));
+  assert.ok(!st.log.some(l => l.startsWith('press') || l.startsWith('pulled')), st.log.join(','));
+  assert.strictEqual(st.active, 10);
+});
+
+test('Mission Control: しまえなかった窓があれば山ごとは使わず 1 枚ずつ (関係ない窓は動かない・しまった窓は戻す)', async () => {
+  const { wins, thumbs, ours } = MIXED();
+  const { ax, st, byWn } = fakeMc({ windows: wins, own: [], thumbs: { ...thumbs, 8: { x: 1000, y: 600, w: 130, h: 120 } }, stuckMinimize: [8] });
+  const plan = planCarry(SPACES, 3, { direction: 1 });
+  const r = await carryToSpace({ ...deps(ax), liveTitles: liveFrom(byWn), sourceWindows: visibleFrom(byWn, st) },
+    { plan, hotkeys: HK, externals: ours.map(ext), ownWns: [] });
+  assert.strictEqual(byWn.get(8).space, 3, st.log.join(','));
+  assert.ok(!st.log.some(l => l.startsWith('grab group')), st.log.join(','));
+  assert.ok(st.log.includes('unhide 8'));
+  assert.ok(!r.failed.some(f => f.reason === 'stray'));
+});
+
+test('Mission Control: 運び切れずに元のデスクトップに留まるときも、しまった窓は戻す', async () => {
+  const { wins, thumbs, ours } = MIXED();
+  // 運ぶ端末の題名が全部同じで山にもならず、縮小表示に掴める点も無い (= Mission Control では運べない)
+  const { ax, st, byWn } = fakeMc({ windows: wins, own: [], thumbs: { ...thumbs }, overlays: [{ x: 0, y: 0, w: 1512, h: 982 }] });
+  const plan = planCarry(SPACES, 3, { direction: 1 });
+  await carryToSpace({ ...deps(ax), liveTitles: liveFrom(byWn), sourceWindows: visibleFrom(byWn, st) },
+    { plan, hotkeys: HK, externals: ours.map(ext), ownWns: [] });
+  const w8 = byWn.get(8);
+  assert.strictEqual(w8.minimized, false, st.log.join(','));
+  assert.strictEqual(w8.space, 3);
+  assert.ok(st.log.indexOf('unhide 8') > st.log.lastIndexOf('mc close'), 'Mission Control を閉じてから戻す: ' + st.log.join(','));
+});
+
+test('planMcHide: しまうと速くなるときだけ、許したアプリの関係ない窓をしまう', () => {
+  const vis = (list) => list.map(([wn, app, title]) => ({ windowNumber: wn, pid: 100 + wn, app, title }));
+  const ours = (list) => list.map(([wn, app, title]) => ({ wn, app, title }));
+  const n = (k, app = 'T') => Array.from({ length: k }, (_, i) => [i + 1, app, `t${i + 1}`]);
+  const four = ours(n(4));
+  let h = planMcHide(vis([...n(4), [8, 'T', 'x'], [9, 'Safari', 'y']]), four);
+  assert.deepStrictEqual(h.wins.map(w => w.windowNumber), [8], '4 枚 + 関係ない 1 枚はしまう。別のアプリの窓はしまわない');
+  assert.deepStrictEqual([...h.apps], ['T']);
+  assert.deepStrictEqual(planMcHide(vis([...n(3), [8, 'T', 'x']]), ours(n(3))).wins, [], '3 枚 + 1 枚は 1 枚ずつと変わらない');
+  assert.deepStrictEqual(planMcHide(vis([...n(2), [8, 'T', 'x'], [9, 'T', 'y'], [10, 'T', 'z'], [11, 'T', 'w']]), ours(n(2))).wins, [],
+    '2 枚 + 関係ない 4 枚はしまわない (しまうほうが遅い)');
+  h = planMcHide(vis([...n(2), [8, 'T', 't1']]), ours(n(2)));
+  assert.deepStrictEqual(h.wins.map(w => w.windowNumber), [8], '見分けられない題名の窓があれば 2 枚でもしまう (切替キーより速い)');
+  assert.strictEqual(planMcHide(vis([...n(7), [20, 'T', 'a'], [21, 'T', 'b'], [22, 'T', 'c'], [23, 'T', 'd']]), ours(n(7))).wins.length, 4, '7 枚なら 4 枚までしまう');
+  assert.deepStrictEqual(planMcHide(vis([...n(7), ...Array.from({ length: 5 }, (_, i) => [20 + i, 'T', 'z'])]), ours(n(7))).wins, [], '7 枚 + 5 枚はしまわない');
+  assert.deepStrictEqual(planMcHide(vis([...n(13), ...Array.from({ length: 9 }, (_, i) => [30 + i, 'T', 'z'])]), ours(n(13))).wins, [], '多すぎる (MC_HIDE_MAX 超)');
+  assert.deepStrictEqual(planMcHide(vis([...n(4), [8, 'T', 'x']]), four, { ignoreWns: [8] }).wins, [], 'TiN 自身の窓は触らない');
+  assert.deepStrictEqual(planMcHide(vis([...n(4), [8, 'T', 'x']]), four, { enabled: false }).wins, []);
+  const mixed = vis([...n(4), [8, 'T', 'x'], ...n(4, 'Finder').map(([wn, a, t]) => [wn + 10, a, `f${t}`]), [19, 'Finder', 'fz']]);
+  const oursMixed = [...four, ...ours(n(4, 'Finder').map(([wn, a, t]) => [wn + 10, a, `f${t}`]))];
+  h = planMcHide(mixed, oursMixed, { apps: new Set(['T']) });
+  assert.deepStrictEqual(h.wins.map(w => w.windowNumber), [8], '許したアプリ (ターミナル系) だけしまう。Finder は 1 枚ずつ');
+});
+
+test('Mission Control: 最小化ができない環境 (古い addon) では今まで通り 1 枚ずつ運ぶ', async () => {
+  const { wins, thumbs, ours } = MIXED();
+  const { ax, st, byWn } = fakeMc({ windows: wins, own: [], thumbs: { ...thumbs, 8: { x: 1000, y: 600, w: 130, h: 120 } }, noMinimize: true });
+  const plan = planCarry(SPACES, 3, { direction: 1 });
+  const r = await carryToSpace({ ...deps(ax), liveTitles: liveFrom(byWn), sourceWindows: visibleFrom(byWn, st) },
+    { plan, hotkeys: HK, externals: ours.map(ext), ownWns: [] });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.ok(!st.log.some(l => l.startsWith('grab group')));
+  assert.strictEqual(byWn.get(8).space, 3);
+});
+
+test('Mission Control: 2 枚 + 関係ない窓 1 枚はしまわず 1 枚ずつ (しまっても速くならない)', async () => {
+  const wins = [term(1, 0), term(2, 400), term(7, 800, { title: 'not-mine' })];
+  const { ax, st, byWn } = fakeMc({ windows: wins, own: [], thumbs: { 1: STACK[1], 2: STACK[2], 7: STACK[3] } });
+  const plan = planCarry(SPACES, 3, { direction: 1 });
+  const r = await carryToSpace({ ...deps(ax), liveTitles: liveFrom(byWn), sourceWindows: visibleFrom(byWn, st) },
+    { plan, hotkeys: HK, externals: [ext(wins[0]), ext(wins[1])], ownWns: [] });
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.ok(!st.log.some(l => l.startsWith('hide') || l.startsWith('grab group')), st.log.join(','));
+  assert.strictEqual(byWn.get(7).space, 3);
+});
+
+test('Mission Control: しまうのが効かなかった窓は 1 回だけやり直して戻す', async () => {
+  const { wins, thumbs, ours } = MIXED();
+  const f = fakeMc({ windows: wins, own: [], thumbs });
+  const { ax, st, byWn } = f;
+  // 1 回目の「戻す」は効かない (実機の Finder のように)
+  const set0 = ax.setWindowsMinimized; let restores = 0;
+  ax.setWindowsMinimized = (cmds, m) => { if (!m && restores++ === 0) { st.log.push('unhide ignored'); return 0; } return set0(cmds, m); };
+  const plan = planCarry(SPACES, 3, { direction: 1 });
+  const now0 = Date.now; let t = now0();
+  Date.now = () => (t += 60);
+  try {
+    const r = await carryToSpace({ ...deps(ax), liveTitles: liveFrom(byWn), sourceWindows: visibleFrom(byWn, st) },
+      { plan, hotkeys: HK, externals: ours.map(ext), ownWns: [] });
+    assert.strictEqual(r.ok, true, JSON.stringify(r));
+  } finally { Date.now = now0; }
+  assert.strictEqual(byWn.get(8).minimized, false, st.log.join(','));
+  assert.strictEqual(byWn.get(8).space, 3);
+  assert.ok(st.log.indexOf('unhide 8') < st.log.indexOf('switch 10'), '戻ってから切り替える: ' + st.log.join(','));
+});
+
+test('chooseMcGrab: 1 枚ずつ掴む点は山のアイコンから最も遠い所 (縮小表示の上の方)', () => {
+  const thumbs = [{ title: 'other', x: 100, y: 100, w: 200, h: 150 }, { title: 'mine', x: 104, y: 104, w: 200, h: 150 }];
+  const p = chooseMcGrab(thumbs, [{ wn: 1, title: 'mine' }]);
+  const icon = mcIconPoint(thumbs);
+  assert.ok(p, 'mine の右と下の縁は掴める');
+  assert.ok(Math.hypot(p.x - icon.x, p.y - icon.y) > 40, JSON.stringify({ p, icon }));
+  const solo = chooseMcGrab([{ title: 'mine', x: 100, y: 100, w: 200, h: 150 }], [{ wn: 1, title: 'mine' }]);
+  assert.ok(solo.y < 100 + 150 / 2, '上の方を掴む: ' + JSON.stringify(solo));
+});
+
+test('Mission Control: 関係ない窓まで移ったら Mission Control をやめ、残りは切替キーで運び、移った窓は元へ戻す', async () => {
+  const wins = [term(1, 0), term(2, 400), term(7, 800, { title: 'not-mine' })];
+  const thumbs = { 1: { x: 100, y: 300, w: 180, h: 120 }, 2: { x: 500, y: 300, w: 180, h: 120 }, 7: { x: 900, y: 300, w: 180, h: 120 } };
+  const { ax, st, byWn } = fakeMc({ windows: wins, own: [], thumbs, noMinimize: true, strayOnDrop: [7] });
+  const plan = planCarry(SPACES, 3, { direction: 1 });
+  const r = await carryToSpace({ ...deps(ax), liveTitles: liveFrom(byWn), sourceWindows: visibleFrom(byWn, st) },
+    { plan, hotkeys: HK, externals: [ext(wins[0]), ext(wins[1])], ownWns: [] });
+  assert.deepStrictEqual([1, 2].map(w => byWn.get(w).space), [10, 10], st.log.join(','));
+  assert.strictEqual(byWn.get(7).space, 3, '移ってしまった窓は元のデスクトップへ戻す: ' + st.log.join(','));
+  assert.strictEqual(st.active, 10);
+  assert.strictEqual(st.log.filter(l => l.startsWith('grab ') && !l.startsWith('grab group')).length, 1, 'MC で掴むのは 1 回だけ: ' + st.log.join(','));
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+});
+
+test('Mission Control: 途中で Mission Control が閉じたら開き直して続ける (切替キーの方式に回さない)', async () => {
+  const wins = [term(1, 0), term(2, 400), term(3, 800)];
+  const { ax, st, byWn, ownSpace } = fakeMc({ windows: wins, own: [900], closeAfterDrops: [1] });
+  const plan = planCarry(SPACES, 3, { direction: 1 });
+  const r = await carryToSpace({ ...deps(ax), liveTitles: liveFrom(byWn) }, { plan, hotkeys: HK, externals: wins.map(ext), ownWns: [900] });
+  assert.strictEqual(r.ok, true, JSON.stringify(r) + ' ' + st.log.join(','));
+  assert.deepStrictEqual([1, 2, 3].map(w => byWn.get(w).space), [10, 10, 10]);
+  assert.strictEqual(ownSpace.get(900), 10);
+  assert.ok(st.log.includes('mc closed by itself'));
+  assert.strictEqual(st.log.filter(l => l === 'mc open').length, 2, '開き直しは 1 回: ' + st.log.join(','));
+  assert.ok(!st.log.some(l => l.startsWith('raise')), '切替キーの方式は使わない: ' + st.log.join(','));
 });

@@ -13,6 +13,7 @@ const ax = require(path.join(__dirname, 'build', 'Release', 'ax_helper.node'));
 const ALL_WNS = (process.env.TIN_TEST_WNS || '').split(',').map(Number).filter(n => n > 0);
 const WNS = ALL_WNS.slice(0, 2);       // ワークスペース 1 に繋ぐ
 const WN_WS2 = ALL_WNS[2] || 0;        // ワークスペース 2 に繋ぐ (通し試験)
+let W3_HOME = 0;                        // 端末 3 の最初のデスクトップ (ws1 を運ぶ間は関係ない窓)
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const results = [];
@@ -50,6 +51,11 @@ async function greenButton(win, press) {
   return 'clicked';
 }
 const spaceOf = (wn) => Number((ax.getSpaceForWindows([wn])[0] || {}).spaceId || 0);
+// Terminal の窓が最小化されたままか (運ぶ間だけ一時的にしまう窓が、ちゃんと戻ったか)
+const minimizedNow = (wn) => {
+  try { return require('child_process').execSync(`osascript -e 'tell application "Terminal" to get miniaturized of window id ${wn}'`).toString().trim() === 'true'; }
+  catch { return null; }
+};
 const ownIds = () => BrowserWindow.getAllWindows().filter(w => !w.isDestroyed() && w.isVisible()).map(w => {
   try { return ax.getWindowIdFromHandle(w.getNativeWindowHandle().readBigUInt64LE(0)); } catch { return 0; }
 }).filter(n => n > 0);
@@ -64,6 +70,9 @@ async function runMove(label, direction, expectTarget) {
   check(`${label}: 今のデスクトップが行き先`, ax.getActiveSpaceId() === target, `active=${ax.getActiveSpaceId()} target=${target}`);
   for (const wn of WNS) check(`${label}: 端末 ${wn} が行き先`, spaceOf(wn) === target, `space=${spaceOf(wn)}`);
   for (const id of ownIds()) check(`${label}: TiN の窓 ${id} が行き先`, spaceOf(id) === target, `space=${spaceOf(id)}`);
+  // 端末 1 と同じ題名の関係ない窓 (端末 3) は運ぶ間だけしまわれる。元のデスクトップに残り、しまわれたままでないこと
+  if (WN_WS2 && W3_HOME) check(`${label}: 関係ない窓 ${WN_WS2} は元の所に残り、しまわれたままでない`, spaceOf(WN_WS2) === W3_HOME && minimizedNow(WN_WS2) === false,
+    `space=${spaceOf(WN_WS2)} minimized=${minimizedNow(WN_WS2)}`);
   return r;
 }
 
@@ -87,6 +96,7 @@ async function run() {
   }
   await sleep(1200);
   const source = ax.getActiveSpaceId();
+  W3_HOME = WN_WS2 ? spaceOf(WN_WS2) : 0;
   const r1 = await runMove('右へ', +1);
   if (r1 && r1.ok) await runMove('左へ戻す', -1, source);
 
@@ -102,7 +112,8 @@ async function run() {
     let arrived = false;
     while (Date.now() - t0 < 20000) {
       await sleep(500);
-      if (WNS.every(wn => spaceOf(wn) === target) && ownIds().every(id => spaceOf(id) === target)) { arrived = true; break; }
+      // 端末が着いたあとに画面が戻ってくる (関係ない窓をしまったときは切替キーで戻る) まで待つ
+      if (WNS.every(wn => spaceOf(wn) === target) && ownIds().every(id => spaceOf(id) === target) && ax.getActiveSpaceId() === target) { arrived = true; break; }
     }
     console.log(`[SCENARIO] 追従: ${Date.now() - t0}ms`);
     await sleep(800);
@@ -162,6 +173,8 @@ async function visionScenario(source, target) {
   const ws1wid = ax.getWindowIdFromHandle(ws1.getNativeWindowHandle().readBigUInt64LE(0));
   check('ws2 と端末が右のデスクトップ', r && r.ok && spaceOf(ws2wid) === target && spaceOf(WN_WS2) === target, `ws2@${spaceOf(ws2wid)} term@${spaceOf(WN_WS2)}`);
   check('ws1 と端末は元のデスクトップのまま', spaceOf(ws1wid) === source && WNS.every(wn => spaceOf(wn) === source), WNS.map(wn => `${wn}@${spaceOf(wn)}`).join(' '));
+  // ws2 を運ぶ間、同じアプリの ws1 の端末は一時的にしまわれる (ws2 の端末と題名が同じものがある)。戻って最小化のままでないこと
+  check('ws2 を運んだあと ws1 の端末はしまわれたままでない', WNS.every(wn => !minimizedNow(wn)), WNS.map(wn => `${wn}:${minimizedNow(wn)}`).join(' '));
   const c2 = await greenButton(ws2, true);
   console.log(`[SCENARIO] 緑ボタン (ws2): ${c2}`);
   await sleep(1500);

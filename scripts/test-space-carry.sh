@@ -2,29 +2,24 @@
 # 実機テスト: TiN ごと端末を別デスクトップへ運ぶ (lib/space-carry.js)。
 # 隔離 userData で開発版を起動するので、稼働中の TiN.app と共存できる。
 #
-# やること: 検証用のデスクトップを右端に 1 枚足す → 試験用の Terminal 窓を 3 枚開く →
+# 利用者の窓を巻き込まないよう、検証用のデスクトップを 2 枚足してその間だけで試し、終わったら消して元の
+# デスクトップへ戻る (今のデスクトップで試していた頃、利用者の端末が一緒に移ったことがある)。
+# やること: 検証用のデスクトップを 2 枚足して 1 枚目へ移る → 試験用の Terminal 窓を 3 枚開く →
 #   開発版に内蔵端末 1 つ + 試験窓 2 枚を snap → 右のデスクトップへ運ぶ → 左へ戻す →
 #   TiN だけを動かして追従を確かめる → 通し試験 (緑ボタンで広げる・ワークスペース 2 を右のデスクトップへ・
 #   行き来しても外れない) → 試験窓と検証用デスクトップを片付ける。
 # 画面が実際に何度か切り替わる。終わるまでマウスとキーボードに触らないこと。
 # 前提: Mission Control の「左/右の操作スペースに移動」が有効であること。
-#   右隣に通常デスクトップが無ければ検証用に足し、終わったらその 1 枚だけを消す。
 set -e
 cd "$(dirname "$0")/.."
 
 LOG=$(mktemp /tmp/tin-space-carry.XXXXXX)
-ADDED_DESKTOP=0   # 足した検証用デスクトップの Space ID (0 = 足していない)
+ADDED1=0; ADDED2=0   # 足した検証用デスクトップの Space ID (0 = 足していない)
+HOME_SPACE=0
 WNS=""
 
 active() { node -e "console.log(require('./build/Release/ax_helper.node').getActiveSpaceId())"; }
 spaces_json() { node -e "console.log(JSON.stringify(require('./build/Release/ax_helper.node').getSpacesList()))"; }
-has_right_desktop() {
-  node -e "
-const a = require('./build/Release/ax_helper.node');
-const l = a.getSpacesList(); const cur = l.find(s => s.isCurrent);
-const same = l.filter(s => s.display === cur.display); const i = same.indexOf(cur);
-process.exit(same.slice(i + 1).some(s => s.type === 0) ? 0 : 1);"
-}
 
 mission_control() {   # $1 = add | remove <1 始まりの位置>
   osascript - "$1" "${2:-0}" <<'AS' >/dev/null 2>&1 || true
@@ -55,6 +50,33 @@ AS
   sleep 1
 }
 # Space ID → Mission Control のスペースバーでの位置 (今のディスプレイ、1 始まり)。無ければ 0
+# 指定の Space へ切替キーで移る (同じ画面の並びで左右に数えて、1 段ずつ着くのを待つ)
+goto_space() {
+  node -e "
+const a = require('./build/Release/ax_helper.node'); const sleep = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const hk = a.getSpaceHotkeys();
+  for (let n = 0; n < 12 && a.getActiveSpaceId() !== $1; n++) {
+    const l = a.getSpacesList(); const cur = l.find(s => s.isCurrent);
+    const same = l.filter(s => s.display === cur.display);
+    const d = same.findIndex(s => s.id === $1) - same.indexOf(cur);
+    if (!d || same.findIndex(s => s.id === $1) < 0) break;
+    const k = d > 0 ? hk.right : hk.left; const from = a.getActiveSpaceId();
+    a.postHotkey(k.keyCode, k.modifiers);
+    const t = Date.now(); while (a.getActiveSpaceId() === from && Date.now() - t < 2000) await sleep(40);
+    await sleep(250);
+  }
+  process.exit(a.getActiveSpaceId() === $1 ? 0 : 1);
+})();"
+}
+add_desktop() {   # 足した Space ID を出す
+  ids_before=$(node -e "console.log(require('./build/Release/ax_helper.node').getSpacesList().map(s=>s.id).join(','))")
+  mission_control add
+  node -e "
+const b = new Set('$ids_before'.split(',').map(Number));
+const n = require('./build/Release/ax_helper.node').getSpacesList().find(s => !b.has(s.id));
+console.log(n ? n.id : 0)"
+}
 space_pos() {
   node -e "
 const l = require('./build/Release/ax_helper.node').getSpacesList(); const cur = l.find(s => s.isCurrent);
@@ -63,25 +85,23 @@ const same = l.filter(s => s.display === cur.display); console.log(same.findInde
 
 cleanup() {
   for wn in ${WNS//,/ }; do osascript -e "tell application \"Terminal\" to close window id $wn" 2>/dev/null || true; done
-  if [ "$ADDED_DESKTOP" != 0 ]; then
+  if [ "$HOME_SPACE" != 0 ]; then goto_space "$HOME_SPACE" || true; fi
+  for id in "$ADDED2" "$ADDED1"; do
+    [ "$id" != 0 ] || continue
     # 足した Space ID の位置のボタンだけを消す (並びの最後はフルスクリーンのアプリのことがある)
-    POS=$(space_pos "$ADDED_DESKTOP")
+    POS=$(space_pos "$id")
     if [ "$POS" -gt 0 ]; then mission_control remove "$POS"; fi
-  fi
+  done
   rm -rf .tin-test-userdata-space
 }
 trap cleanup EXIT
 
-if ! has_right_desktop; then
-  echo "右隣に通常デスクトップが無いので検証用に 1 枚足す"
-  ids_before=$(node -e "console.log(require('./build/Release/ax_helper.node').getSpacesList().map(s=>s.id).join(','))")
-  mission_control add
-  ADDED_DESKTOP=$(node -e "
-const b = new Set('$ids_before'.split(',').map(Number));
-const n = require('./build/Release/ax_helper.node').getSpacesList().find(s => !b.has(s.id));
-console.log(n ? n.id : 0)")
-  echo "added desktop id=$ADDED_DESKTOP"
-fi
+HOME_SPACE=$(active)
+ADDED1=$(add_desktop); ADDED2=$(add_desktop)
+echo "home=$HOME_SPACE added desktops: $ADDED1 $ADDED2"
+if [ "$ADDED1" = 0 ] || [ "$ADDED2" = 0 ]; then echo "検証用のデスクトップを足せなかった"; exit 1; fi
+goto_space "$ADDED1" || { echo "検証用のデスクトップへ移れなかった"; exit 1; }
+sleep 0.5
 echo "spaces: $(spaces_json)"
 
 # 試験用の Terminal 窓 (新しく開いた 3 枚の windowNumber を控える。2 枚は ws1、1 枚は通し試験の ws2)
