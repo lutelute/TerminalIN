@@ -16,6 +16,18 @@ AXUIElement を直接呼ぶ。外部 helper バイナリは持たない。
 - `raiseWindows(cmds)` — AXUIElement AXRaise
 - `isAXTrusted()` — Accessibility 権限確認
 - `moveToSpace(...)` — CGS プライベート API で Space 移動
+- `moveWindowsAsync` / `listWindowsAsync` / `raiseWindowsAsync` — 同じ処理を専用の直列キュー (GCD) で動かして Promise で返す。
+  書く (動かす・上げる) は 1 本の列、読む (一覧) は別の列。遅いアプリ (PowerPoint は AX 1 回 150〜500ms) で main を止めない
+- `moveWindows(cmds, positionOnly, detail)` の detail=true は書いたあとに読み戻した実際の枠を返す
+  (アプリの下限で小さくできなかった窓が分かる)。AXEnhancedUserInterface が有効なアプリ (Finder) は書く間だけ切る
+
+### 窓の操作は `lib/window-ops.js` を通す (2026-11-04)
+main.js から他アプリの窓を動かす・上げる・一覧を取るときは `windowOps` を使う (AX を直接呼ばない)。
+- `list()` 同時の頼みを 1 回にまとめ 150ms 使い回す / `move()` 書き終わるのを待つ / `moveLatest()` 待たない・窓ごとに最新だけ
+  (ドラッグ追従) / `raise()` 動かすのと同じ列 / `exclusive(label, fn)` 運搬の排他 (その間ほかの moveLatest・raise は捨てる)
+- 配置は `batchMove` → 読み戻しを `lib/placement.js` で分類 → ずれた窓だけ 1 回書き直し、下限で止まった窓はタブに「↔」
+- 普通のアプリの AX 要素には待ち時間 0.5 秒。**system-wide (全体) には付けない** — Dock (Mission Control) の読み取りが
+  時間切れになり、デスクトップ移動で MC が開いたまま残った
 
 ### Windows バックエンド = **koffi (`win-helper.js`) が canonical**
 

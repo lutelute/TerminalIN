@@ -34,10 +34,15 @@
 
 | # | 機能名 | 内容 | 実装場所 |
 |---|--------|------|----------|
-| 16 | **Push to Space (next/prev)** | TiN + 全 Snap ウィンドウを前後のデスクトップへ一括移動（◀ ▶） | `main.js` `push-to-space` (1638) |
-| 17 | **Push to Space (target)** | Space ピッカーで指定デスクトップへ移動（↗） | `main.js` `push-to-space-to` (1767) |
+| 16 | **Push to Space (next/prev)** | 上部バーの「‹ デスクトップ N/M ›」で TiN と繋いだ端末をまとめて隣のデスクトップへ。macOS では外部の端末を Mission Control の縮小表示の合成ドラッグで運ぶ（同じアプリの窓が 1 つの山になるので、山のアイコンを掴んで 1 回で全部。その画面に TiN に繋いでいない同じアプリの窓があれば、運ぶ間だけ最小化して山を TiN の端末だけにし、運んだあと元のデスクトップで戻す。しまえないときは 1 枚ずつ）。縮小表示で見分けられない窓だけ「タイトルバーを掴んで切替キー」。TiN 本体・内蔵端末は SLS で直接送る | `main.js` `carryWorkspaceToSpace` / `lib/space-carry.js` |
+| 17 | **Push to Space (target)** | 真ん中の「デスクトップ N/M」から行き先を選んで移す（フルスクリーンのアプリのデスクトップは選べない） | `main.js` `push-to-space-to` |
 | 18 | **Get Spaces** | デスクトップ一覧と各 Space の ID・フォーカス状態を取得 | `main.js` `get-spaces` (1737) |
 | 19 | **yabai SA Check** | yabai Scripting Addition の動作確認 | `main.js` `checkYabaiSA` (46) |
+
+- **追従**: TiN の窓を自分で別のデスクトップへ動かす（Mission Control で引きずる・上部バーを掴んで Ctrl+→）と、繋いだ端末を呼び寄せる（`scheduleSpaceFollow` → `gatherSnappedToTin`）。取り残された端末は整列ボタンでも呼び戻せる
+- **画面いっぱい**: macOS の緑ボタンと Ctrl+Cmd+F は全画面ではなく今のデスクトップいっぱいに広げる。全画面のデスクトップへは外部の窓を運び込めないため
+- 運搬中と Mission Control を開いている間は、snap の生死判定と付け替え（再リンク）を休む。窓を落とす瞬間に一覧から一瞬消え、同じ題名の別の窓へ付け替えてしまうため
+- 実機試験: `scripts/test-space-carry.sh`（検証用のデスクトップと試験窓を作って後で片付ける）
 
 ## IV. 組み込みターミナル（PTY）
 
@@ -161,6 +166,10 @@
 | 79 | **Move via yabai** | yabai CLI 経由の Space 移動 | `main.js` `moveWindowsViaYabai` (82) |
 | 80 | **Move to Space ID** | CGS プライベート API で直接 Space 移動（fallback） | `MoveWindowsToSpaceId` (739) |
 | 81 | **Move to Active Space** | 別 Space のウィンドウを現デスクトップへ呼び寄せ | `MoveWindowsToActiveSpace` (807) |
+
+窓の配置 (mac, 2026-11-04 再設計): `moveWindows(cmds, positionOnly, detail)` は書いたあとに AX から読み戻した実際の枠を返せる (detail)。`moveWindowsAsync` は同じ処理を専用の直列キューで動かして Promise で返す (遅いアプリで main を止めない・位置が前後しない)。AXEnhancedUserInterface が有効なアプリ (Finder で実測) は書く間だけ切る。普通のアプリの AX には待ち時間 0.5 秒の上限 (Dock = Mission Control には付けない)。`main.js` `batchMove` は読み戻しを `lib/placement.js` で分類し、ずれた窓は 1 回だけ書き直し、アプリの下限で小さくできない窓 (Chrome 500×375 など) はマスの左上に合わせたまま、タブに「↔」(下限の大きさを説明に添える) を出す。Windows の `getMoveIssues` (#43) と同じ通り道。ドラッグ中の追従 (`fireAndForgetMove`) は窓ごとに最新だけ送る。これらと一覧取得 (poll)・上げる・運搬の排他は `lib/window-ops.js` (`windowOps`) に集めた
+
+デスクトップ移動（III）用: `mcSnapshot`（Mission Control の縮小表示とスペースバーを Dock の AX から読む）/ `mcPressSpace` / `mcToggle` / `setWindowsMinimized`（窓番号だけで照合して最小化・解除）、合成入力 `postMouse` / `postHotkey`（修飾キーの flagsChanged も送る）、`hitTestPoint`（素通しの窓を飛ばす）/ `getWindowBounds` / `getActiveSpaceId` / `getSpaceHotkeys` / `getCursorPosition` / `warpCursor`
 
 ## XV. UI 状態・インタラクション
 

@@ -13,7 +13,16 @@ const autoSnap = require('./auto-snap');
 const { occupiedSlots, validSlotIdSet, nextFreeSlot, compactSlots, compactRowsLeft, computeSlotBounds } = require('./lib/layout');
 const { isAllowedRestRequest } = require('./lib/rest-guard');
 const { ABSENT_EVICT_MS, livenessOf, absentVerdict } = require('./lib/snap-liveness');
+const { planCarry, carryToSpace, REASON_TEXT: CARRY_REASON_TEXT } = require('./lib/space-carry');
 const { findRelinkTarget, matchPersistedToLive } = require('./lib/snap-relink');
+const { classifyPlacement, needsRetry, createPlacementIssues } = require('./lib/placement');
+// mac: 置いたあとに読み戻した枠から分かった「はみ出し」(アプリの下限で小さくできない窓)。Windows は win-helper の getMoveIssues
+const placementIssues = createPlacementIssues();
+// 画面の snapped 一覧を hydrate-snapped で置き換えたあとは、次の poll で必ず snappedList を送り直す
+// (poll は「変化なし」なら送らない。置き換えで抜けた印などの情報が戻らなくなる)
+function resetPollIdentityFor(win) {
+  for (const [, w] of workspaces) if (w.win === win) { w._lastPollIdentity = ''; break; }
+}
 
 // ── File logging (クラッシュ事後解析用) ──
 // Finder 起動時は stdout が捨てられ、クラッシュ原因が一切残らない。
@@ -64,6 +73,12 @@ if (process.platform === 'win32') {
     console.warn('[tin] ax_helper not available, falling back to osascript:', e.message);
   }
 }
+
+// 窓の操作 (動かす・上げる・一覧・運搬の排他) はここを通す (lib/window-ops.js)。mac は native の *Async
+// (専用の直列キュー) で main を止めない。Windows は win-helper の同期 API をそのまま使う
+const { createWindowOps } = require('./lib/window-ops');
+const windowOps = createWindowOps(axHelper, { log: (m) => console.log(`[tin] ${m}`) });
+const spaceCarryActive = () => windowOps.carrying();
 
 // Windows 自動アップデート (packaged + win でのみ作動。dev/mac は no-op)
 let initAutoUpdate = () => {};
@@ -308,6 +323,15 @@ ipcMain.handle('window-control', (event, { action }) => {
 });
 
 // win に対応する workspace を返す (ネイティブ操作後の整列で使用)。
+// ワークスペース本体の窓・内蔵端末の窓のどちらからでも、その workspace を返す
+function wsForAnyWindow(win) {
+  if (!win) return null;
+  for (const [, ws] of workspaces) {
+    if (ws.win === win) return ws;
+    for (const [, gw] of ws.gridWindows) if (gw.win === win) return ws;
+  }
+  return null;
+}
 function wsForWin(win) {
   for (const [, ws] of workspaces) if (ws.win === win) return ws;
   return null;
@@ -814,7 +838,7 @@ async function restoreAllPending() {
       ws.win.webContents.send('restore-report', { restored, missing });
       const hydrate = [];
       for (const [wn, info] of ws.snappedExternals) hydrate.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
-      ws.win.webContents.send('hydrate-snapped', hydrate);
+      ws.win.webContents.send('hydrate-snapped', hydrate); resetPollIdentityFor(ws.win);
     } catch (e) { console.warn('[tin] restore hydrate send failed:', e?.message || e); }
     const expiredNote = expired > 0 ? `, ${expired} expired` : '';
     console.log(`[tin] restored ${restored.length} snapped (${absentWns.length} absent), ${missing.length} missing${expiredNote} in "${ws.name}"`);
@@ -921,7 +945,7 @@ function listWindows() {
 // UI 表示用 (available リスト)。TiN ウィンドウも含めて別 workspace への移動を可能にする。
 function listWindowsForUI() {
   if (axHelper) {
-    try { return Promise.resolve(axHelper.listWindows()); } catch (e) { console.warn('[tin] listWindowsForUI failed:', e?.message || e); }
+    try { return windowOps.list(); } catch (e) { console.warn('[tin] listWindowsForUI failed:', e?.message || e); }
   }
   return Promise.resolve([]);
 }
@@ -929,9 +953,14 @@ function listWindowsForUI() {
 
 // Fire-and-forget: sidebar ドラッグ中のリアルタイム retile 用。応答待ちで
 // event loop をブロックしないので、次の move イベントをすぐ処理できる。
+// 待たない移動 (ドラッグ中の追従など)。窓ごとに最新だけ送る・運搬中は捨てる (lib/window-ops.js)
 function fireAndForgetMove(windows, positionOnly = false) {
   if (!windows.length || !axHelper) return;
-  try { axHelper.moveWindows(windows, positionOnly); } catch (e) { console.warn('[tin] fireAndForgetMove failed:', e?.message || e); }
+  windowOps.moveLatest(windows, positionOnly);
+}
+// 書き終わるのを待つ版 (mac は直列キュー経由なので、先に頼んだ fire-and-forget の後に書かれる)
+async function moveWindowsAwait(cmds, positionOnly = false, detail = false) {
+  return windowOps.move(cmds, { positionOnly, detail });
 }
 
 // ── Stabilization guard ──
@@ -998,6 +1027,10 @@ function markAbsent(info) {
 
 // 再 snap: title + app で live window を探し、snap し直す
 async function recoverSnappedWindows() {
+  // mac: 運んでいる間と Mission Control が開いている間は付け替えない。Mission Control で窓を別の
+  // デスクトップへ落とす瞬間、その窓が全 Space の一覧からも一瞬消える。運搬の beginStabilize が
+  // 予約した 1 秒後・3 秒後の復旧がちょうどそこに当たり、同じ title の別の窓へ付け替えていた (2026-11-03 実機)。
+  if (IS_MAC && (spaceCarryActive() || axHelper?.mcSnapshot?.())) return;
   const allLive = await listWindows();
   for (const [, ws] of workspaces) {
     if (!ws.win || ws.win.isDestroyed()) continue;
@@ -1009,8 +1042,11 @@ async function recoverSnappedWindows() {
     const takenHere = new Set();
     const claimed = (wn) => takenHere.has(wn) || isWindowClaimed(wn);
     const toRelink = [];
+    const elsewhereIds = probeAllSpaceWindowIds();
     for (const [k, info] of ws.snappedExternals) {
       if (allLive.find(w => w.windowNumber === k)) continue; // 既に生きている
+      // 別のデスクトップに居るだけの窓は付け替えない (poll 側と同じ理由)
+      if (Array.isArray(elsewhereIds) && elsewhereIds.includes(k)) continue;
       const live = findRelinkTarget(info, allLive, claimed);
       if (live) { takenHere.add(live.windowNumber); toRelink.push({ oldKey: k, info, live }); }
     }
@@ -1077,7 +1113,7 @@ async function recoverSnappedWindows() {
     // renderer 更新
     const hydrate = [];
     for (const [wn, info] of ws.snappedExternals) hydrate.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
-    if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('hydrate-snapped', hydrate);
+    if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('hydrate-snapped', hydrate); resetPollIdentityFor(ws.win);
   }
 }
 
@@ -1154,6 +1190,33 @@ async function batchMove(cmds) {
   if (!axHelper) return;
   const t0 = Date.now();
   try {
+    if (IS_MAC) {
+      // 書いたあとに読み戻した実際の枠で確かめる (detail)。位置がずれた・広げきれなかった窓は 1 回だけ書き直し、
+      // アプリの下限で小さくできなかった窓は「はみ出し」として記録する (画面のタブに印を出す)
+      const byWn = new Map(cmds.map(c => [c.windowNumber, c]));
+      const check = (det) => {
+        const retry = [];
+        if (!Array.isArray(det)) return retry;
+        for (const d of det) {
+          const cmd = byWn.get(d.windowNumber);
+          if (!cmd) continue;
+          const c = classifyPlacement(cmd, d);
+          placementIssues.record(d.windowNumber, cmd.app, cmd, d, c);
+          if (process.env.TIN_DEBUG_PLACEMENT) console.log(`[tin] placement ${d.windowNumber}:${cmd.app} → ${c.code} (${c.dx},${c.dy},${c.dw},${c.dh})`);
+          if (needsRetry(c)) retry.push({ cmd, c });
+        }
+        return retry;
+      };
+      const retry = check(await moveWindowsAwait(cmds, false, true));
+      if (retry.length) {
+        console.log(`[tin] placement retry: ${retry.map(r => `${r.cmd.windowNumber}:${r.cmd.app}:${r.c.code}(${r.c.dx},${r.c.dy},${r.c.dw},${r.c.dh})`).join(' ')}`);
+        const again = check(await moveWindowsAwait(retry.map(r => r.cmd), false, true));
+        if (again.length) console.log(`[tin] placement still off: ${again.map(r => `${r.cmd.windowNumber}:${r.cmd.app}:${r.c.code}(${r.c.dx},${r.c.dy},${r.c.dw},${r.c.dh})`).join(' ')}`);
+      }
+      const dt = Date.now() - t0;
+      if (dt > 30) console.log(`[tin] batchMove(native): ${dt}ms ${cmds.length}win`);
+      return;
+    }
     const moved = axHelper.moveWindows(cmds, false);
     const dt = Date.now() - t0;
     if (dt > 30) console.log(`[tin] batchMove(native): ${dt}ms ${cmds.length}win moved=${moved}`);
@@ -1204,7 +1267,7 @@ async function raiseSpecificWindows(cmds) {
   if (!axHelper) return;
   try {
     const t0 = Date.now();
-    axHelper.raiseWindows(cmds);
+    await windowOps.raise(cmds);
     const dt = Date.now() - t0;
     if (dt > 30) console.log(`[tin] raise(native): ${dt}ms ${cmds.length}win`);
   } catch (e) { console.warn('[tin] raise(native) failed:', e?.message || e); }
@@ -1317,6 +1380,7 @@ function applyStackLevel(ws) {
 // アクティブな間は何もしない。端末をドラッグ中 (ボタン押下中) も触らない。
 function raiseGroupAboveTin(ws, activeWn) {
   if (!IS_MAC || appSettings.keepBehind === false) return false;
+  if (spaceCarryActive()) return false;   // 別デスクトップへ運んでいる最中 (TiN が掴む点を覆う)
   if (!ws || !ws.win || ws.win.isDestroyed() || ws.win.isFocused()) return false;
   if (ws._editMode || ws._hasOverlay) return false;
   if (axHelper?.isMouseButtonDown?.()) return false;
@@ -1333,10 +1397,9 @@ function raiseGroupAboveTin(ws, activeWn) {
     const infos = [...ws.snappedExternals.values()]
       .sort((a, b) => (a.windowNumber === activeWn) - (b.windowNumber === activeWn));
     const cmds = infos.map(i => ({ windowNumber: i.windowNumber, pid: i.pid, app: i.app, title: i.title }));
-    try {
-      const n = axHelper.raiseWindows(cmds);
-      if (n < cmds.length) console.log(`[tin] group-raise: ${n}/${cmds.length} raised`);
-    } catch (e) { console.warn('[tin] group-raise failed:', e?.message || e); }
+    windowOps.raise(cmds)
+      .then(n => { if (n < cmds.length) console.log(`[tin] group-raise: ${n}/${cmds.length} raised`); })
+      .catch(e => console.warn('[tin] group-raise failed:', e?.message || e));
   }, 80);
   return true;
 }
@@ -1418,7 +1481,7 @@ async function retileAll(ws, fireAndForget = false, positionOnly = false) {
     } else if (positionOnly) {
       // position のみ設定 (drag 終了時用: size は既に正しい前提、AX call を減らす)
       if (axHelper) {
-        try { axHelper.moveWindows(moveCmds, true); return; } catch {}
+        try { await moveWindowsAwait(moveCmds, true); return; } catch {}
       }
       await batchMove(moveCmds);
     } else {
@@ -1748,7 +1811,7 @@ async function snapAllTerminals(ws) {
   try { await retileAll(ws); } catch (e) { console.warn('[tin] snap-all retile failed:', e?.message || e); }
   try {
     const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot }));
-    ws.win.webContents.send('hydrate-snapped', hydrate);
+    ws.win.webContents.send('hydrate-snapped', hydrate); resetPollIdentityFor(ws.win);
   } catch {}
   scheduleSyncSnapped(0);
   scheduleSaveWorkspaces();
@@ -1803,7 +1866,7 @@ async function flipGrid(ws, axis) {
   await retileAll(ws);
   try {
     const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot }));
-    ws.win.webContents.send('hydrate-snapped', hydrate);
+    ws.win.webContents.send('hydrate-snapped', hydrate); resetPollIdentityFor(ws.win);
   } catch {}
   ws._lastPollIdentity = ''; // 次 poll で gridSlots を確実に再送
   scheduleSyncSnapped(0);
@@ -2247,7 +2310,7 @@ ipcMain.on('set-active-tab-hotkey', (ws, slot) => {
     for (const [wn, info] of ws.snappedExternals) {
       if (info.slot === slot) activeWns.push({ windowNumber: wn, pid: info.pid, app: info.app, title: info.title });
     }
-    if (activeWns.length && axHelper && axHelper.raiseWindows) axHelper.raiseWindows(activeWns);
+    if (activeWns.length && axHelper && axHelper.raiseWindows) windowOps.raise(activeWns).catch(() => {});
   }).catch(() => {});
   ws.win.webContents.send('tab-switched-hotkey', slot);
 });
@@ -2337,6 +2400,10 @@ ipcMain.handle('save-settings', (_event, newSettings) => {
 ipcMain.handle('retile-now', async (event) => {
   const ws = findWorkspace(event.sender);
   if (!ws) return { ok: false };
+  if (IS_MAC && typeof axHelper?.postHotkey === 'function') {
+    const g = await gatherSnappedToTin(ws, 'retile');
+    if (g && !g.nothing && ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('space-carry-result', g);
+  }
   const cmds = [];
   const wns = [];
   for (const [, info] of ws.snappedExternals) {
@@ -2362,6 +2429,207 @@ ipcMain.handle('retile-now', async (event) => {
   }
   return { ok: true };
 });
+
+// ── mac: TiN ごと、スナップした端末を別デスクトップへ運ぶ (lib/space-carry.js) ──
+// 他アプリの窓は「タイトルバーを掴んだまま切替キー」でしか Space を越えられない
+// (macOS 26 実測、詳細は lib/space-carry.js 冒頭)。運んでいる間は合成のマウスとキーが
+// 画面を行き来するので、TiN 側の自動処理 (端末が前面に来たら上部バーを持ち上げる等) を止める。
+
+function ownWindowIds(ws) {
+  const ids = [];
+  const add = (win) => {
+    if (!win || win.isDestroyed() || !axHelper?.getWindowIdFromHandle) return;
+    try {
+      const wid = axHelper.getWindowIdFromHandle(win.getNativeWindowHandle().readBigUInt64LE(0));
+      if (wid > 0) ids.push(wid);
+    } catch (e) { console.warn('[tin] ownWindowIds failed:', e?.message || e); }
+  };
+  add(ws.win);
+  for (const [, gw] of ws.gridWindows) add(gw.win);
+  return ids;
+}
+
+const CARRY_PLAN_TEXT = {
+  edge: 'その向きにはデスクトップがありません',
+  'fullscreen-target': '全画面 (フルスクリーン) のデスクトップには他のアプリの窓を入れられません',
+  'same-space': '今いるデスクトップです',
+  'other-display': '別のディスプレイのデスクトップへは移せません',
+};
+
+// 運ぶ前の共通チェック。OK なら { ok:true, hotkeys }。
+function carryPreflight() {
+  const need = ['getActiveSpaceId', 'getSpacesList', 'getSpaceHotkeys', 'postHotkey', 'postMouse', 'hitTestPoint', 'getWindowBounds'];
+  if (!axHelper || need.some(f => typeof axHelper[f] !== 'function')) return { ok: false, reason: 'no-native', message: 'この版の TiN は運ぶ機能に未対応です (ax_helper を再ビルド)' };
+  if (spaceCarryActive()) return { ok: false, reason: 'busy', message: '別のデスクトップへ移動中です' };
+  if (axHelper.isAXTrusted && !axHelper.isAXTrusted()) return { ok: false, reason: 'no-ax', message: 'アクセシビリティの許可が必要です' };
+  const hotkeys = axHelper.getSpaceHotkeys();
+  if ([hotkeys.right, hotkeys.left].some(h => !h || !h.enabled)) {
+    return { ok: false, reason: 'hotkey-disabled',
+      message: 'システム設定 > キーボード > ショートカット > Mission Control の「左/右の操作スペースに移動」を有効にしてください' };
+  }
+  return { ok: true, hotkeys };
+}
+
+// その Space がいずれかのディスプレイで今見えているか。分からないときは true (休ませない側に倒す)。
+function tinSpaceVisible(spaceId) {
+  if (!axHelper?.getSpacesList) return true;
+  try {
+    const l = axHelper.getSpacesList();
+    const s = l.find(x => Number(x.id) === Number(spaceId));
+    if (!s || typeof s.isVisible !== 'boolean') return true;
+    return s.isVisible;
+  } catch { return true; }
+}
+
+function snappedCarryList(ws) {
+  return [...ws.snappedExternals.values()]
+    .filter(i => typeof i.windowNumber === 'number' && i.windowNumber > 0)
+    .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0))
+    .map(i => ({ wn: i.windowNumber, pid: i.pid, app: i.app, title: i.title || '', windowIndex: i.windowIndex || 0 }));
+}
+function spaceOfWn(wn) {
+  try { return Number((axHelper.getSpaceForWindows([wn])[0] || {}).spaceId || 0); } catch { return 0; }
+}
+
+// 1 回分の「運ぶ」(source → target)。groups: [{ plan, externals }] を順に処理し、最後に自分の窓を送る。
+// TiN が居る画面の範囲 (Mission Control で画面が複数あるとき、どの画面の縮小表示を使うか)
+function carryDisplayFrame(ws) {
+  try { return screen.getDisplayMatching(ws.win.getBounds()).bounds; } catch { return null; }
+}
+
+// 運搬は windowOps の排他で持つ (その間、ほかの待たない移動と上げるは捨てる)
+async function runCarry(ws, label, hotkeys, groups, ownWns, target) {
+  const r = await windowOps.exclusive(`space-carry:${label}`, () => runCarryInner(ws, label, hotkeys, groups, ownWns, target));
+  if (r.busy) return { ok: false, reason: 'busy', message: '別のデスクトップへ移動中です' };
+  return r.value;
+}
+async function runCarryInner(ws, label, hotkeys, groups, ownWns, target) {
+  beginStabilize(`space-carry:${label}`, ws);
+  const send = (ch, data) => { try { if (ws.win && !ws.win.isDestroyed()) ws.win.webContents.send(ch, data); } catch {} };
+  const total = groups.reduce((n, g) => n + g.externals.length, 0);
+  send('space-carry-progress', { phase: 'start', total });
+  const t0 = Date.now();
+  const sum = { ok: true, target, moved: [], failed: [], tinMoved: 0, endedOn: 0 };
+  let base = 0;
+  try {
+    for (let gi = 0; gi < groups.length; gi++) {
+      const g = groups[gi];
+      if (!g.plan.ok) {
+        for (const e of g.externals) sum.failed.push({ wn: e.wn, title: e.title, reason: g.plan.reason });
+        base += g.externals.length;
+        continue;
+      }
+      console.log(`[tin] space-carry(${label}) ${g.plan.source}→${g.plan.target} steps=${g.plan.steps} externals=[${g.externals.map(e => e.wn)}]`);
+      const r = await carryToSpace({
+        ax: axHelper,
+        sleep: (ms) => new Promise(res => setTimeout(res, ms)),
+        log: (m) => console.log(`[tin] ${m}`),
+        onProgress: (p) => send('space-carry-progress', { phase: 'carry', done: base + p.done, total, title: p.title }),
+        // Mission Control の縮小表示は題名で見分ける。端末の題名は claude の表示などで刻々変わるので、その場で取る
+        liveTitles: () => {
+          try { return new Map((axHelper.listWindowsAllSpaces() || []).map(w => [w.windowNumber, w.title || ''])); } catch { return new Map(); }
+        },
+        // 元のデスクトップで今見えている窓 (山ごと運んでよいかの判定と、関係ない窓が一緒に移っていないかの確認)
+        sourceWindows: () => { try { return axHelper.listWindows() || []; } catch { return []; } },
+      }, {
+        plan: g.plan, hotkeys, externals: g.externals, ownWns: gi === groups.length - 1 ? ownWns : [],
+        displayFrame: carryDisplayFrame(ws),
+        // 同じアプリの関係ない窓を運ぶ間だけしまってよいアプリ (しまう→戻すが確実と確かめたターミナル系だけ)
+        hideApps: TERMINAL_APPS,
+      });
+      sum.moved.push(...r.moved);
+      sum.failed.push(...r.failed);
+      sum.tinMoved += r.tinMoved || 0;
+      sum.endedOn = r.endedOn;
+      base += g.externals.length;
+    }
+    // どの group も実行されなかった (全部 plan 失敗 or group 無し) ときも自分の窓は送る
+    if (!groups.some(g => g.plan.ok) && ownWns.length && axHelper.moveWindowsToSpaceId) {
+      try { axHelper.moveWindowsToSpaceId(ownWns, target); } catch {}
+      sum.tinMoved = ownWns.filter(w => spaceOfWn(w) === target).length;
+    }
+  } catch (e) {
+    console.warn('[tin] space-carry error:', e?.message || e);
+    sum.message = String(e?.message || e);
+  }
+  sum.ok = !sum.message && sum.failed.length === 0 && sum.tinMoved === ownWns.length;
+  sum.elapsedMs = Date.now() - t0;
+  console.log(`[tin] space-carry(${label}) done in ${sum.elapsedMs}ms ok=${sum.ok} moved=[${sum.moved}] failed=${JSON.stringify(sum.failed)} tinMoved=${sum.tinMoved}/${ownWns.length}`);
+  ws._tinSpaceId = target;
+  // 掴むときに数 px 動かしているので、スロットへ戻す。端末は TiN の上に並べ直す。
+  setTimeout(() => {
+    retileAll(ws, true).catch(() => {});
+    ws._needsGroupRaise = true;
+    raiseGroupAboveTin(ws, 0);
+  }, 150);
+  send('space-carry-progress', { phase: 'end' });
+  sum.failed = sum.failed.map(f => ({ ...f, reasonText: (CARRY_REASON_TEXT[f.reason] || CARRY_PLAN_TEXT[f.reason] || f.reason) + (f.by ? `: ${f.by}` : '') }));
+  return sum;
+}
+
+// ◀ ▶ ↗ : TiN と繋いだ端末をまとめて、今のデスクトップから別のデスクトップへ
+async function carryWorkspaceToSpace(ws, { direction, targetSpaceId }) {
+  const pre = carryPreflight();
+  if (!pre.ok) return pre;
+  const plan = planCarry(axHelper.getSpacesList(), axHelper.getActiveSpaceId(), { direction, targetSpaceId });
+  if (!plan.ok) return { ok: false, reason: plan.reason, message: CARRY_PLAN_TEXT[plan.reason] || `移動先を決められませんでした (${plan.reason})` };
+  return runCarry(ws, 'button', pre.hotkeys, [{ plan, externals: snappedCarryList(ws) }], ownWindowIds(ws), plan.target);
+}
+
+// TiN の窓が居るデスクトップへ、別のデスクトップに居る繋いだ端末を呼び寄せる。
+// TiN をユーザーが自分で動かしたとき (Mission Control で引きずる・上部バーを掴んで Ctrl+→) と、
+// 整列 (Retile) ボタンから使う。端末が複数のデスクトップに散っていても、元のデスクトップごとに運ぶ。
+async function gatherSnappedToTin(ws, label) {
+  const pre = carryPreflight();
+  if (!pre.ok) return pre;
+  const own = ownWindowIds(ws);
+  const tinSpace = own.length ? spaceOfWn(own[0]) : 0;
+  if (!tinSpace) return { ok: false, reason: 'no-tin-space', message: 'TiN の居るデスクトップが分かりませんでした' };
+  const spaces = axHelper.getSpacesList();
+  const here = spaces.find(s => Number(s.id) === tinSpace);
+  if (here && Number(here.type) !== 0) {
+    return { ok: false, reason: 'fullscreen-target',
+      message: '全画面のデスクトップには他のアプリの窓を入れられません。全画面ではなく、通常のデスクトップで TiN を画面いっぱいに広げてください' };
+  }
+  const bySource = new Map();
+  for (const e of snappedCarryList(ws)) {
+    const sp = spaceOfWn(e.wn);
+    if (!sp || sp === tinSpace) continue;
+    if (!bySource.has(sp)) bySource.set(sp, []);
+    bySource.get(sp).push(e);
+  }
+  const ownAway = own.filter(w => spaceOfWn(w) !== tinSpace);
+  if (!bySource.size && !ownAway.length) return { ok: true, target: tinSpace, moved: [], failed: [], nothing: true };
+  const groups = [...bySource].map(([src, externals]) => ({ plan: planCarry(spaces, src, { targetSpaceId: tinSpace }), externals }));
+  return runCarry(ws, label, pre.hotkeys, groups, ownAway, tinSpace);
+}
+
+// poll が「TiN のデスクトップが変わった」を見つけたときに呼ぶ。ユーザーがまだ TiN を掴んでいる・
+// 切替アニメーション中に合成マウスを出すと操作を壊すので、ボタンが離れて画面が落ち着くまで待つ。
+function scheduleSpaceFollow(ws, from, to) {
+  if (spaceCarryActive() || ws._followPending) return;
+  ws._followPending = true;
+  (async () => {
+    const t0 = Date.now();
+    let last = -1, stableSince = 0;
+    // Mission Control で TiN の縮小表示を別のデスクトップへ動かしたときは、閉じるまで待つ (開いている間は運べない)
+    while (Date.now() - t0 < 60000) {
+      const down = !!axHelper.isMouseButtonDown?.();
+      const act = axHelper.getActiveSpaceId();
+      const mcOpen = !!axHelper.mcSnapshot?.();
+      if (!mcOpen && Date.now() - t0 >= 10000) break;
+      if (!down && !mcOpen && act === last) {
+        if (!stableSince) stableSince = Date.now();
+        if (Date.now() - stableSince >= 500) break;
+      } else { stableSince = 0; last = act; }
+      await new Promise(r => setTimeout(r, 80));
+    }
+    console.log(`[tin] space-follow: TiN ${from}→${to} — 繋いだ端末を呼び寄せる`);
+    const r = await gatherSnappedToTin(ws, 'follow');
+    if (r && !r.nothing && ws.win && !ws.win.isDestroyed()) ws.win.webContents.send('space-carry-result', r);
+  })().catch(e => console.warn('[tin] space-follow failed:', e?.message || e))
+    .finally(() => { ws._followPending = false; });
+}
 
 // TiN サイドバー + snap 済みウィンドウを丸ごと次/前のデスクトップ (Space) に移動。
 // direction: +1 = 次, -1 = 前。移動後ユーザーがスワイプして確認する。
@@ -2402,6 +2670,7 @@ function getElectronWinNumber(win) {
 
 ipcMain.handle('push-to-space', async (event, { direction }) => {
   const ws = findWorkspace(event.sender);
+  if (IS_MAC && ws) return carryWorkspaceToSpace(ws, { direction });
   if (!ws || !axHelper || !axHelper.moveToSpace) return { ok: false };
 
   // TiN 自身のウィンドウ番号を getNativeWindowHandle で確実に取得
@@ -2506,7 +2775,23 @@ ipcMain.handle('space-capability', () => {
   try { return !!(axHelper && axHelper.spacesCapable && axHelper.spacesCapable()); } catch { return false; }
 });
 
-ipcMain.handle('get-spaces', async () => {
+ipcMain.handle('get-spaces', async (event) => {
+  // mac: 運ぶ機能は CGS の Space ID と並び順で動くので、ピッカーも同じ一覧を出す。
+  // isFullscreen = フルスクリーンのアプリのデスクトップ (運び込めないので選ばせない)。
+  // isTin = 呼んだ TiN の窓が居るデスクトップ (上部バーの「デスクトップ N/M」用)。
+  if (IS_MAC && axHelper?.getSpacesList && axHelper?.getActiveSpaceId) {
+    try {
+      const all = axHelper.getSpacesList();
+      const ws = findWorkspace(event.sender);
+      const tinWn = ws ? ownWindowIds(ws)[0] : 0;
+      const tinSpace = tinWn ? spaceOfWn(tinWn) : 0;
+      const base = all.find(s => s.id === tinSpace) || all.find(s => s.isCurrent);
+      return all.filter(s => !base || s.display === base.display).map((s, i) => ({
+        index: i + 1, id: s.id, label: '', isCurrent: s.isCurrent, isFullscreen: Number(s.type) !== 0,
+        isTin: tinSpace > 0 && s.id === tinSpace,
+      }));
+    } catch (e) { console.warn('[tin] get-spaces (CGS) failed:', e?.message || e); }
+  }
   const p = getYabaiPath();
   if (p && await yabaiIsRunning()) {
     try {
@@ -2538,6 +2823,7 @@ ipcMain.handle('get-spaces', async () => {
 // targetIndex:   yabai Space index (get-spaces の index フィールド、yabai 使用時)
 ipcMain.handle('push-to-space-to', async (event, { targetSpaceId, targetIndex }) => {
   const ws = findWorkspace(event.sender);
+  if (IS_MAC && ws) return carryWorkspaceToSpace(ws, { targetSpaceId });
   if (!ws || !axHelper) return { ok: false };
 
   // TiN ウィンドウ番号取得
@@ -2707,7 +2993,6 @@ ipcMain.handle('swap-grid-slots', async (event, { src, dst }) => {
 // 揃える。retile / save は呼び出し側の責務 (All Snap は snap 後にまとめて retile する)。
 function applyGridSize(ws, cols, rows) {
   const validSlotIds = new Set(Array.from({ length: cols * rows }, (_, i) => i));
-  evictOverflowSnapped(ws, validSlotIds);
   ws.gridCols = cols;
   ws.gridRows = rows;
   ws.colRatios = null;
@@ -2724,7 +3009,7 @@ function applyGridSize(ws, cols, rows) {
       // 前詰めで外部窓の slot も動きうるので renderer に再同期
       if (ws.win && !ws.win.isDestroyed()) {
         const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot }));
-        ws.win.webContents.send('hydrate-snapped', hydrate);
+        ws.win.webContents.send('hydrate-snapped', hydrate); resetPollIdentityFor(ws.win);
       }
       scheduleSyncSnapped();
     } else {
@@ -2795,7 +3080,7 @@ function evictOverflowSnapped(ws, validSlotIds) {
   // renderer の snappedExternals を同期
   if (ws.win && !ws.win.isDestroyed()) {
     const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot }));
-    ws.win.webContents.send('hydrate-snapped', hydrate);
+    ws.win.webContents.send('hydrate-snapped', hydrate); resetPollIdentityFor(ws.win);
   }
   scheduleSyncSnapped();
 }
@@ -2808,6 +3093,7 @@ ipcMain.handle('set-slot-layout', (event, { layout }) => {
   const validSlotIds = layout
     ? new Set(layout.map(cell => cell.id))
     : new Set(Array.from({ length: ws.gridCols * ws.gridRows }, (_, i) => i));
+  evictOverflowSnapped(ws, validSlotIds);
   ws.slotLayout = layout;
   if (ws.win && !ws.win.isDestroyed()) {
     ws.win.webContents.send('update-grid-panel', {
@@ -2843,7 +3129,7 @@ ipcMain.handle('set-active-tab', (event, { slot }) => {
       if (info.slot === Number(slot)) activeWns.push({ windowNumber: wn, pid: info.pid, app: info.app, title: info.title });
     }
     if (activeWns.length > 0 && axHelper && axHelper.raiseWindows) {
-      axHelper.raiseWindows(activeWns);
+      windowOps.raise(activeWns).catch(() => {});
     }
   }).catch(() => {});
 });
@@ -2928,6 +3214,10 @@ function createWorkspace(name, savedState) {
     hasShadow: true,
     alwaysOnTop: false,
     acceptFirstMouse: true,
+    // mac: 緑ボタンを「全画面 (専用のデスクトップを新しく作る)」ではなく「このデスクトップいっぱいに広げる」にする。
+    // 全画面のデスクトップには他のアプリの窓を入れられず、スナップした端末が付いてこられない
+    // (掴んだままだと全画面のデスクトップへの切替自体が起きない、2026-11-03 実測)。
+    ...(IS_MAC ? { fullscreenable: false } : {}),
     webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false, backgroundThrottling: false },
   });
 
@@ -3002,7 +3292,7 @@ function createWorkspace(name, savedState) {
       const hydrate = [...ws.snappedExternals].map(([wn, info]) => ({
         windowNumber: wn, title: info.title, app: info.app, slot: info.slot,
       }));
-      win.webContents.send('hydrate-snapped', hydrate);
+      win.webContents.send('hydrate-snapped', hydrate); resetPollIdentityFor(win);
     }
     // 復元は restoreAllPending() で一括実行 (個別ではなく全 workspace まとめて)
     if (ws._pendingRestore) scheduleRestoreAll();
@@ -3200,6 +3490,7 @@ function createWorkspace(name, savedState) {
     // sticky 方式: snapped windows は全 Space に存在するため CGS 移動は不要
     // TiN が新 Space に来たら retileAll で位置を揃えるだけでよい
     // _tinSpaceId を常時更新 (Space 復元・space-follow の両方に使用)
+    let tinSpaceNow = 0;
     if (axHelper && axHelper.getSpaceForWindows && axHelper.getWindowIdFromHandle) {
       try {
         const handle = ws.win.getNativeWindowHandle();
@@ -3208,13 +3499,23 @@ function createWorkspace(name, savedState) {
         if (tinWid > 0) {
           const spaces = axHelper.getSpaceForWindows([tinWid]);
           const tinSpaceId = Number(spaces[0]?.spaceId || 0);
+          tinSpaceNow = tinSpaceId;
           if (tinSpaceId > 0) {
             // snapped ウィンドウがある場合のみ space-follow 処理を行う
-            if (ws.snappedExternals.size > 0 && !isStabilizing(ws) &&
+            // mac の呼び寄せは stabilize 中でも行う。stabilize で見送ると、下の行で _tinSpaceId だけが
+            // 新しい値に更新され、明けても「動いた」と気づけない (起動直後や運搬直後 30 秒の移動を取りこぼした)。
+            // 自分の運搬との二重起動は spaceCarryActive() / _followPending で防ぐ。
+            const canCarryFollow = IS_MAC && typeof axHelper.postHotkey === 'function';
+            if (ws.snappedExternals.size > 0 && !spaceCarryActive() && (canCarryFollow || !isStabilizing(ws)) &&
                 ws._tinSpaceId > 0 && tinSpaceId !== ws._tinSpaceId) {
-              console.log(`[tin] space-follow (sticky): TiN ${ws._tinSpaceId}→${tinSpaceId}, retiling ${ws.snappedExternals.size} windows`);
-              beginStabilize('space-follow', ws);
-              setTimeout(() => retileAll(ws, true).catch(() => {}), 200);
+              if (canCarryFollow) {
+                // mac: 他アプリの窓は「掴んで運ぶ」でしか付いてこない (lib/space-carry.js)
+                scheduleSpaceFollow(ws, ws._tinSpaceId, tinSpaceId);
+              } else {
+                console.log(`[tin] space-follow (sticky): TiN ${ws._tinSpaceId}→${tinSpaceId}, retiling ${ws.snappedExternals.size} windows`);
+                beginStabilize('space-follow', ws);
+                setTimeout(() => retileAll(ws, true).catch(() => {}), 200);
+              }
             }
             ws._tinSpaceId = tinSpaceId;
           }
@@ -3222,7 +3523,18 @@ function createWorkspace(name, savedState) {
       } catch {}
     }
 
+    // mac: この TiN がどの画面にも見えていないデスクトップに居る間は、ここから先 (生死判定・
+    // 再リンク・大量消失の watchdog) を休む。listWindows は見えているデスクトップの窓しか返さず、
+    // 端末は TiN と同じ見えないデスクトップに居るので、判断材料が無い。休まないと、デスクトップを
+    // 切り替えるたびに「全部消えた → 自動復旧」が走り、同じ title の窓の横取りも起きうる。
+    // TiN 自身が動いたことの検知 (上の space-follow) は休まない。全 Space 表示 (sticky) のときは対象外。
+    if (IS_MAC && tinSpaceNow > 0 && !appSettings.stickyWindows && !tinSpaceVisible(tinSpaceNow)) return;
+
     const windowsAll = await listWindowsForUI();
+    // mac: 運んでいる間と Mission Control が開いている間は、ここから先 (大量消失の watchdog・生死判定・
+    // 再リンク) を休む。Mission Control で窓を別のデスクトップへ落とす瞬間、その窓が全 Space の一覧からも
+    // 一瞬消え、同じ title の別の窓へ付け替えていた (2026-11-03 実機テスト)。開いている間は Dock の窓が一覧に出る。
+    if (IS_MAC && (spaceCarryActive() || windowsAll.some(w => w.app === 'Dock'))) return;
     const windows = windowsAll.filter(w => w.app !== 'TiN');
 
     // 大量消失検知: sleep 復帰 / ディスプレイ切替の watchdog
@@ -3317,8 +3629,17 @@ function createWorkspace(name, savedState) {
       // 引き継ぎ先は「まだ誰の snap でもない窓」に限る。ここを空けておくと、閉じた端末の
       // エントリが同じ title の生きた窓を掴んで元エントリを上書きし、閉じたはずの端末が
       // slot に残ったように見える (詳細は lib/snap-relink.js)。
+      // ただし元の窓が「別のデスクトップに居るだけ」なら付け替えない。listWindows は今見えている
+      // デスクトップの窓しか返さないので、デスクトップを切り替える・端末を別デスクトップへ運ぶたびに
+      // ここに来る。同じ title の窓 (-zsh 等) が見えていると、それを掴んで元の端末を手放していた
+      // (2026-11-03 実機テストで再現)。付け替えが要るのは windowNumber が変わったときだけ。
       if (!live && info.title) {
-        live = findRelinkTarget(info, windows, isWindowClaimed);
+        if (pollAllSpaceIds === undefined) pollAllSpaceIds = probeAllSpaceWindowIds();
+        if (Array.isArray(pollAllSpaceIds) && pollAllSpaceIds.includes(k)) {
+          // 生きている (別デスクトップ / 最小化) — 下の生死判定 (ghost 扱い) へ
+        } else {
+          live = findRelinkTarget(info, windows, isWindowClaimed);
+        }
         if (live) {
           // windowNumber を更新して再リンク
           ws.snappedExternals.delete(k);
@@ -3427,6 +3748,7 @@ function createWorkspace(name, savedState) {
     const _scale = IS_WIN ? (screen.getPrimaryDisplay().scaleFactor || 1) : 1;
     const minConstrainedMap = new Map();
     const moveDeniedMap = new Map();
+    const minSizeMap = new Map();   // mac: はみ出す窓の下限 ('500×375'。幅か高さだけなら '-' )
     let _constrainedKey = '';
     if (IS_WIN) {
       // win-helper が SetWindowPos 実測で検出した issue (#43): clamped / denied
@@ -3445,6 +3767,18 @@ function createWorkspace(name, savedState) {
         if (c) _constrainedKey += wn + ',';
         if (d) _constrainedKey += '!' + wn + ',';
       }
+    } else if (IS_MAC) {
+      // batchMove が読み戻しで記録した「はみ出し」。もう繋いでいない窓の記録は捨てる
+      for (const i of placementIssues.all()) if (!isExternalSnapped(i.windowNumber)) placementIssues.forget(i.windowNumber);
+      for (const [wn] of ws.snappedExternals) {
+        const issue = placementIssues.get(wn);
+        const c = !!(issue && issue.code === 'clamped');
+        minConstrainedMap.set(wn, c);
+        if (c) minSizeMap.set(wn, `${issue.minWidth || '-'}×${issue.minHeight || '-'}`);
+        moveDeniedMap.set(wn, false);
+        if (c) _constrainedKey += `${wn}:${issue.minWidth}x${issue.minHeight},`;
+      }
+      if (process.env.TIN_DEBUG_PLACEMENT) console.log(`[tin] placement poll key=${_constrainedKey}`);
     }
     let identity = '';
     for (const w of windows) {
@@ -3483,7 +3817,8 @@ function createWorkspace(name, savedState) {
     for (const [wn, info] of ws.snappedExternals) {
       if (typeof info.slot === 'number') snappedSlots[wn] = info.slot;
       snappedList.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot,
-        minConstrained: minConstrainedMap.get(wn) || false, moveDenied: moveDeniedMap.get(wn) || false });
+        minConstrained: minConstrainedMap.get(wn) || false, moveDenied: moveDeniedMap.get(wn) || false,
+        minSize: minSizeMap.get(wn) || '' });
     }
     // 最前面 window (focused slot ハイライト用) — _frontmostInterval (500ms) のキャッシュを流用
     ws.win.webContents.send('external-windows', windowsForUI, snappedByOther, gridSlots, snappedSlots, _lastFrontmost, snappedList);
@@ -4497,7 +4832,7 @@ async function triggerAutoSnap(opts = {}) {
       for (const [wn, info] of ws.snappedExternals) {
         hydrate.push({ windowNumber: wn, title: info.title, app: info.app, slot: info.slot });
       }
-      ws.win.webContents.send('hydrate-snapped', hydrate);
+      ws.win.webContents.send('hydrate-snapped', hydrate); resetPollIdentityFor(ws.win);
     }
   }
   // 結果通知
@@ -4826,7 +5161,13 @@ app.whenReady().then(async () => {
       ]},
       { type: 'separator' },
       { role: 'toggleDevTools' },
-      { role: 'togglefullscreen' },
+      // mac は全画面にせず、ワークスペースの窓をこのデスクトップいっぱいに広げる (緑ボタン・⌘⇧M と同じ)
+      IS_MAC
+        ? { label: 'Fill Screen', accelerator: 'Ctrl+Cmd+F', click: () => {
+            const ws = wsForAnyWindow(BrowserWindow.getFocusedWindow());
+            if (ws && ws.win && !ws.win.isDestroyed()) toggleMaximize(ws.win);
+          } }
+        : { role: 'togglefullscreen' },
     ]},
     { label: 'Window', submenu: [
       { role: 'minimize' },
