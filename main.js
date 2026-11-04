@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 const autoSnap = require('./auto-snap');
 // 純粋ロジックは lib/ 側に置き、単体テスト (npm test) で実機なしに検証する。
 // ここに生えている関数を編集するときは test/*.test.js も併せて更新すること。
-const { occupiedSlots, validSlotIdSet, nextFreeSlot, compactSlots, fitGridDims, computeSlotBounds } = require('./lib/layout');
+const { occupiedSlots, validSlotIdSet, nextFreeSlot, compactSlots, compactRowsLeft, computeSlotBounds } = require('./lib/layout');
 const { isAllowedRestRequest } = require('./lib/rest-guard');
 const { ABSENT_EVICT_MS, livenessOf, absentVerdict } = require('./lib/snap-liveness');
 const { findRelinkTarget, matchPersistedToLive } = require('./lib/snap-relink');
@@ -1666,7 +1666,7 @@ ipcMain.handle('snap-external', async (event, { windowNumber, pid, app: appName,
 
 // ── All Snap: 開いているターミナルウィンドウを一括 snap ──
 // 窓数(スロット数)は snap 後の総窓数に自動で合わせる (拡張も縮小もする)。
-// 形状は lib/layout.js の fitGridDims — **今の行数を維持して列だけ動かす**。
+// 形状と詰め方は lib/layout.js の compactRowsLeft — **今の行数を維持して列だけ動かし、窓は自分の段のまま左へ詰める**。
 async function snapAllTerminals(ws) {
   if (!ws || !ws.win || ws.win.isDestroyed()) return { ok: false, reason: 'no-workspace' };
   const all = await listWindows();
@@ -1691,26 +1691,28 @@ async function snapAllTerminals(ws) {
   // targets が空でも既存窓があれば続行する — 「端末を閉じた後に All Snap で
   // 窓数を整え直す」を成立させるため (新規 snap 0 件でも形状合わせ + retile は走る)。
   if (need === 0) return { ok: true, snapped: 0, total: 0, skipped: 0, cols: ws.gridCols, rows: ws.gridRows };
-  // 有効スロット数が既に一致しているなら形状は触らない
-  // (カスタム slotLayout やユーザーが意図して選んだ形状を尊重する)。
-  if (validSlotIdSet(ws).size !== need) {
-    // keepRows: 今の行数を維持して列だけ合わせる (1行運用なら1行のまま)
-    const fit = fitGridDims(need, { maxCols, maxRows, keepRows: ws.gridRows });
-    if (fit.cols !== ws.gridCols || fit.rows !== ws.gridRows || ws.slotLayout) {
-      console.log(`[tin] snap-all: grid ${ws.gridCols}x${ws.gridRows} → ${fit.cols}x${fit.rows} (need ${need} slots)`);
-      applyGridSize(ws, fit.cols, fit.rows);
-    }
-  }
-  const cols = ws.gridCols, rows = ws.gridRows;
 
   // 既存 snap に穴 (unsnap 跡の空き slot) があると、形状を合わせても穴だけが
   // 途中に residual として残る (例: 9x1 で slot3 が空の7窓 → 4x2 にしても右上が空く)。
   // All Snap は「全部きれいに並べ直す」明示操作なので、ここでは前詰めしてよい
   // — 自動 compact を避けているのは delete/unsnap 等の暗黙経路で番号が動くのを
   // 防ぐためで、ユーザーが明示的に叩くこの経路は対象外。
-  // 相対順 (slot 昇順 = 概ね開いた順) は compactSlots が保つ。
-  const compacted = compactSlots(ws);
-  if (compacted.moved) console.log(`[tin] snap-all: compacted ${compacted.moved} slots`);
+  if (ws.slotLayout && validSlotIdSet(ws).size === need) {
+    // カスタム slotLayout で有効スロット数が一致しているなら形状は触らない
+    // (ユーザーが意図して組んだ結合を尊重し、slot 番号順に詰めるだけ)。
+    const compacted = compactSlots(ws);
+    if (compacted.moved) console.log(`[tin] snap-all: compacted ${compacted.moved} slots`);
+  } else {
+    // 段ごとに左へ詰め、窓数に合わせて形状を決める (下の段の窓は上の段へ上げない)。
+    // 行数は今のまま維持して列だけ合わせる (1行運用なら1行のまま) — lib/layout.js compactRowsLeft
+    const plan = compactRowsLeft(ws, need, { maxCols, maxRows });
+    if (plan.moved) console.log(`[tin] snap-all: compacted ${plan.moved} slots (rows kept)`);
+    if (plan.cols !== ws.gridCols || plan.rows !== ws.gridRows || ws.slotLayout) {
+      console.log(`[tin] snap-all: grid ${ws.gridCols}x${ws.gridRows} → ${plan.cols}x${plan.rows} (need ${need} slots)`);
+      applyGridSize(ws, plan.cols, plan.rows);
+    }
+  }
+  const cols = ws.gridCols, rows = ws.gridRows;
 
   beginStabilize('snap-all', ws);
   const moveCmds = [];
@@ -2704,7 +2706,6 @@ ipcMain.handle('swap-grid-slots', async (event, { src, dst }) => {
 // 呼び、「収まらないスナップの押し出し → 寸法変更 → renderer 通知」のセマンティクスを
 // 揃える。retile / save は呼び出し側の責務 (All Snap は snap 後にまとめて retile する)。
 function applyGridSize(ws, cols, rows) {
-  // 新サイズに収まらないスナップを押し出してから変更
   const validSlotIds = new Set(Array.from({ length: cols * rows }, (_, i) => i));
   evictOverflowSnapped(ws, validSlotIds);
   ws.gridCols = cols;
@@ -2712,10 +2713,10 @@ function applyGridSize(ws, cols, rows) {
   ws.colRatios = null;
   ws.rowRatios = null;
   ws.slotLayout = null;
-  // evictOverflowSnapped が動かすのは外部窓だけなので、縮小時に内蔵PTY の slot が
-  // 範囲外に残ることがある (getSlotBounds の ratios 参照が範囲外になり座標が NaN)。
-  // 範囲外の占有者が居るときだけ前詰めする。compactSlots は詰め先不足なら何も
-  // 変更しない (あふれ時の退避方針は未決 — その場合は従来どおり orphan のまま)。
+  // 縮小で範囲外に出る占有者 (外部窓・内蔵PTY) が居るときだけ前詰めする。
+  // compactSlots は新しい形状の中で slot 番号順のまま左上から詰め直す。
+  // 先に evictOverflowSnapped を通すと、はみ出た末尾の窓が途中の空き slot に
+  // 飛び込んで並びが崩れていた (1行で A·_·C·D を 4→3列 にすると A D C)。
   const orphaned = [...occupiedSlots(ws)].some(slot => !validSlotIds.has(slot));
   if (orphaned) {
     const r = compactSlots(ws);
@@ -2727,7 +2728,12 @@ function applyGridSize(ws, cols, rows) {
       }
       scheduleSyncSnapped();
     } else {
-      console.warn(`[tin] applyGridSize: ${r.overflow} occupants exceed ${cols}x${rows} — slots left as-is`);
+      // 全員は収まらない: 外部窓は空きへシフト、それも無ければ unsnap (従来どおり)。
+      // 内蔵PTY のあふれは退避方針が未決なので orphan のまま残る。
+      evictOverflowSnapped(ws, validSlotIds);
+      if ([...occupiedSlots(ws)].some(slot => !validSlotIds.has(slot))) {
+        console.warn(`[tin] applyGridSize: ${r.overflow} occupants exceed ${cols}x${rows} — slots left as-is`);
+      }
     }
   }
   if (ws.win && !ws.win.isDestroyed()) {
@@ -2802,7 +2808,6 @@ ipcMain.handle('set-slot-layout', (event, { layout }) => {
   const validSlotIds = layout
     ? new Set(layout.map(cell => cell.id))
     : new Set(Array.from({ length: ws.gridCols * ws.gridRows }, (_, i) => i));
-  evictOverflowSnapped(ws, validSlotIds);
   ws.slotLayout = layout;
   if (ws.win && !ws.win.isDestroyed()) {
     ws.win.webContents.send('update-grid-panel', {

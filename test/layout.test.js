@@ -8,7 +8,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const {
-  occupiedSlots, validSlotIdSet, nextFreeSlot, compactSlots, fitGridDims, computeSlotBounds,
+  occupiedSlots, validSlotIdSet, nextFreeSlot, compactSlots, fitGridDims, compactRowsLeft, computeSlotBounds,
 } = require('../lib/layout');
 
 // ── テスト用の最小 ws (BrowserWindow は一切持たない) ──
@@ -341,4 +341,115 @@ test('compactSlots: 前詰めしても占有者の相対順が変わらない', 
   assert.deepStrictEqual(after, before, '詰めても並び順は不変');
   assert.deepStrictEqual([...ws.snappedExternals].map(([, i]) => i.slot).sort((a, b) => a - b),
     [0, 1, 2, 3, 4, 5, 6], '穴が埋まり 0..6 が連続で埋まる');
+});
+
+// 縮小時 (main.js applyGridSize) は寸法を新形状に替えてから compactSlots を呼ぶ。
+// 末尾の窓が途中の穴へ飛び込まず、番号順のまま左へ詰まることを固定する。
+test('compactSlots: 縮小後の形状で呼ぶと番号順のまま左へ詰まる (末尾が穴に飛び込まない)', () => {
+  // 1行 4列で 2枚目を閉じた形 (slot1 が穴) → 3列に縮小
+  const ws = mkWs({ ext: [0, 2, 3], cols: 4, rows: 1 });
+  ws.gridCols = 3;
+  const r = compactSlots(ws);
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual([...ws.snappedExternals].map(([wn, i]) => [wn, i.slot]),
+    [[1000, 0], [1001, 1], [1002, 2]], 'A C D の順 (A D C にならない)');
+});
+
+// ────────────────────────── compactRowsLeft ──────────────────────────
+// All Snap (main.js snapAllTerminals) の詰め直し。ユーザー指定 (2026-10-21):
+// 左へ・番号順に・下の段の窓が上の段へ上がらない。
+// 外部窓 1000,1001,... を ext の順に置き、結果を「段ごとの wn 列」で比べる。
+function rowsOf(ws, cols, rows) {
+  const at = new Map([...ws.snappedExternals].map(([wn, i]) => [i.slot, wn]));
+  for (const [slot, gw] of ws.gridWindows) at.set(slot, gw.tag);
+  return Array.from({ length: rows }, (_, r) =>
+    Array.from({ length: cols }, (_, c) => at.get(r * cols + c) ?? null));
+}
+
+test('compactRowsLeft: 1行は番号順のまま左へ詰めて列を減らす', () => {
+  const ws = mkWs({ ext: [0, 2, 3], cols: 4, rows: 1 });  // A _ C D
+  const r = compactRowsLeft(ws, 3);
+  assert.deepStrictEqual([r.cols, r.rows], [3, 1]);
+  assert.deepStrictEqual(rowsOf(ws, 3, 1), [[1000, 1001, 1002]]);
+});
+
+test('compactRowsLeft: 上の段に穴が開いても下の段の窓は上がらない', () => {
+  const ws = mkWs({ ext: [0, 2, 3], cols: 2, rows: 2 });  // A _ / C D
+  const r = compactRowsLeft(ws, 3);
+  assert.deepStrictEqual([r.cols, r.rows], [2, 2]);
+  assert.deepStrictEqual(rowsOf(ws, 2, 2), [[1000, null], [1001, 1002]]);
+});
+
+test('compactRowsLeft: 段の中では左へ詰める', () => {
+  const ws = mkWs({ ext: [0, 2, 3, 4, 5], cols: 3, rows: 2 });  // A _ C / D E F
+  const r = compactRowsLeft(ws, 5);
+  assert.deepStrictEqual([r.cols, r.rows], [3, 2]);
+  assert.deepStrictEqual(rowsOf(ws, 3, 2), [[1000, 1001, null], [1002, 1003, 1004]]);
+});
+
+test('compactRowsLeft: 下の段が詰めきれないときは列を減らさない (上へ逃がさない)', () => {
+  const ws = mkWs({ ext: [0, 3, 4, 5], cols: 3, rows: 2 });  // A _ _ / D E F
+  const r = compactRowsLeft(ws, 4);
+  assert.deepStrictEqual([r.cols, r.rows], [3, 2]);
+  assert.deepStrictEqual(rowsOf(ws, 3, 2), [[1000, null, null], [1001, 1002, 1003]]);
+});
+
+test('compactRowsLeft: まるごと空いた段は消す (上の段の窓は下がらない)', () => {
+  const ws = mkWs({ ext: [0, 1, 2], cols: 3, rows: 2 });  // A B C / _ _ _
+  const r = compactRowsLeft(ws, 3);
+  assert.deepStrictEqual([r.cols, r.rows], [3, 1]);
+  assert.deepStrictEqual(rowsOf(ws, 3, 1), [[1000, 1001, 1002]]);
+});
+
+test('compactRowsLeft: 新しく snap する分 (need の残り) が要るなら空いた段も残す', () => {
+  const ws = mkWs({ ext: [0, 1], cols: 2, rows: 2 });  // A B / _ _ に +4
+  const r = compactRowsLeft(ws, 6);
+  assert.deepStrictEqual([r.cols, r.rows], [3, 2]);
+  assert.deepStrictEqual(rowsOf(ws, 3, 2), [[1000, 1001, null], [null, null, null]]);
+});
+
+test('compactRowsLeft: 列が増えても下の段の窓は下の段のまま (番号の振り直しで上がらない)', () => {
+  const ws = mkWs({ ext: [0, 1, 2, 3], cols: 2, rows: 2 });  // A B / C D に +2
+  const r = compactRowsLeft(ws, 6);
+  assert.deepStrictEqual([r.cols, r.rows], [3, 2]);
+  assert.deepStrictEqual(rowsOf(ws, 3, 2), [[1000, 1001, null], [1002, 1003, null]]);
+  ws.gridCols = r.cols; ws.gridRows = r.rows;
+  assert.strictEqual(nextFreeSlot(ws), 2, '新しい窓は上の段の右端から入る');
+});
+
+test('compactRowsLeft: 内蔵PTY も段のまま詰め、gridWindows のキーを張り替える', () => {
+  const ws = mkWs({ grid: [3], ext: [0, 5], cols: 3, rows: 2 });  // A _ _ / P _ F
+  const r = compactRowsLeft(ws, 3);
+  assert.deepStrictEqual([r.cols, r.rows], [2, 2]);
+  assert.deepStrictEqual(rowsOf(ws, 2, 2), [[1000, null], ['pty3', 1001]]);
+  for (const [slot, gw] of ws.gridWindows) assert.strictEqual(gw.slot, slot);
+});
+
+test('compactRowsLeft: 列が maxCols を超えるときだけ下に段を足す', () => {
+  const ws = mkWs({ ext: [0, 1, 2, 3], cols: 4, rows: 1 });
+  const r = compactRowsLeft(ws, 6, { maxCols: 4, maxRows: 4 });
+  assert.deepStrictEqual([r.cols, r.rows], [4, 2]);
+  assert.deepStrictEqual(rowsOf(ws, 4, 2)[0], [1000, 1001, 1002, 1003], '既存の段はそのまま');
+});
+
+test('compactRowsLeft: 占有者が居なければ fitGridDims と同じ形状', () => {
+  for (const keepRows of [1, 2, 3, 4]) {
+    for (let need = 1; need <= 30; need++) {
+      const r = compactRowsLeft(mkWs({ cols: 3, rows: keepRows }), need, LIMITS);
+      assert.deepStrictEqual({ cols: r.cols, rows: r.rows }, fitGridDims(need, { ...LIMITS, keepRows }),
+        `need=${need} keepRows=${keepRows}`);
+    }
+  }
+});
+
+test('compactRowsLeft: 実行後に slot が重複せず、全員が新形状に収まる', () => {
+  const shapes = [[4, 2, [0, 2, 5, 7]], [3, 3, [1, 4, 8]], [5, 1, [4]], [2, 3, [0, 1, 2, 3, 4, 5]]];
+  for (const [cols, rows, ext] of shapes) {
+    const ws = mkWs({ ext, cols, rows });
+    const r = compactRowsLeft(ws, ext.length + 2);
+    const slots = [...ws.snappedExternals].map(([, i]) => i.slot);
+    assert.strictEqual(new Set(slots).size, slots.length, `${cols}x${rows}: 重複なし`);
+    assert.ok(slots.every(s => s >= 0 && s < r.cols * r.rows), `${cols}x${rows}: 範囲内`);
+    assert.ok(r.cols * r.rows >= ext.length + 2, `${cols}x${rows}: need が収まる`);
+  }
 });
